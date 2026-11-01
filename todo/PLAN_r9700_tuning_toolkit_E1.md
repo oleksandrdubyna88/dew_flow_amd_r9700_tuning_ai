@@ -845,6 +845,39 @@ names) and never restoring while waiting (the 44-minute idle of 2026-11-01 12:03
 | `MAX_SERVER_STOPS` | integer 1..10 | `3` | new (decision 15) |
 | `CLEANUP_BUDGET_S` | unchanged type; cross-field `≥ READY_TIMEOUT_S + 120` | `1500` (was 900) | decision 8 |
 
+**Amendments from the cadence consultation of 2026-11-01 (epics 1–3), each checked against this text.** They
+override the decisions and the brief where they differ.
+
+- **A1 — the lock stays with the supervisor.** `flock` holds while ANY process has the open file description,
+  and a child started after `exec 9>lock` inherits descriptor 9: after a `SIGKILL` of the supervisor the worker
+  would keep the lock and the recovery would refuse with exit 4. Every child the supervisor starts (worker,
+  `guard_ram`, the deadline watcher, `restore_start`) is started with `9>&-`. Scenario L6 adds: before the kill,
+  `/proc/<worker pid>/fd/9` does not exist; after it, `flock -n` on the lock file succeeds.
+- **A2 — one start form.** The worker is started only as `setsid lib/worker_gate.sh <gate file> "$@" 9>&-`
+  (decision 3); the ungated `setsid "$@"` in the brief's `admit` is replaced by it.
+- **A3 — tests do not wait on real quiet rounds.** `quiet_wait` reads a test knob `R9700_QUIET_CHECKS` (default
+  3; never in `machine.env`); the lifecycle and guard tests set it to 1, and a test that triggers a fault first
+  waits for a worker-ready file the stub worker writes (`<run dir>/steps/<n>.ready`), never for a fixed time.
+  The deadline arithmetic (`deadline_compute`, `T_STOP`, `T_END`) is tested as pure functions; G5 keeps one
+  integration case whose timings follow from `R9700_QUIET_CHECKS=1`.
+- **A4 — stub containers are cleaned by their owner, not by a process group.** The stubs' `setsid sleep`
+  children are outside every group by design. Each records its pid in `R9700_TEST_ROOT/containers/<name>.pid`;
+  every bash test's `EXIT` trap kills the recorded pids, and `tests/run.mjs` kills every pid recorded under its
+  run folder in its own `finally` (also after a test hit its ceiling) before it removes the folder.
+- **A5 — one supervisor, several steps (the contract E3 builds on).** `run_guarded` is split: `step_run <label>
+  -- <cmd…>` runs one step (admission, worker, guards, outcome, retries) and neither restores nor releases the
+  lock; `supervise <body function>` takes the lock, restores first, runs the body, and ends with the one
+  `cleanup_once` (one restore). `verb_step` is `supervise` around one `step_run`; E3's `run` is `supervise`
+  around several `step_run` calls, so the server is restored once at the end, and between steps only by the
+  wait rule of decision 15. Scenario L22: a body with two `step_run` calls restores exactly once.
+- **A6 — S2 is built and reviewed in three parts**, each an Opus review before the next: (a) the adapter seam
+  and the stubs (A4); (b) ownership and recovery — lock (A1), marker, worker gate (A2), restore, readiness,
+  restore-first; (c) guards, admission, retries and `supervise`/`step_run` (A3, A5). One coai code round still
+  covers the whole epic.
+- **A7 — a hosted remote before S1 merges.** CI needs the GitHub repository; creating it and the first push
+  (whose exact file list the operator approves first — the repository is public) is a main-session
+  precondition beside the token registration. Publication acceptance stays in E3.
+
 ### Test scenarios
 
 Three bash files, run by `tests/run.mjs` like S1's: `tests/test_lifecycle.sh` (L1–L20), `tests/test_guards.sh`
@@ -1159,8 +1192,8 @@ dir>`: for each name of `wslc_list` starting with `R9700_CONTAINER_PREFIX`: `wsl
   `tries=0; stops=0; while :; do quiet_wait $(min 900 $((T_STOP-now))) || {restore-while-waiting per
   decision 15; continue}; disk gate; admit; wait; outcome; case …; done`. `admit`: `stops+1 > MAX_SERVER_STOPS`
   → exit 8; `marker_write` (decision 3, without the worker keys); `wslc_stop PROD_CONTAINER` when it is listed
-  (and `PROD_WAS_RUNNING=yes` in the marker) else `no`; `setsid "$@" >>"<run dir>/steps/<n>.worker.log" 2>&1 &
-  p=$!`; `marker_write` again with the worker keys (ticks from `/proc/$p/stat` field 22 — read it with
+  (and `PROD_WAS_RUNNING=yes` in the marker) else `no`; `setsid lib/worker_gate.sh <gate file> "$@" 9>&- >>"<run dir>/steps/<n>.worker.log" 2>&1 &
+  p=$!` (amendments A1, A2); `marker_write` again with the worker keys (ticks from `/proc/$p/stat` field 22 — read it with
   `awk '{print $22}'` after cutting at the last `)`, because the command name may hold spaces); copy the marker
   to `steps/<n>.marker`; start `guard_ram $p …` and the deadline watcher (`night5.sh` lines 21–24, firing at
   `T_STOP`, writing `KIND=deadline` first, then `container_stop_all`, then `TERM -$p`) as background
