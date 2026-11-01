@@ -878,6 +878,27 @@ override the decisions and the brief where they differ.
   (whose exact file list the operator approves first — the repository is public) is a main-session
   precondition beside the token registration. Publication acceptance stays in E3.
 
+**Amendments from the review of part (a), 2026-11-01** (each reproduced by the reviewer):
+
+- **A8 — stop by SESSION, not by process group.** GNU `timeout` calls `setpgid(0,0)`, so every adapter call runs
+  in its own process group inside the caller's session: a `TERM` to the worker's group does not reach a running
+  `wslc exec … bench` (up to its 1800 s ceiling). The worker is started with `setsid`, so its sid = pgid = pid;
+  `guard_ram`, the deadline watcher, `cleanup_once` and `restore_from_marker` stop every process whose
+  `/proc/<pid>/stat` field 6 equals that sid (`TERM`, the grace, then `KILL`); the test runner does the same for a
+  test file's session. Never `timeout --foreground` (it does not kill the child's children on expiry). A G1
+  variant: the guard fires while the worker sits in a hung adapter call; afterwards no process of the session
+  is left.
+- **A9 — adapter calls are cut at `T_STOP`.** `_adapter_call` uses `min(ceiling, R9700_T_STOP − now)` when
+  `R9700_T_STOP` is set and refuses with an `adapter:` line when that is ≤ 0; the supervisor's cleanup phase runs
+  without `R9700_T_STOP` in its environment (decision 8).
+- **A10 — a ceiling scale apart from the time scale.** `R9700_CEILING_SCALE` (test knob, default
+  `R9700_TIME_SCALE`) divides only the adapter ceilings; lifecycle and guard tests set it to 10 while sleeps run
+  at 100, and only the hang tests use 100 (measured: a stub call takes 39 ms idle, up to 227 ms under load,
+  against a 0.30 s RAM ceiling at scale 100).
+- **A11 — the test runner runs only `t_*` functions defined in the test file itself** (`declare -F` under
+  `extdebug`, enabled only inside the lookup, paths compared with `readlink -f`), so a sourced library function
+  such as `t_scale` is never run as a test.
+
 ### Test scenarios
 
 Three bash files, run by `tests/run.mjs` like S1's: `tests/test_lifecycle.sh` (L1–L20), `tests/test_guards.sh`
