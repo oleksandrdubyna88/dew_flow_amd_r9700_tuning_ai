@@ -840,7 +840,7 @@ names) and never restoring while waiting (the 44-minute idle of 2026-11-01 12:03
 
 | Key | Type and legal values | Default | Replaces |
 |---|---|---|---|
-| `READY_TIMEOUT_S` | integer 60..3480 (amended 2026-11-01: with `CLEANUP_BUDGET_S` ≤ 3600 and ≥ ready + 120, 3481..3600 could never pass) | `1200` | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 |
+| `READY_TIMEOUT_S` | integer 60..3300 (amended 2026-11-01: first 3480 for the rule ready + 120, then 3300 for A13's rule ready + 300) | `1200` | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 |
 | `MAX_FAILED_TRIES` | integer 1..20 | `6` | `night5.sh` line 36 |
 | `MAX_SERVER_STOPS` | integer 1..10 | `3` | new (decision 15) |
 | `CLEANUP_BUDGET_S` | unchanged type; cross-field `≥ READY_TIMEOUT_S + 120` | `1500` (was 900) | decision 8 |
@@ -906,6 +906,19 @@ override the decisions and the brief where they differ.
   runs a supervisor-side call against the stub mode `hang-ignore-term` with a TERM-ignoring grandchild and
   checks that no process of the call's group is left. Part (c)'s G1 variant uses the same stub mode for the
   worker side (A8).
+
+**Amendments from the review of part (b), 2026-11-01** (both reproduced by the reviewer):
+
+- **A13 — readiness ends at its own deadline; the budget rule matches.** `ready_wait` sets a local `R9700_T_STOP`
+  to the end of its window (start + `READY_TIMEOUT_S`, rounded up), so every list and probe in it is cut by A9 and
+  a refusal at that point counts as "not ready": the overrun is at most one grace (5 s), not the ~150 s of a full
+  sleep + list + probe after the last check. The cross-field rule becomes `CLEANUP_BUDGET_S ≥ READY_TIMEOUT_S +
+  300` (restore start 125 s + one container's log tail and stop 130 s + the session grace 10 s + margin), with the
+  default unchanged (1500 = 1200 + 300) and `READY_TIMEOUT_S` capped at 3300.
+- **A14 — notes part (c) must keep.** The gate file is unique per run and step (`<run dir>/steps/<n>.gate`), so a
+  stale gated worker never sees a later gate. `worker_start` checks that the new process's session id equals `$!`
+  (`setsid` forks when its caller leads a process group) and refuses otherwise. An interrupted `wait` in
+  `_adapter_call` sends the A12 group KILL before the trap handler can exit.
 
 ### Test scenarios
 
