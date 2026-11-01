@@ -24,7 +24,8 @@ declare -ga _F_ORDER=()
 declare -gA _F_SCOPE=() _F_TYPE=() _F_DEF=() _F_DESC=()
 
 # _field <scope> <KEY> <type> <default-or-"required"> "<one-line description>"
-# Types: cmd image name prefix dir path win cpath cpath? int:<min>:<max> dec:<min>:<max> enum:<a>,<b> hhmm? str str? ints mounts args
+# Types: cmd image name prefix dir path win cpath cpath? int:<min>:<max> dec:<min>:<max> enum:<a>,<b> hhmm? str? ints mounts args
+# A required field is also refused when its value is empty or only spaces.
 _field() {
   _F_ORDER+=("$2")
   _F_SCOPE[$2]="$1"
@@ -33,9 +34,9 @@ _field() {
   _F_DESC[$2]="$5"
 }
 
-_field machine WSLC cmd wslc "the wslc command: a bare name looked up on PATH, or an absolute path"
-_field machine POWERSHELL cmd powershell.exe "Windows PowerShell, for the RAM and disk probes"
-_field machine RESTORE_SHELL cmd pwsh.exe "the shell that runs the operator's start script when the server is restored"
+_field machine WSLC cmd "wslc" "the command for wslc, a bare name looked up on PATH, or an absolute path"
+_field machine POWERSHELL cmd "powershell.exe" "Windows PowerShell, for the RAM and disk probes"
+_field machine RESTORE_SHELL cmd "pwsh.exe" "the shell that runs the operator's start script when the server is restored"
 _field machine IMAGE image required "the container image of the test servers"
 _field machine HF_VOLUME name hf-cache "the named volume that holds the model cache"
 _field machine CACHE_VOLUME name vllm-cache "the named volume that holds the compile caches"
@@ -48,7 +49,7 @@ _field machine GSM8K_DATA cpath /work/gsm8k/test.jsonl "the GSM8K test file, as 
 _field machine RESULTS_DIR path required "where series results go, as a WSL path; its parent must exist"
 _field machine PROD_CONTAINER name vllm "the name of the operator's own server container"
 _field machine RESTORE_SCRIPT_WIN win required "the operator's start script, as a Windows path"
-_field machine RESTORE_ARGS str required "the arguments of the start script that bring the operator's server back"
+_field machine RESTORE_ARGS args required "the arguments of the start script that bring the operator's server back"
 _field machine CONTAINER_PREFIX prefix r9700tune- "the name prefix of every test container the toolkit starts"
 _field machine RAM_MIN_MB int:512:65536 2048 "stop the run when the free RAM of the PC falls below this many MB"
 _field machine QUIET_LOAD_MAX dec:0.1:64 4 "the 1-minute load below which the PC counts as quiet"
@@ -181,7 +182,6 @@ _cfg_legal() { # <type>
     dec:*) IFS=: read -r _ lo hi <<< "$1"; echo "$lo..$hi (a decimal)" ;;
     enum:*) echo "${1#enum:}" | tr ',' ' ' ;;
     'hhmm?') echo "HH:MM (24 h), or empty" ;;
-    str) echo "a string with at least one non-space character" ;;
     'str?') echo "any string, or empty" ;;
     ints) echo "distinct positive integers of at most 9 digits, separated by spaces" ;;
     mounts) echo "<relative source>:<container path>[:ro] words separated by spaces, or empty" ;;
@@ -223,7 +223,6 @@ _cfg_check() {
       allowed="${allowed//,/ }"
       [[ $allowed == *" $v "* ]] || _PE="\"$v\" is not one of: ${allowed# }" ;;
     'hhmm?') [[ -z $v || $v =~ $_RE_HHMM ]] || _PE="\"$v\" is not a clock time" ;;
-    str) [[ $v == *[![:space:]]* ]] || _PE="the value is empty or only spaces" ;;
     ints) _cfg_ints_problem "$v" ;;
     args) _cfg_args_problem "$v" ;;
     mounts) _cfg_mounts_problem "$v" ;;
@@ -306,6 +305,9 @@ _cfg_fill_and_check() {
     elif [ -z "${_C_BAD[$key]+set}" ] && ! _cfg_check "$type" "${_C_VAL[$key]}"; then
       _C_BAD[$key]=1
       _cfg_error "${_C_FILE[$key]}" "${_C_LINE[$key]}" "$key" "$_PE" "$(_cfg_legal "$type")"
+    elif [ -z "${_C_BAD[$key]+set}" ] && [ "${_F_DEF[$key]}" = required ] && [[ ${_C_VAL[$key]} != *[![:space:]]* ]]; then
+      _C_BAD[$key]=1
+      _cfg_error "${_C_FILE[$key]}" "${_C_LINE[$key]}" "$key" "the value is empty or only spaces" "$(_cfg_legal "$type")"
     fi
   done
 }

@@ -430,7 +430,6 @@ TYPE_CASES=(
   'dec|model|GPU_MEM_UTIL|GPU_MEM_UTIL=0.95|GPU_MEM_UTIL=0.951'
   'enum|machine|DISK_GATE|DISK_GATE=off|DISK_GATE=of'
   'hhmm?|machine|DEADLINE|DEADLINE=23:59|DEADLINE=24:00'
-  'str|machine|RESTORE_ARGS|RESTORE_ARGS=-Detach|RESTORE_ARGS="   "'
   'str?|machine|QUIET_BUSY_PATTERN|QUIET_BUSY_PATTERN="a b"|QUIET_BUSY_PATTERN=a$b'
   'ints|model|PREFILL_LENS|PREFILL_LENS=8192|PREFILL_LENS=0'
   'mounts|model|MOUNTS|MOUNTS=C/auto_gptq.py:/opt/x.py|MOUNTS=C/auto_gptq.py'
@@ -460,6 +459,25 @@ t_every_field_type_has_a_refusal_and_a_boundary_good_value_and_the_loader_applie
     assert_contains "$ERR" "$key:" "$type: the refusal names $key"
   done
   assert_eq "1" "$([ "$n" -ge 17 ] && echo 1)" "the table has a row per type"
+}
+
+t_restore_args_is_an_args_field_that_refuses_globs_tabs_and_a_blank_value() {
+  local root; root="$(case_root "$FUNCNAME")"
+  machine "$root" RESTORE_ARGS 'RESTORE_ARGS="-Model x -Detach"'
+  assert_exit 0 "plain words load" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" RESTORE_ARGS 'RESTORE_ARGS="-Model *"'
+  assert_exit 2 "a star is refused (the word split would never glob it, so it could only be a mistake)" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "RESTORE_ARGS:" "names the field"
+  machine "$root" RESTORE_ARGS 'RESTORE_ARGS="-Model [x]"'
+  assert_exit 2 "a bracket is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" RESTORE_ARGS "RESTORE_ARGS=\"-Model"$'\t'"x\""
+  assert_exit 2 "a tab is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" RESTORE_ARGS 'RESTORE_ARGS="   "'
+  assert_exit 2 "only spaces is still refused: a restore with no arguments is not what the operator wrote" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "RESTORE_ARGS:" "names the field"
+  machine "$root" RESTORE_ARGS "RESTORE_ARGS="
+  assert_exit 2 "an empty value is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "args" "$(config_keys | awk '$2 == "RESTORE_ARGS" { print $3 }')" "the field table says args"
 }
 
 t_a_container_prefix_error_states_the_length_the_pattern_allows() {

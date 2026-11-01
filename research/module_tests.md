@@ -1,7 +1,8 @@
 # Module — tests
 
 The test harness of the R9700 vLLM tuning toolkit, as built by E1.S1: the runner, the assertion file, the fixtures, the
-static checks and the CI workflow. Later stories add their test files to the same runner; there is no second one.
+static checks and the CI workflow. E1.S2 part (a) adds the adapter's test file and the stub executables. Later parts and stories
+add their test files to the same runner; there is no second one.
 
 ## Where it is
 
@@ -13,7 +14,12 @@ static checks and the CI workflow. Later stories add their test files to the sam
 | `tests/test_harness.py` | the quality harness (`lib/harness.py`), against an HTTP stub |
 | `tests/test_assert.sh` | `tests/lib/assert.sh` itself: a test function that dies early, exits early or asserts nothing fails its file; the pid killer |
 | `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match |
-| `tests/test_static.sh`, `tests/check_static.sh` | the static checks: bash and Python syntax, personal paths, `machine.env` ignored, vendored helper |
+| `tests/test_adapter.sh` | the adapter seam (`lib/adapter.sh`) and `t_scale`, `t_ceiling` (`lib/run_guarded.sh`): argv, CR removal, the ceilings that kill the child, the `R9700_T_STOP` cut, the refusals (E1.S2 part (a): scenarios A2-A5, A7) |
+| `tests/test_serve_bench.sh` | `serve_start` (`lib/serve.sh`) and `bench_run` (`lib/bench.sh`): the measured commands (scenario A8) |
+| `tests/test_stubs.sh` | the stubs: A1, the call log, the scripted answers, containers that refuse what the real `wslc` refuses, the stub worker, a stub never makes its directory |
+| `tests/stubs/wslc`, `powershell.exe`, `pwsh.exe`, `worker.sh`, `stub_common.sh` | the CI stand-ins for `wslc.exe`, Windows PowerShell and the restore shell, and the stub worker. Scripted by files below `$R9700_STUB_DIR`; an append-only call log; a "container" is a real `setsid sleep` recorded with its start ticks |
+| `tests/lib/stubcase.sh` | the helpers of the three files above (`setup_case`, `argv_of`, `log_args`, ...); it sources the libraries under test |
+| `tests/test_static.sh`, `tests/check_static.sh` | the static checks: bash and Python syntax, personal paths, `machine.env` ignored, vendored helper, the adapter seam (`--seam`: only `lib/adapter.sh` expands the executable variables or runs `wslc`, `powershell.exe`, `pwsh.exe`; comment lines are not scanned; quotes around the word, `.exe` and `name=wslc` assignments are caught; the one named exception is the three default declarations of the field table in `lib/config.sh`, matched exactly; every scan is shown alive by fixture trees) |
 | `tests/lib/assert.sh` | the bash assertions (`assert_eq`, `assert_contains`, `assert_exit`, `t_finish`, `run_all_tests`) |
 | `tools/lib/owned.mjs`, `git.mjs`, `leftovers-sweep.mjs`, `owned-token.mjs` | the leftovers helper: byte-identical copies of the shared files, plus this repository's own token file. They sit in `tools/lib/` because that is where the leftovers guard recognises a copied helper (product code, never scanned as a test) |
 | `tests/lib/lower-priority.mjs` | the priority preload (the shared template with its `MOUNT` line edited) |
@@ -50,7 +56,7 @@ owner process is gone. A test that records the pid of a process outside every pr
 runner's `finally` kill every recorded process before the folder is removed (E1.S2 amendment A4; S1 builds the two killers, S2
 writes the stubs that record). A record is `<pid> <start ticks>` (field 22 of `/proc/<pid>/stat`, read after the last `)`); a pid
 is killed only while it still has those ticks, so a reused pid is never killed; `record_pid <file> <pid>` writes the record.
-SIGINT, SIGTERM and SIGHUP make the runner end the current file's process group, kill the recorded processes, remove the run
+SIGINT, SIGTERM and SIGHUP make the runner end the current file's process group AND its whole session (every process whose session id is the file's own pid; GNU `timeout` gives its child a process group of its own but not a session, so a stub call is outside the group and inside the session; the same at the 10-minute ceiling and after every file ends, so a passing file cannot leave a disowned subshell behind). The runner records the child's start ticks at spawn and skips a group or session kill when a process with that pid has other ticks (a reused pid), kill the recorded processes, remove the run
 folder, print one `run: interrupted (<signal>)` line (no FAIL line, no summary) and exit 130, 143 and 129. A closed output pipe
 (`node tests/run.mjs | head -3`) is handled the same way, silently, with exit 141; a test file ended by a signal is reported as
 `FAIL <file> (signal <name>)`. A test that starts a process outside every group also records it with `guard_pid <pid> <name>`
@@ -59,8 +65,19 @@ runner end it on every path; `gone <pid>` polls until a process is gone.
 
 ## Test knobs
 
-`R9700_RUNNER_TESTS_DIR` makes the runner discover its `test_*.py` and `test_*.sh` in another folder; `tests/test_runner.sh` uses it
-so a signal test never puts a sleeping file into `tests/`. It is read from the environment only, never from `machine.env`.
+All of them are read from the environment only, never from `machine.env` and never listed in `research/module_config.md`.
+
+| Knob | Read by | Meaning |
+|---|---|---|
+| `R9700_RUNNER_TESTS_DIR` | `tests/run.mjs` | discover `test_*.py` and `test_*.sh` in another folder; `tests/test_runner.sh` uses it so a signal test never puts a sleeping file into `tests/` |
+| `R9700_TIME_SCALE` | `t_scale` in `lib/run_guarded.sh` | a positive integer; every sleep in `lib/` is divided by it (default 1); it is also the default of the ceiling scale |
+| `R9700_CEILING_SCALE` | `t_ceiling` in `lib/run_guarded.sh` | a positive integer; divides only the adapter's ceilings and its kill-after grace (default: `R9700_TIME_SCALE`). The adapter tests set it to 10 while the sleeps run 100 times faster (a bash stub call takes 39 ms idle and up to 227 ms under load; a 0.3 s ceiling would be a flaky test), and set it to 100 in the tests that must see a ceiling fire |
+| `R9700_T_STOP` | `lib/adapter.sh` | an epoch second, set by the supervisor: no adapter call waits past it (its ceiling is the smaller of its own and the time left) and none is made at or after it. Tested directly |
+| `R9700_RUNNER_CEILING_MS` | `tests/run.mjs` | replaces the 10-minute ceiling of one test file (`tests/test_runner.sh` uses it to reach the ceiling in seconds) |
+| `R9700_STUB_DIR` | the stubs | the only place a stub reads or writes; unset or empty: the stub exits 99 at once, so it can never run against a real machine |
+| `R9700_STUB_PROD` | `pwsh.exe` stub | the name of the operator's server container the restore creates (default `vllm`) |
+| `R9700_STUB_OK_HOLD` | `worker.sh ok` | seconds the stub worker holds before it exits 0 (default 0.3, so a guard gets reads) |
+| `<stub dir>/mode` | the stubs | the file holds `hang` (every call sleeps; the sleeper is recorded in `hung/containers`), `hang-ignore-term` (the stub and its sleeper ignore `TERM`: only the kill-after ends the stub) or `eat-stdin` (every call reads its standard input) |
 
 ## Flow catalogue
 
@@ -79,11 +96,17 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | the config loader (`config_load`, `config_keys`, `config_resolved`) | covered | `tests/test_config.sh` |
 | the arm table (`arms_load`, `arm_args`, `arm_env`, `arm_mounts`, `arms_check`) | covered | `tests/test_config.sh` |
 | the static checks (`tests/check_static.sh`) | covered | `tests/test_static.sh` |
+| the adapter functions (`wslc_run`, `wslc_exec`, `wslc_list`, `wslc_stop`, `wslc_logs`, `win_ram_mb`, `win_disk_newest`, `restore_start`, `restore_probe`): argv, CR removal, ceilings that kill the child, refusals | covered | `tests/test_adapter.sh` |
+| the adapter seam: only `lib/adapter.sh` expands the executable variables or runs the executables (`tests/check_static.sh --seam`) | covered | `tests/test_static.sh` |
+| `serve_start` (the measured container command) and `bench_run` (the six measured runs) | covered, with a `wait_ready` double until E1.S2 part (b) adds the real one | `tests/test_serve_bench.sh` |
+| the stubs and the stub worker (`tests/stubs/`) | covered | `tests/test_stubs.sh` |
+| the runner ends the test file's whole session (not only its process group) at a signal and at a ceiling | covered | `tests/test_runner.sh` |
 | the runner (`tests/run.mjs`): signals end the run cleanly, recorded pids are killed by start ticks | covered | `tests/test_runner.sh` |
 | the runner: one owned folder, removed after a run, swept after a `kill -9` | covered by hand, below | — |
 | the assertion file (`tests/lib/assert.sh`) | covered | `tests/test_assert.sh` |
 
-Not built yet, so not in the catalogue: the supervisor, the guards, the series and `bin/r9700` (E1.S2, E1.S3).
+Not built yet, so not in the catalogue: the lock, the recovery marker, the restore, the readiness wait, the guards, the supervisor and `bin/r9700`
+(E1.S2 parts (b) and (c)) and the series (E1.S3).
 
 ## The runner check, by hand (scenario 46)
 
@@ -102,6 +125,14 @@ Checked once on 2026-11-01 with Node 26 on Linux, by hand, because a test file c
 
 - **No GPU, no real `wslc`, no real vLLM server.** `lib/harness.py` is tested against a Python `http.server` stub on
   `127.0.0.1` that answers the two routes with fixed bodies; the real server's logprobs and chat template are not exercised.
+- **The stubs are our idea of `wslc` and PowerShell, not theirs.** `wslc list` is assumed to print a header line and the container name as
+  the last column (the old scripts' `awk 'NR>1{print $NF}'`); `run`, `logs`, `exec` and the PowerShell answers are scripted. A real
+  `wslc` that prints another shape is found only on the machine.
+- **The readiness program runs against a fake `urlopen`.** `tests/test_adapter.sh` runs the adapter's Python program under `python3` with
+  `urllib.request.urlopen` replaced, so its logic and its output are tested (both checks, the status, the exception class), but no HTTP
+  request is made; the first run on the R9700 closes that gap.
+- **The adapter's ceilings are proven on a hung stub**, not on a hung `wslc.exe`: `timeout` ends the stub and its children with `TERM`, and the stub itself with `KILL` after the grace (GNU `timeout` sends the second signal to the child only: a grandchild that ignores `TERM` survives. Whether `wslc.exe` has such children is an UNVERIFIED ASSUMPTION: nobody has observed it either way). The calls the supervisor makes itself are stopped by session (amendment A8) in E1.S2 part (b), which covers a hung adapter call under a guard stop. A Windows process started through WSL interop may need more than a signal to end.
+- **The stubs refuse what we know the real `wslc` refuses** (exec and logs on a container that is not running, a second run of a name in use); the exact error texts of the real one are not known.
 - **No Windows.** The static checks and the runner are exercised on Linux only. The path and priority code of the runner is
   shared with other repositories, where Windows is covered.
 - **The verdict is checked against recorded runs, not against a new measurement.** The three recorded verdicts (`fcombo`

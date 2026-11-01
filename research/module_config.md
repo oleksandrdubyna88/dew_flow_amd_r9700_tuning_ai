@@ -29,7 +29,7 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 
 | Key | Type and legal values | Default | What it does | Replaces |
 |---|---|---|---|---|
-| `WSLC` | command: a bare name starting with a letter or digit (looked up on `PATH`), or an absolute path | `wslc` | the wslc command: a bare name looked up on PATH, or an absolute path | `serve.sh` line 8 |
+| `WSLC` | command: a bare name starting with a letter or digit (looked up on `PATH`), or an absolute path | `wslc` | the command for wslc, a bare name looked up on PATH, or an absolute path | `serve.sh` line 8 |
 | `POWERSHELL` | command (same shape as `WSLC`) | `powershell.exe` | Windows PowerShell, for the RAM and disk probes | `ram_guard_all.sh` line 8, `disk_gate.sh` line 7 |
 | `RESTORE_SHELL` | command (same shape as `WSLC`) | `pwsh.exe` | the shell that runs the operator's start script when the server is restored | `restore_server.sh` line 19 |
 | `IMAGE` | image reference `^[a-z0-9][a-z0-9./_-]*:[A-Za-z0-9._-]+$` | required | the container image of the test servers | `serve.sh` line 8 |
@@ -44,7 +44,7 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 | `RESULTS_DIR` | WSL path, absolute; its parent must exist | required | where series results go, as a WSL path; its parent must exist | new (series output directory) |
 | `PROD_CONTAINER` | name (same shape as `HF_VOLUME`); must not start with `CONTAINER_PREFIX` | `vllm` | the name of the operator's own server container | `restore_server.sh` line 14; `speed_A.sh` line 44 |
 | `RESTORE_SCRIPT_WIN` | Windows path | required | the operator's start script, as a Windows path | `restore_server.sh` line 19 |
-| `RESTORE_ARGS` | string with at least one non-space character (quote it: it holds spaces) | required | the arguments of the start script that bring the operator's server back | `restore_server.sh` lines 16, 20–21 (and its `restore_args` file) |
+| `RESTORE_ARGS` | words separated by single spaces, at least one (quote it: it holds spaces); quotes, tabs and `*` `?` `[` are refused (the type `args`, as `EXTRA_SERVE_ARGS`) | required | the arguments of the start script that bring the operator's server back | `restore_server.sh` lines 16, 20–21 (and its `restore_args` file) |
 | `CONTAINER_PREFIX` | `^[a-z0-9][a-z0-9-]{0,15}-$`: 2 to 17 characters; must not be a prefix of `PROD_CONTAINER` | `r9700tune-` | the name prefix of every test container the toolkit starts | the `vllmprtest-` literal (`ram_guard_all.sh` line 11, `restore_server.sh` line 11) |
 | `RAM_MIN_MB` | integer 512..65536 | `2048` | stop the run when the free RAM of the PC falls below this many MB | `night5.sh` line 20 (`ram_guard_all.sh` line 6 had 4096) |
 | `QUIET_LOAD_MAX` | decimal 0.1..64 | `4` | the 1-minute load below which the PC counts as quiet | `wait_quiet.sh` line 9 |

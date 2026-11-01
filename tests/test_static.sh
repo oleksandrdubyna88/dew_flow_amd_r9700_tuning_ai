@@ -101,4 +101,143 @@ t_the_vendored_leftovers_helper_equals_the_mounted_one() {
   assert_contains "$OUT" "skipped" "says it skipped"
 }
 
+# ---- the adapter seam (E1.S2 decision 11, scenario A6): expansions of the three variables, and the executables used as commands
+
+# seam_code <name> <file> <line>: a fake tree whose <file> (lib/other.sh or bin/tool) holds the one line
+seam_code() {
+  local root
+  root="$(seam_tree "$1")"
+  printf '%s\n' "$3" > "$root/$2"
+  echo "$root"
+}
+
+t_the_seam_check_finds_an_executable_used_as_a_command_outside_the_adapter() {
+  local root form n=0
+  for form in 'wslc list' 'x;wslc list' 'x&&pwsh.exe -File y' 'x|powershell.exe y' 'a&wslc list' 'x; wslc list' 'x && pwsh.exe -File y' 'x | powershell.exe -Command y' '(wslc list)' 'x=$(wslc list)' 'a & wslc list' 'echo hi; powershell.exe' 'v=`pwsh.exe -x`' "	wslc stop z" 'timeout 60 "wslc" stop a' 'wslc.exe list' "'pwsh.exe' -File a" 'w=wslc; $w list' 'w="pwsh.exe";$w x' 'x=powershell $y' "w='wslc.exe' \$w" 'timeout 5 pwsh -File q'; do
+    n=$((n + 1))
+    root="$(seam_code "cmd$n" lib/other.sh "$form")"
+    assert_exit 1 "[$form] in lib/other.sh" -- bash "$CHECK" --seam "$root"
+    assert_contains "$OUT" "lib/other.sh" "[$form]: names the file"
+  done
+  root="$(seam_code cmdbin bin/r9700 'wslc list')"
+  assert_exit 1 "a command in bin/r9700" -- bash "$CHECK" --seam "$root"
+  assert_contains "$OUT" "bin/r9700" "names the file"
+}
+
+t_the_seam_check_ignores_command_words_in_comments_and_longer_names() {
+  local root form n=0
+  for form in '# wslc list' '   # then call pwsh.exe -File x' 'wslc_run a b' 'my_wslc list' 'wslc.exes list' 'echo powershell.exe.bak' 'wslcx list' 'x=$R9700_WSLC_NOT_A_THING' 'x=wslcx' 'x=mywslc' 'x=pwshell'; do
+    n=$((n + 1))
+    root="$(seam_code "ok$n" lib/other.sh "$form")"
+    assert_exit 0 "[$form] passes" -- bash "$CHECK" --seam "$root"
+    assert_eq "lib/adapter.sh" "$OUT" "[$form]: still exactly the adapter"
+  done
+}
+
+# config_tree <name> <extra line>: a fake tree whose lib/config.sh holds the three default declarations of the real field table and the extra line
+CONFIG_DECLARATIONS=('_field machine WSLC cmd "wslc" "the command for wslc, a bare name looked up on PATH, or an absolute path"'
+  '_field machine POWERSHELL cmd "powershell.exe" "Windows PowerShell, for the RAM and disk probes"'
+  '_field machine RESTORE_SHELL cmd "pwsh.exe" "the shell that runs the start script"')
+config_tree() {
+  local root
+  root="$(seam_tree "$1")"
+  printf '%s\n' "${CONFIG_DECLARATIONS[@]}" > "$root/lib/config.sh"
+  [ -n "${2:-}" ] && printf '%s\n' "$2" >> "$root/lib/config.sh"
+  echo "$root"
+}
+
+t_the_named_exception_for_the_default_declarations_of_config_sh_is_exact() {
+  local root form n=0
+  root="$(config_tree cfgok)"
+  assert_exit 0 "the three default declarations of the field table pass" -- bash "$CHECK" --seam "$root"
+  assert_eq "lib/adapter.sh" "$OUT" "nothing but the adapter is named"
+  for form in 'wslc list' 'x() { timeout 5 wslc list; }' '_field machine WSLC cmd "wslc" "x"; wslc list' '_field machine WSLC cmd "wslc" "x" && pwsh.exe -File y' '_field machine OTHER cmd "wslc" "x"' '_field machine WSLC cmd "wslc list" "x"' '_field machine WSLC cmd "wslc" "$(wslc list)"' 'w=pwsh.exe; $w x'; do
+    n=$((n + 1))
+    root="$(config_tree "cfgbad$n" "$form")"
+    assert_exit 1 "[$form] next to the declarations is still caught" -- bash "$CHECK" --seam "$root"
+    assert_contains "$OUT" "lib/config.sh" "[$form]: names lib/config.sh"
+  done
+  root="$(seam_tree cfgother)"
+  printf '%s\n' "${CONFIG_DECLARATIONS[@]}" > "$root/lib/other.sh"
+  assert_exit 1 "the same declarations in another file are not excused" -- bash "$CHECK" --seam "$root"
+  assert_contains "$OUT" "lib/other.sh" "names lib/other.sh"
+  root="$(config_tree cfgreal)"
+  cp "$REPO/lib/config.sh" "$root/lib/config.sh"
+  assert_exit 0 "the real lib/config.sh passes" -- bash "$CHECK" --seam "$root"
+  printf '%s\n' 'planted() { wslc list; }' >> "$root/lib/config.sh"
+  assert_exit 1 "the real lib/config.sh with one planted call is caught" -- bash "$CHECK" --seam "$root"
+}
+
+t_the_adapter_itself_may_use_the_command_words() {
+  local root
+  root="$(seam_tree adapterwords)"
+  printf '%s\n' 'x() { timeout 5 wslc list; }' >> "$root/lib/adapter.sh"
+  assert_exit 0 "command words in lib/adapter.sh are its job" -- bash "$CHECK" --seam "$root"
+}
+
+t_the_command_word_scan_is_alive_over_a_copy_of_the_real_files() {
+  local root="$R9700_TEST_ROOT/seam-realcopy"
+  mkdir -p "$root"
+  cp -r "$REPO/lib" "$root/lib"
+  [ -d "$REPO/bin" ] && cp -r "$REPO/bin" "$root/bin"
+  assert_exit 0 "a copy of the real lib/ and bin/ passes" -- bash "$CHECK" --seam "$root"
+  printf '%s\n' 'planted() { wslc list; }' >> "$root/lib/serve.sh"
+  assert_exit 1 "the same copy with one planted command is caught" -- bash "$CHECK" --seam "$root"
+  assert_contains "$OUT" "lib/serve.sh" "names the file"
+  assert_exit 0 "the real tree passes" -- bash "$CHECK" --seam
+}
+
+t_the_expansion_scan_counts_only_code_lines_of_the_adapter() {
+  local root
+  root="$(seam_tree commentonly)"
+  printf '%s\n' '# "$R9700_WSLC" x' '# "${R9700_POWERSHELL}" x' '# "$R9700_RESTORE_SHELL" x' 'a() { :; }' > "$root/lib/adapter.sh"
+  assert_exit 2 "three expansions in comments are a dead scan" -- bash "$CHECK" --seam "$root"
+}
+
+t_only_the_adapter_expands_the_executable_names() {
+  assert_exit 0 "check_static.sh --seam passes on the repository" -- bash "$CHECK" --seam
+  assert_eq "lib/adapter.sh" "$OUT" "it prints exactly lib/adapter.sh"
+  assert_exit 0 "the same scan over lib/adapter.sh alone is alive" -- test "$(grep -cE '\$\{?R9700_(WSLC|POWERSHELL|RESTORE_SHELL)' "$REPO/lib/adapter.sh")" -ge 3
+}
+
+# tree <name>: a fake repository root with an adapter that expands all three names, lib/ and bin/
+seam_tree() {
+  local root="$R9700_TEST_ROOT/seam-$1"
+  mkdir -p "$root/lib" "$root/bin"
+  printf '%s\n' 'a() { "$R9700_WSLC" x; }' 'b() { "${R9700_POWERSHELL}" x; }' 'c() { "$R9700_RESTORE_SHELL" x; }' > "$root/lib/adapter.sh"
+  echo "$root"
+}
+
+t_the_seam_check_names_a_second_file_that_expands_an_executable() {
+  local root
+  root="$(seam_tree lib)"
+  printf '%s\n' 'x() { "${R9700_WSLC}" list; }' > "$root/lib/other.sh"
+  assert_exit 1 "a second lib file" -- bash "$CHECK" --seam "$root"
+  assert_contains "$OUT" "lib/other.sh" "names it"
+  root="$(seam_tree bin)"
+  printf '%s\n' '#!/usr/bin/env bash' '"$R9700_POWERSHELL" -x' > "$root/bin/r9700"
+  assert_exit 1 "a bin file" -- bash "$CHECK" --seam "$root"
+  assert_contains "$OUT" "bin/r9700" "names it"
+  root="$(seam_tree shell)"
+  printf '%s\n' 'x() { "$R9700_RESTORE_SHELL" -x; }' > "$root/lib/other.sh"
+  assert_exit 1 "the restore shell" -- bash "$CHECK" --seam "$root"
+}
+
+t_the_seam_check_ignores_names_that_are_not_expansions() {
+  local root
+  root="$(seam_tree comment)"
+  printf '%s\n' '# R9700_WSLC is read by lib/adapter.sh only' 'echo "R9700_POWERSHELL"' 'x() { printf %s "$R9700_RESTORE_SCRIPT_WIN"; }' > "$root/lib/other.sh"
+  assert_exit 0 "comments and other variables pass" -- bash "$CHECK" --seam "$root"
+  assert_eq "lib/adapter.sh" "$OUT" "still exactly the adapter"
+}
+
+t_a_seam_scan_that_finds_nothing_is_an_error_not_a_pass() {
+  local root
+  root="$(seam_tree dead)"
+  printf '%s\n' '# the adapter lost its expansions' > "$root/lib/adapter.sh"
+  assert_exit 2 "an adapter with no expansion: the scan is dead" -- bash "$CHECK" --seam "$root"
+  rm "$root/lib/adapter.sh"
+  assert_exit 2 "no adapter at all" -- bash "$CHECK" --seam "$root"
+}
+
 run_all_tests

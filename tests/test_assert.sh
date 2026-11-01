@@ -44,6 +44,30 @@ t_b() { :; }'
   assert_contains "$CHILD_OUT" "t_b" "names the function"
 }
 
+t_a_t_function_of_a_sourced_file_is_not_run_as_a_test() {
+  local dir="$R9700_TEST_ROOT/case-sourced"
+  mkdir -p "$dir"
+  printf '%s\n' 't_helper() { assert_eq 1 2 the_helper_must_not_run; }' 't_scale() { assert_eq 1 2 a_library_function_must_not_run; }' > "$dir/helper.sh"
+  child sourced "source \"$dir/helper.sh\"
+t_a() { assert_eq 1 1 one; }"
+  assert_eq "0" "$CHILD_CODE" "the helper's t_ functions are not tests: the file passes"
+  assert_contains "$CHILD_OUT" "1 passed, 0 failed" "only the test file's own function ran"
+  assert_not_contains "$CHILD_OUT" "must_not_run" "nothing of the helper ran"
+}
+
+t_extdebug_stays_off_inside_the_tests() {
+  child extdebug 't_a() { shopt -q extdebug; assert_eq 1 "$?" "extdebug is off in a test"; }'
+  assert_eq "0" "$CHILD_CODE" "the file passes"
+}
+
+t_a_file_whose_only_t_functions_come_from_a_source_runs_zero_tests_and_fails() {
+  local dir="$R9700_TEST_ROOT/case-onlysourced"
+  mkdir -p "$dir"
+  printf '%s\n' 't_helper() { assert_eq 1 1 helper; }' > "$dir/helper.sh"
+  child onlysourced "source \"$dir/helper.sh\""
+  assert_eq "1" "$CHILD_CODE" "zero tests of its own fails the file"
+}
+
 # ---- the pid killer (E1.S2 amendment A4): kill only the same process, in every containers/ folder below the root ----
 
 # live_pid <root> <name>: a background process in its own session, recorded; sets PID

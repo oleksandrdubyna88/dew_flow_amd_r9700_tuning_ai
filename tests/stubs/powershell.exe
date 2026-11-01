@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# The CI stand-in for Windows PowerShell (E1.S2 decision 12): a command string with `Available MBytes` answers from answers/ram, one
+# with `Get-WinEvent` from answers/disk; the answer carries a CR, as the real one does. Any other command succeeds silently.
+set -u
+# shellcheck source=tests/stubs/stub_common.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/stub_common.sh"
+stub_log powershell.exe "$@"
+stub_mode_if_asked
+
+command_string=""
+prev=""
+for arg in "$@"; do
+  [ "$prev" = -Command ] && command_string="$arg"
+  prev="$arg"
+done
+case $command_string in
+  *"Available MBytes"*) printf '%s\r\n' "$(stub_answer ram)" ;;
+  *Get-WinEvent*) printf '%s\r\n' "$(stub_answer disk)" ;;
+esac
+exit 0

@@ -168,11 +168,21 @@ _run_one() {
   fi
 }
 
+# _defined_in <function> <file>: 0 when bash says the function was defined in that file. extdebug makes `declare -F <fn>` print
+# "<fn> <line> <file>"; it is switched on only inside the command substitution, so it never stays on in a test.
+_defined_in() {
+  local info
+  info="$(shopt -s extdebug; declare -F "$1")" || return 1
+  [ "$(readlink -f "${info#* * }")" = "$(readlink -f "$2")" ]
+}
+
+# run_all_tests: runs every function named t_* that is defined in the test file itself (the outermost script), not in a library it
+# sources (lib/run_guarded.sh defines t_scale, which is not a test), in sorted order, each in its own subshell.
 run_all_tests() {
-  local fn
+  local fn main="${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}"
   trap kill_recorded_pids EXIT
   for fn in $(declare -F | awk '{print $3}' | grep '^t_' | grep -vx 't_finish'); do
-    _run_one "$fn"
+    _defined_in "$fn" "$main" && _run_one "$fn"
   done
   t_finish
 }

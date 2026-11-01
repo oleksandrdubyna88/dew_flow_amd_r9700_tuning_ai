@@ -7,11 +7,13 @@
 // Order of work (common/test-leftovers.md): lower the priority FIRST, so every child inherits it; sweep what a killed run of
 // this user left; claim and create the run folder; run; then, in `finally`, kill the stub containers a test recorded and
 // remove the folder. The sweep never changes the exit code. Every child is started from an argv array, never a shell string,
-// and has a ceiling; a child past it is killed with its whole process group. SIGINT, SIGTERM and SIGHUP end the current
-// child's process group, kill the recorded stub pids, remove the run folder and exit 130, 143 and 129.
+// and has a ceiling; a child past it is killed with its whole process group AND its whole session (the children of `timeout`, such as
+// every stub call, have a process group of their own but share the session). SIGINT, SIGTERM and SIGHUP end the current child's
+// process group and session, kill the recorded stub pids, remove the run folder and exit 130, 143 and 129.
 //
-// Test knob: R9700_RUNNER_TESTS_DIR names another folder to discover `test_*.py` and `test_*.sh` in (the runner's own test
-// uses it, so a signal test never has to put a sleeping file into tests/).
+// Test knobs: R9700_RUNNER_TESTS_DIR names another folder to discover `test_*.py` and `test_*.sh` in (the runner's own test
+// uses it, so a signal test never has to put a sleeping file into tests/); R9700_RUNNER_CEILING_MS replaces the 10-minute ceiling of one
+// test file (the runner's own test uses it to reach the ceiling in seconds).
 
 await import("./lib/lower-priority.mjs");
 
@@ -24,7 +26,7 @@ const { cleanupScope, isAskablePid, ownedDir } = await import("../tools/lib/owne
 
 const TESTS = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(TESTS);
-const FILE_CEILING_MS = 10 * 60_000;
+const FILE_CEILING_MS = Number(process.env.R9700_RUNNER_CEILING_MS) || 10 * 60_000; // test knob: the runner's own test shortens it
 const KILL_GRACE_MS = 2_000;
 const PID_FOLDER = "containers"; // scenario A4: a stub container records its pid in `<test root>/containers/<name>.pid`
 
@@ -56,7 +58,7 @@ function printSweep(result) {
 }
 
 // What a signal handler needs to end the run: the current child, whether it has closed, and the run folder.
-const live = { child: null, closed: null, run: null, scope: null, stopping: false };
+const live = { child: null, ticks: undefined, closed: null, run: null, scope: null, stopping: false };
 
 /** Run one child to its end or its ceiling; resolves with `{ code, signal }` (code `124` for a ceiling, `127` when it could not start; `signal` when the child was ended by one). */
 function runChild(command, args, env, ceilingMs = FILE_CEILING_MS) {
@@ -65,26 +67,74 @@ function runChild(command, args, env, ceilingMs = FILE_CEILING_MS) {
     let settled = false;
     let timedOut = false;
     let markClosed;
+    const ticks = startTicks(child.pid); // recorded at spawn: a kill by pid, group or session later must still be about THIS child
     live.child = child;
+    live.ticks = ticks;
     live.closed = new Promise((done) => { markClosed = done; });
     const finish = (code, signal = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, signal });
+      resolve({ code, signal, pid: child.pid, ticks });
     };
     const timer = setTimeout(() => {
       timedOut = true;
       console.log(`  ceiling of ${ceilingMs / 1000} s reached: ending the process group of ${path.basename(args.at(-1))}`);
-      killGroup(child.pid, "SIGTERM");
-      setTimeout(() => { killGroup(child.pid, "SIGKILL"); finish(124); }, KILL_GRACE_MS); // the group, even when its leader is already gone
+      killGroup(child.pid, "SIGTERM", ticks);
+      killSession(child.pid, "SIGTERM", ticks);
+      setTimeout(() => { killGroup(child.pid, "SIGKILL", ticks); killSession(child.pid, "SIGKILL", ticks); finish(124); }, KILL_GRACE_MS); // the group and the session, even when the leader is already gone
     }, ceilingMs);
     child.on("error", (error) => { console.log(`  could not start ${command}: ${error.code ?? error.message}`); markClosed(); finish(127); });
-    child.on("close", (code, signal) => { markClosed(); if (!timedOut) finish(code, signal); });
+    child.on("close", (code, signal) => { live.child = null; markClosed(); if (!timedOut) finish(code, signal); });
   });
 }
 
-function killGroup(pid, signal) {
+/** The pids of every process whose session id (field 6 of /proc/<pid>/stat, read after the LAST `)`) is `sid`. A child is spawned with
+ *  `detached: true`, so its session id is its own pid and everything it started stays in that session unless it called `setsid`. GNU
+ *  `timeout` calls setpgid (a new process group, the same session): its children, such as every stub call, are outside the child's
+ *  process group but inside its session. */
+function sessionPids(sid) {
+  const found = [];
+  let names;
+  try {
+    names = fs.readdirSync("/proc");
+  } catch {
+    return found;
+  }
+  for (const name of names) {
+    if (!/^[0-9]+$/.test(name)) continue;
+    let stat;
+    try {
+      stat = fs.readFileSync(`/proc/${name}/stat`, "utf8");
+    } catch {
+      continue;
+    }
+    if (stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3] === String(sid)) found.push(Number(name));
+  }
+  return found;
+}
+
+/** True when `pid` is NOT a process we may signal as the leader we spawned: a process with that pid exists and its start ticks are not the
+ *  recorded ones (the pid was reused), or one exists and nothing was recorded (unknown). No process with that pid is the normal case of a
+ *  leader that has ended: its pid cannot be reused while a group or a session still carries it as its id. */
+function leaderIsForeign(pid, ticks) {
+  const now = startTicks(pid);
+  return now !== undefined && now !== ticks;
+}
+
+function killSession(sid, signal, ticks) {
+  if (leaderIsForeign(sid, ticks)) return;
+  for (const pid of sessionPids(sid)) {
+    try {
+      process.kill(pid, signal);
+    } catch (error) {
+      if (error?.code !== "ESRCH") console.log(`  kill ${signal} of pid ${pid} (session ${sid}) failed: ${error?.code ?? error}`);
+    }
+  }
+}
+
+function killGroup(pid, signal, ticks) {
+  if (leaderIsForeign(pid, ticks)) return;
   try {
     process.kill(-pid, signal);
   } catch (error) {
@@ -97,10 +147,13 @@ async function endRun(reason, code, { quiet = false } = {}) {
   if (live.stopping) process.exit(code); // a second signal: no more waiting
   live.stopping = true;
   if (!quiet) console.log(`run: interrupted (${reason}): ending the current test file and removing the run folder`);
-  if (live.child?.pid) {
-    killGroup(live.child.pid, "SIGTERM");
+  const { child, ticks } = { child: live.child, ticks: live.ticks }; // the close handler clears live.child while this waits
+  if (child?.pid) {
+    killGroup(child.pid, "SIGTERM", ticks);
+    killSession(child.pid, "SIGTERM", ticks);
     await Promise.race([live.closed, new Promise((done) => setTimeout(done, KILL_GRACE_MS))]);
-    killGroup(live.child.pid, "SIGKILL"); // stragglers of the group
+    killGroup(child.pid, "SIGKILL", ticks); // stragglers of the group
+    killSession(child.pid, "SIGKILL", ticks); // and of the session: the children of `timeout` have a group of their own
   }
   if (live.run) killRecordedPids(live.run);
   if (live.scope) await live.scope.close();
@@ -198,7 +251,8 @@ async function runFiles(files, run) {
     if (live.stopping) break;
     const step = plan(file, run);
     for (const dir of step.make) fs.mkdirSync(dir, { recursive: true });
-    const { code, signal } = await runChild(step.command, step.args, step.env);
+    const { code, signal, pid, ticks } = await runChild(step.command, step.args, step.env);
+    killSession(pid, "SIGKILL", ticks); // whatever the file left in its session (a passing file may leave a disowned subshell too)
     if (live.stopping) break; // an interrupt: the file was ended on purpose; no verdict line, no summary
     const how = signal ? `signal ${signal}` : `exit ${code}`;
     console.log(code === 0 && !signal ? `PASS ${file}` : `FAIL ${file} (${how})`);
@@ -237,3 +291,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const code = await main();
   if (!live.stopping) process.exitCode = code;
 }
+
+// The runner's own test imports these to check the session kill against a pid that belongs to another process.
+export { killSession, startTicks };
