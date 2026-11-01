@@ -898,6 +898,14 @@ override the decisions and the brief where they differ.
 - **A11 — the test runner runs only `t_*` functions defined in the test file itself** (`declare -F` under
   `extdebug`, enabled only inside the lookup, paths compared with `readlink -f`), so a sourced library function
   such as `t_scale` is never run as a test.
+- **A12 — the supervisor's own calls leave no grandchild (part (b)).** GNU `timeout --kill-after` KILLs only its
+  direct child, and A8's session kill does not cover the supervisor's own adapter calls (`restore_start`,
+  `restore_probe`, `container_stop_all`, `init`), which run in the caller's session. `_adapter_call` starts
+  `timeout` in the background, keeps its pid (= the pgid of the call, which cannot be reused while a member of
+  that group lives), waits, and after rc 124 or 137 sends `kill -KILL -- -<timeout pid>` to that group. A test
+  runs a supervisor-side call against the stub mode `hang-ignore-term` with a TERM-ignoring grandchild and
+  checks that no process of the call's group is left. Part (c)'s G1 variant uses the same stub mode for the
+  worker side (A8).
 
 ### Test scenarios
 
