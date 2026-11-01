@@ -125,6 +125,8 @@ GSM8K-200; arms alternate; the operator's sampling defaults are mounted (`--gene
 8. Docs (`README.md` quick start, `research/`), `POST_DEPLOY.md`, CI, licence.
 9. Acceptance on the real machine (below), then publish and the family consumer row.
 
+Which epic builds each step, and where a step is divided by file, is in *Epics* (the last section).
+
 ## Test plan
 
 - **Unit (pytest, CI):** merge (missing chunk, duplicate key, version mismatch, expected keys); verdict on
@@ -150,3 +152,106 @@ GSM8K-200; arms alternate; the operator's sampling defaults are mounted (`--gene
 - [ ] `README.md` quick start, `research/architecture.md`, `research/module_tests.md`, `POST_DEPLOY.md`.
 - [ ] The acceptance runs on the R9700 passed and are recorded.
 - [ ] The repository is public, its family checks are green, and the conventions consumer list names it.
+
+## Epics
+
+Three epics, in build order; each becomes two or three stories when it starts
+(`todo/PLAN_r9700_tuning_toolkit_E<n>.md`). Every design item and every build-order step lands in exactly one epic.
+Three steps are divided by file (6, 7, 8) and one by run (9); the scope lines below name the file or run, so no item
+is in two epics. Step 1 (skeleton) is done and belongs to no epic.
+
+### E1 — a usable, trustworthy server-flag comparison
+
+**Goal.** A person writes `models/<name>.env` and `machine.env`, runs `bin/r9700 series` for a list of arms, and gets
+a verdict from the ship test. The run can stop the operator's server, survive a guard stop, a deadline or a hard kill,
+restore the server once, and be resumed. Nothing in it names a model, a machine or a person.
+
+**Scope.** Build-order steps 2, 3 and 4 whole. From step 6: `lib/harness.py` (the quality collection of round 1 — 20
+greedy prompts and GSM8K-200 — because the verdict's GSM8K rule reads it). From step 7: the `bin/r9700` entry point
+with `init`, `series` and `verdict` only. From step 8: the CI workflow (unit, guard and static checks), `LICENSE`, the
+`README.md` quick start for these three commands, `research/module_config.md` and the first `research/architecture.md`
+and `research/module_tests.md`. From step 9: the `series` acceptance run (`base` vs `ta3`, one round, 35B model).
+Design items: the config contract (`lib/config.sh`, `machine.env.example`, `models/*.env`, `config/arms.conf`); the
+whole *Lifecycle and recovery* paragraph (supervisor, `flock`, recovery marker, worker group, container prefix,
+restore-first on any invocation, readiness, exit 3, `init`); one adapter seam for `wslc` and `powershell.exe` so the
+CI stubs replace exactly one place; `lib/serve.sh wait_ready.sh bench.sh restore.sh guard_ram.sh guard_quiet.sh
+disk_gate.sh run_guarded.sh series.sh verdict.py`; *Run identity* (fingerprint, atomic arm-round records, refused
+resume); the "kept exactly" behaviour list; the growth-surface rows *series outdir* and *containers*.
+
+**Depends on.** Step 1 only.
+
+**Done when.**
+- The guard tests of the test plan pass in CI with the stubs: a RAM stop leaves no orphan in the worker group; a lost
+  server leaves no done marker; exit 3 is waited out, not failed; the deadline stops the step; the restore runs once.
+- Added to those tests: a telemetry read that fails (RAM or quiet-PC value unreadable) is treated as unsafe, never as
+  "fine"; every wait has a ceiling and the deadline keeps a fixed budget for cleanup and restore; a guard stop writes
+  the server log tail into the outdir; a container that fails to start is retried a bounded number of times before the
+  arm is marked unsupported.
+- `verdict.py` on the 2026-10-31 bench lines reproduces the recorded verdicts: `fcombo` passes, `fb1` and `o7` fail.
+- A resume with a changed fingerprint is refused with a message that names what differs; an invalid config field is
+  refused before any server is stopped, with the field and the legal values.
+- The static check (no personal path, account or machine name) runs in CI and is green.
+- The series acceptance run on the R9700 is recorded in `research/`; both example model files run `series` unedited.
+- `research/module_config.md` lists every field; the quick start covers `init`, `series`, `verdict`.
+
+**Cornerstone areas.** (1) The lifecycle and restore protocol: supervisor outside the worker group, marker written
+before the stop, idempotent restore and readiness, containers stopped by name. (2) Run identity and completion: the
+fingerprint and the atomic arm-round record. The adapter seam is built inside (1), because the stub tests of (1)
+exercise it.
+
+### E2 — MoE config tuning on the E1 supervisor
+
+**Goal.** A person runs `bin/r9700 moe-tune` for a model (int4 expert layers and the BF16 MTP draft layer, full or
+coarse search), gets a merged, validated fused-MoE config, and a kernel A/B result that says whether to ship it. The
+run uses E1's supervisor and guards; it is not a second lifecycle.
+
+**Scope.** Build-order step 5 whole. From step 7: `bin/r9700 moe-tune`. From step 9: the `moe-tune --coarse --keys 24`
+and kernel A/B acceptance run. Design items: `lib/tune_chunk.sh`, `lib/merge_moe.py` (one script with arguments
+replacing the three merge scripts), `lib/moe_kernel_ab.sh` and `.py`, `vendor/benchmark_moe.py` with its header and
+the three hooks documented in `vendor/README.md`, `config/coarse_candidates.json`; the *MoE cache* paragraph (Triton
+cache cleared in the exit path too); the growth-surface rows *MoE chunk dirs* and *Triton tuning cache*; its sections
+in the README and `research/`.
+
+**Depends on.** E1 (supervisor, guards, config loader, adapter seam, CI).
+
+**Done when.**
+- Merge unit tests pass: missing chunk, duplicate key, version mismatch, expected keys present; a chunk dir without
+  its JSON is deleted before a rerun.
+- Kernel A/B decision tests pass for the B1 and B2 shapes.
+- A guard stop or abort during a chunk clears the Triton cache and leaves no container with the prefix (stub test).
+- The vendored benchmark is byte-identical to upstream outside the three hooks, and `vendor/README.md` shows the diff.
+- The acceptance run on the R9700 is recorded in `research/`, with the merged config it produced.
+- The README and `research/architecture.md` describe `moe-tune`, its inputs and its outputs.
+
+**Cornerstone areas.** None. The merge validation is the riskiest part, and it is a pure function with unit tests;
+the lifecycle it runs under is E1's.
+
+### E3 — kernels, prefix check, the unattended driver, publication
+
+**Goal.** A person runs one `bin/r9700 run <plan-file>` overnight: the steps of E1 and E2, plus the linear-kernel
+micro-benchmark and the prefix-cache check, chained under the guards, with one restore at the end. The repository is
+public, documented and listed in the family.
+
+**Scope.** From step 6: `lib/linear_bench.py`, `lib/linear_bench_graph.py` (shapes from the model config) and
+`lib/prefixtest.py`. From step 7: the `run` driver (a declarative plan file of steps; exit 3 waits and repeats the step;
+the deadline ends the chain) and `bin/r9700 linear-bench | prefixtest | run`. From step 8: `POST_DEPLOY.md`, the final
+`README.md`, `research/architecture.md` and `research/module_tests.md`. From step 9: the `run` acceptance with a forced
+RAM-guard limit, the `prefixtest` and `linear-bench` runs, publication and the family consumer row. Design items: the
+`run` line of the entry point, the three scripts above, `POST_DEPLOY.md`, the publication items of the DoD (every
+*Inputs* script has a home or is named as dropped; public; family checks green; consumer row).
+
+**Depends on.** E1 and E2 (the driver chains their steps).
+
+**Done when.**
+- A stub test runs a three-step plan file through `run`: a RAM stop in step two kills the worker group, stops every
+  container with the prefix, restores once, and the exit code names the stopped step.
+- A stub test shows a step that exits 3 is repeated after the quiet wait and is not counted as a failure.
+- `linear-bench` and `prefixtest` each write their result file on the R9700 with the 35B config; the `run`
+  acceptance with the forced RAM limit shows a clean stop and one restore; all three are recorded in `research/`.
+- Every script in *Inputs* has a home in `lib/`, `vendor/` or `bin/`, or is named as dropped with the reason.
+- `README.md`, `research/architecture.md`, `research/module_tests.md` and `POST_DEPLOY.md` are complete; the
+  repository is public, its family checks are green, and the conventions consumer list names it.
+
+**Cornerstone areas.** None. The driver reuses E1's protocol; its own logic is sequencing.
+
+Cornerstones: 0 of 2 — none marked yet
