@@ -159,8 +159,8 @@ values live only in the untracked `machine.env`. Examples use placeholders such 
 | `lib/harness.py` | from `harness.py` |
 | `tests/run.mjs` | the one test runner |
 | `tests/lib/lower-priority.mjs` | verbatim copy of `.agents/conventions/tools/templates/lower-priority-preload.mjs`, only its `MOUNT` line edited to `new URL("../../.agents/conventions/", import.meta.url)` |
-| `tests/lib/owned.mjs`, `tests/lib/git.mjs`, `tests/lib/leftovers-sweep.mjs` | byte-identical copies of the same files under `.agents/conventions/tools/lib/` at the pinned submodule |
-| `tests/lib/owned-token.mjs` | this repository's own token file: `REPO_TOKEN = "r9700"`, `REPO_ROW = "the R9700 vLLM tuning toolkit"` (shape: the header of `.agents/conventions/tools/lib/owned-token.mjs`) |
+| `tools/lib/owned.mjs`, `tools/lib/git.mjs`, `tools/lib/leftovers-sweep.mjs` (amended 2026-11-01: `tools/lib/`, not `tests/lib/` — the guard scans `tests/` and treats `tools/lib/**` as product code, `leftovers-check.mjs` line 195) | byte-identical copies of the same files under `.agents/conventions/tools/lib/` at the pinned submodule |
+| `tools/lib/owned-token.mjs` (amended 2026-11-01, as the row above) | this repository's own token file: `REPO_TOKEN = "r9700"`, `REPO_ROW = "the R9700 vLLM tuning toolkit"` (shape: the header of `.agents/conventions/tools/lib/owned-token.mjs`) |
 | `tests/lib/assert.sh` | bash assertions |
 | `tests/requirements.txt` | `pytest==<exact version>` |
 | `tests/conftest.py` | fixture paths (`FIXTURES = Path(__file__).parent / "fixtures"`) |
@@ -840,7 +840,7 @@ names) and never restoring while waiting (the 44-minute idle of 2026-11-01 12:03
 
 | Key | Type and legal values | Default | Replaces |
 |---|---|---|---|
-| `READY_TIMEOUT_S` | integer 60..3600 | `1200` | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 |
+| `READY_TIMEOUT_S` | integer 60..3480 (amended 2026-11-01: with `CLEANUP_BUDGET_S` ≤ 3600 and ≥ ready + 120, 3481..3600 could never pass) | `1200` | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 |
 | `MAX_FAILED_TRIES` | integer 1..20 | `6` | `night5.sh` line 36 |
 | `MAX_SERVER_STOPS` | integer 1..10 | `3` | new (decision 15) |
 | `CLEANUP_BUDGET_S` | unchanged type; cross-field `≥ READY_TIMEOUT_S + 120` | `1500` (was 900) | decision 8 |
@@ -1063,8 +1063,9 @@ driver uses it too), not a test-only door.
    `pwsh.exe` line is exactly `-NoProfile -File C:\r9700\start-vllm.ps1 -Model /root/.cache/huggingface/local/
    Qwen3.6-35B-A3B-GPTQ -ServedName qwen3.6-35b-a3b -MaxModelLen 131072 -MaxNumSeqs 4 -Detach` (one argument
    per word; the stub prints argv with `printf '%s\n'` and the test compares the array).
-6. *Only the adapter names the executables (the seam is one place).* `grep -lE 'R9700_(WSLC|POWERSHELL|
-   RESTORE_SHELL)' lib/*.sh bin/*` prints exactly `lib/adapter.sh` and `lib/config.sh` (the loader defines them)
+6. *Only the adapter names the executables (the seam is one place).* `grep -lE '\$\{?R9700_(WSLC|POWERSHELL|
+   RESTORE_SHELL)' lib/*.sh bin/*` (expansions, not names) prints exactly `lib/adapter.sh` (amended 2026-11-01: the loader builds
+   the names as `R9700_$key`, so a literal grep would need a comment to match — a structural check is not met by a comment)
    — run through `tests/check_static.sh --seam`; its companion: the same grep over `lib/adapter.sh` alone finds
    at least three hits (the scan is alive).
 7. *A bare command resolves on `PATH`, an absolute path as given.* `WSLC=wslc` with the stubs first on `PATH`:
