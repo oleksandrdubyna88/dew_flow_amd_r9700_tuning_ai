@@ -70,17 +70,20 @@ stub_log() {
   ) 8>> "$R9700_STUB_DIR/calls.lock"
 }
 
+# stub_hang: sleeps 1000 s and records the sleeper (the caller's ceiling is what ends it); also the answer word `hang` of answers/ready.
 # stub_mode_if_asked: the test-scripted misbehaviour of the `mode` file. `hang` sleeps 1000 s; the sleeper is recorded so a test can prove
 # that the caller's ceiling killed it. `eat-stdin` reads standard input to its end.
+stub_hang() {
+  sleep 1000 > /dev/null 2>&1 &
+  stub_record_pid "$R9700_STUB_DIR/hung/containers/$(stub_next hung || echo 0).pid" "$!"
+  wait "$!"
+}
+
 stub_mode_if_asked() {
   local mode=""
   [ -f "$R9700_STUB_DIR/mode" ] && mode="$(cat "$R9700_STUB_DIR/mode")"
   case $mode in
-    hang)
-      sleep 1000 > /dev/null 2>&1 &
-      stub_record_pid "$R9700_STUB_DIR/hung/containers/$(stub_next hung || echo 0).pid" "$!"
-      wait "$!"
-      ;;
+    hang) stub_hang ;;
     hang-ignore-term)
       # the stub itself (record 1) and its sleeper (record 2) ignore TERM; an ignored signal stays ignored across exec. `timeout` sends the
       # KILL of --kill-after to the stub (its direct child) only, so the sleeper is left for the test's own cleanup.

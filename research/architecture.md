@@ -2,7 +2,7 @@
 
 Tune and measure vLLM on an AMD Radeon AI PRO R9700. This file describes what EXISTS. After E1.S1 that is the config layer,
 the ship-test verdict, the quality harness and the test base; the supervisor, the guards, the series and `bin/r9700` are
-planned (`todo/PLAN_r9700_tuning_toolkit.md`) and are not described here. E1.S2 part (a) has added the adapter seam.
+planned (`todo/PLAN_r9700_tuning_toolkit.md`) and are not described here. E1.S2 part (a) has added the adapter seam, part (b) the lock, the recovery marker, the worker gate and the restore; the guards, the admission and the supervisor loop (part (c)) are not built yet.
 
 ## Modules
 
@@ -12,6 +12,7 @@ planned (`todo/PLAN_r9700_tuning_toolkit.md`) and are not described here. E1.S2 
 | Verdict | `lib/verdict.py` | the ship test over bench lines: complete arm-round blocks only, the base's spread over all its values, exact decimals, GSM8K within 2 x the larger stderr; `check-block` validates one arm-round record |
 | Quality harness | `lib/harness.py` | 20 greedy prompts with logprobs, GSM8K scoring, and the two comparisons, against a running vLLM server; results are written atomically |
 | Adapter | `lib/adapter.sh`, `lib/serve.sh`, `lib/bench.sh`, `lib/run_guarded.sh` (`t_scale` only so far) | the seam: every call to `wslc` and to Windows PowerShell is a function of `lib/adapter.sh`, under a ceiling that kills the child; `serve_start` and `bench_run` build the measured commands on it. Added by E1.S2 part (a) |
+| Ownership and recovery | `bin/r9700` (`commands`, `init`, `verdict` as a restore-first shell), `lib/run_guarded.sh` (lock, session stop, worker start), `lib/worker_gate.sh`, `lib/restore.sh` | one run at a time on the GPU; the operator's server is restored once, ready, even after a hard kill. Added by E1.S2 part (b) |
 | Tests | `tests/`, `.github/workflows/tests.yml` | one runner for Python and bash tests, an owned run folder, the static checks. `research/module_tests.md` |
 
 **Config.** `config_load <machine.env> <model.env>` parses both files line by line, applies the defaults of the field table,
@@ -27,6 +28,27 @@ argument and 10 when it cannot call (`adapter: …`). A bare executable name is 
 as given. `restore_probe` runs one Python program in the server's container: `GET /v1/models` (5 s), then a one-token
 `POST /v1/completions` (60 s). `serve_start` builds the argv of the old `serve.sh` from the config and calls `wait_ready`; `bench_run`
 runs the six measured `vllm bench serve` runs and prints the tagged metric lines.
+
+**Lock.** `lock_take <verb>` is `flock -n` on `<state dir>/lock`, descriptor 9, opened for append so a refused taker can read the holder line `<pid> <verb> <UTC time>` the winner wrote; the refusal is `r9700: another run holds <path>: pid <pid>, <verb>, since <time>`, exit 4. The state directory is `R9700_STATE_DIR`, else `${XDG_STATE_HOME:-$HOME/.local/state}/r9700`, made private (mode 700); it is not a config field, because the lock and the marker must work when the config is broken. The kernel frees the lock at a `SIGKILL`; every child the supervisor starts has descriptor 9 closed (`worker_start`, every adapter call), or a surviving child would keep it.
+
+**Recovery marker.** `<state dir>/recovery.env`, a `KEY=VALUE` file in the config grammar, written with `.part` and `mv`. First write, before the operator's server is stopped (`marker_write_base`): the marker version, the run id, the time, the server's name and whether it was running, the executables, the start script and arguments, the container prefix, the readiness timeout, and `RUN_DIR` (the run's folder, so a restore after a hard kill saves its log tails beside the run's evidence). Second write, once the worker runs (`marker_add_worker`): `WORKER_PGID`, `WORKER_START_TICKS`, `BOOT_ID`, all three together. The worker starts as `setsid lib/worker_gate.sh <gate> <cmd...>` and waits at the gate (30 s, then exit 4); the gate file is created only after the second write is durable, so a worker never works before a restore could find it. The marker is removed only after the restore is ready, or, for a server that was not running, after every prefixed container is stopped.
+
+**Restore.** `restore_from_marker <marker> <run dir>` needs no config: it stops the worker's whole SESSION when the process is provably the recorded one (same boot id; a leader with the recorded start ticks, or no leader at all, never a live leader with other ticks), saves a 200-line tail of every prefixed container and stops it, then — when the server was running before — starts it unless it is listed and waits until `/v1/models` answers and a one-token completion succeeds (`ready_wait`, every 10 s up to `READY_TIMEOUT_S`, three misses of the container listing end it at once). A restore that is not ready is exit 5 with the one line `r9700: restore: <name> not ready after <n> s (<last probe result>)`, the marker kept and the server left as it is. Every adapter call of the supervisor runs under `timeout` started in the background; after a ceiling its whole process group gets `KILL` (amendment A12).
+
+**Exit codes of `bin/r9700`** (E1.S2 part (b); the codes of `step` come with part (c)):
+
+| Exit | Meaning | Line on stderr |
+|---|---|---|
+| 0 | done | — |
+| 2 | config or arguments refused | S1's `config: …` lines, or `r9700: <verb>: …` |
+| 4 | another run holds the lock | `r9700: another run holds <path>: pid <pid>, <verb>, since <time>` |
+| 5 | the restore did not become ready | `r9700: restore: <name> not ready after <n> s (<last probe result>)` |
+| 10 | `init` found a problem | `init: <check>: <problem>` |
+| 11 | the recovery marker cannot be read | `marker: <file>:<line>: …`, then `r9700: recovery marker <file> is unreadable: check the operator's server by hand, then remove <file>` |
+
+**Growth surfaces of part (b).** `<state dir>/restore-<run id>/` holds the log tails of a restore after a hard kill when the marker has no run folder of its own. Its owner is `init`: it keeps the newest 10 (by modification time) and removes older ones by exact name (`restore-` and a valid run id; never by prefix alone, never a link, never a file). The lock file and the marker are single files, rewritten, not grown. Readiness is bounded by `READY_TIMEOUT_S` and cut by its own stop time (amendment A13), so the cleanup budget `READY_TIMEOUT_S + 300` holds it.
+
+**Order of every invocation** that can change the machine: arguments, lock, restore from a marker, config, work. `verdict` takes the lock only when a marker exists and releases it after the restore.
 
 **Verdict.** `ship` reads bench lines in the grammar `<arm>-<round> <group> r=<n> <metric>: <value>`, splits them into
 blocks per `<arm>-<round>`, keeps the last complete block of each, and names every other block. The base's spread at c=1 and

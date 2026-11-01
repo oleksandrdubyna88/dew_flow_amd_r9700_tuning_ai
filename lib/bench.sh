@@ -25,7 +25,7 @@ bench_run() {
       n=$((c == 1 ? 6 : 12))
       wslc_exec 1800 "$name" vllm bench serve --backend vllm --base-url http://127.0.0.1:8000 --model "$R9700_SERVED_NAME" \
         --tokenizer "$R9700_MODEL_DIR" --dataset-name random --random-input-len 1024 --random-output-len 512 --ignore-eos \
-        --num-prompts "$n" --max-concurrency "$c" --seed "$r" | grep -E "Output token throughput|Mean TTFT|Mean TPOT" | sed "s/^/$tag c=$c r=$r /"
+        --num-prompts "$n" --max-concurrency "$c" --seed "$r" | grep -E "Output token throughput|Mean TTFT|Mean TPOT" 9>&- | sed "s/^/$tag c=$c r=$r /" 9>&-
       rc="${PIPESTATUS[0]}"
       if [ "$rc" -ne 0 ]; then
         echo "bench: the run c=$c r=$r on $name failed (code $rc); the series stops here" >&2

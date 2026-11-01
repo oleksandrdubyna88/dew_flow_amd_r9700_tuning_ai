@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. E1.S2 part (b) has the verbs commands, init and
+# verdict (as the restore-first shell: the real verdict comes with E1.S3); step and series come later.
+#
+# Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
+# marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
+# exists, to restore first, and releases it before it reads. Exit codes: 0 ok, 2 config or arguments refused, 4 another run holds the lock,
+# 5 the restore did not become ready, 10 init found a problem, 11 the recovery marker cannot be read (the table is in
+# research/architecture.md).
+set -u
+R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=lib/config.sh
+source "$R9700_ROOT/lib/config.sh" || exit 2
+for _lib in run_guarded adapter restore; do
+  # shellcheck source=/dev/null
+  source "$R9700_ROOT/lib/$_lib.sh" || exit 2
+done
+
+# restore_first: when a recovery marker exists, restore from it before anything else (the previous run was killed). Needs no config.
+# A marker that cannot be read is exit 11 with its remedy: nothing can say what to restore, and a person must look at the server.
+restore_first() {
+  local marker rc
+  marker="$(marker_path)"
+  [ -f "$marker" ] || return 0
+  if ! marker_read "$marker"; then marker_unreadable "$marker"; fi
+  echo "r9700: recovery marker found (run ${MARKER[RUN_ID]}), restoring first"
+  restore_from_marker "$marker" "$(marker_run_dir)"
+  rc=$?
+  [ "$rc" -ne 2 ] || marker_unreadable "$marker"
+  [ "$rc" -eq 0 ] || exit "$rc"
+}
+
+marker_unreadable() {
+  echo "r9700: recovery marker $1 is unreadable: check the operator's server by hand, then remove $1" >&2
+  exit 11
+}
+
+# model_resolve [<file, or name of models/<name>.env>]: prints the model file; 2 with one line when it is none
+model_resolve() {
+  local arg="${1:-}"
+  local -a files=()
+  if [ -n "$arg" ]; then
+    if [[ $arg == */* || $arg == *.env ]]; then
+      [ -f "$arg" ] && { printf '%s\n' "$arg"; return 0; }
+      echo "r9700: model file \"$arg\" not found" >&2
+      return 2
+    fi
+    [ -f "$R9700_ROOT/models/$arg.env" ] && { printf '%s\n' "$R9700_ROOT/models/$arg.env"; return 0; }
+    echo "r9700: model \"$arg\" not found; legal: $(cd "$R9700_ROOT/models" && ls ./*.env 2> /dev/null | sed -e 's|^\./||' -e 's|\.env$||' | tr '\n' ' ' | sed 's/ $//')" >&2
+    return 2
+  fi
+  files=("$R9700_ROOT"/models/*.env)
+  if [ "${#files[@]}" -eq 1 ] && [ -f "${files[0]}" ]; then printf '%s\n' "${files[0]}"; return 0; fi
+  echo "r9700: several models in models/ (or none): name one with --model <file or name>" >&2
+  return 2
+}
+
+# model_arg <verb> <args...>: checks the SYNTAX of the arguments and prints the value of `--model <value>` (the only legal argument), or
+# nothing. The model itself is resolved later, after the lock and the restore (a refused model must not leave a marker unrestored).
+model_arg() {
+  local verb="$1" value=""
+  shift
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --model)
+        if [ "$#" -lt 2 ]; then echo "r9700: $verb: --model needs a value" >&2; return 2; fi
+        value="$2"
+        shift 2
+        ;;
+      *) echo "r9700: $verb: unknown argument \"$1\"; legal: --model <file or name>" >&2; return 2 ;;
+    esac
+  done
+  printf '%s\n' "$value"
+}
+
+verb_commands() {
+  declare -F | awk '{ print $3 }' | grep '^verb_' | sed 's/^verb_//' | LC_ALL=C sort
+}
+
+# init_line <check:> <text>: prints `init: <check>: <text>`. The label carries its own colon: a label that is a bare word of an
+# executable ("wslc") would be a command word to tests/check_static.sh --seam, which keeps those words in lib/adapter.sh. init_problem
+# prints the same line to stderr too and counts it in INIT_PROBLEMS.
+init_line() {
+  printf 'init: %s %s\n' "$1" "$2"
+}
+
+init_problem() {
+  INIT_PROBLEMS=$((INIT_PROBLEMS + 1))
+  printf 'init: %s %s\n' "$1" "$2"
+  printf 'init: %s %s\n' "$1" "$2" >&2
+}
+
+# init_adapter_problem <rc> <message>: the text of a failed adapter call; 124 and 137 say the ceiling ended it
+init_adapter_problem() {
+  local rc="$1" text="$2" ceiling
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    ceiling="$(awk -v c="$(t_ceiling 60)" 'BEGIN { n = int(c); print (c > n ? n + 1 : n) }')"
+    printf 'timeout after %s s' "$ceiling"
+  else
+    printf '%s' "${text%%$'\n'*}"
+  fi
+}
+
+init_check_dirs() {
+  if mkdir -p "$R9700_RESULTS_DIR" 2> /dev/null && [ -w "$R9700_RESULTS_DIR" ]; then init_line "results dir:" ok
+  else init_problem "results dir:" "cannot make or write $R9700_RESULTS_DIR"; fi
+  if [ -d "$(state_dir)" ] && [ -w "$(state_dir)" ]; then init_line "state dir:" ok
+  else init_problem "state dir:" "$(state_dir) is not a writable directory"; fi
+}
+
+init_check_telemetry() {
+  local out rc
+  out="$(win_ram_mb 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then init_line "ram telemetry:" "ok ($out MB)"
+  elif [[ $out == 'adapter: unreadable answer '* ]]; then init_problem "ram telemetry:" "unreadable (${out#adapter: unreadable answer })"
+  else init_problem "ram telemetry:" "$(init_adapter_problem "$rc" "$out")"; fi
+  if [ "$R9700_DISK_GATE" != on ]; then init_line "disk telemetry:" "skipped (DISK_GATE=off)"; return 0; fi
+  out="$(win_disk_newest 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then init_line "disk telemetry:" "ok (record $out)"
+  elif [[ $out == 'adapter: unreadable answer '* ]]; then init_problem "disk telemetry:" "unreadable (${out#adapter: unreadable answer })"
+  else init_problem "disk telemetry:" "$(init_adapter_problem "$rc" "$out")"; fi
+}
+
+# init_check_containers: wslc answers; the operator's server; every leftover prefixed container is stopped and named
+init_check_containers() {
+  local listing rc name
+  local -a stopped=()
+  listing="$(wslc_list 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then init_problem "wslc:" "$(init_adapter_problem "$rc" "$listing")"; return 0; fi
+  init_line "wslc:" ok
+  if grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing"; then init_line "$R9700_PROD_CONTAINER:" running; else init_line "$R9700_PROD_CONTAINER:" "not running"; fi
+  while read -r name; do
+    [[ -n $name && $name == "$R9700_CONTAINER_PREFIX"* ]] || continue
+    if wslc_stop "$name"; then stopped+=("$name"); else init_problem "leftover containers:" "$name did not stop"; fi
+  done <<< "$listing"
+  if [ "${#stopped[@]}" -gt 0 ]; then init_line "leftover containers:" "stopped ${stopped[*]}"; else init_line "leftover containers:" none; fi
+}
+
+verb_init() {
+  local arg model rc
+  INIT_PROBLEMS=0
+  arg="$(model_arg init "$@")" || exit 2
+  lock_take init || exit $?
+  restore_first
+  restore_dirs_prune 10
+  model="$(model_resolve "$arg")" || exit 2
+  config_load "${R9700_MACHINE_ENV:-./machine.env}" "$model" || exit 2
+  init_line "config:" ok
+  init_check_dirs
+  init_check_containers
+  init_check_telemetry
+  [ "$INIT_PROBLEMS" -eq 0 ]
+  rc=$?
+  [ "$rc" -eq 0 ] || exit 10
+}
+
+# verdict: the restore-first half only (E1.S3 replaces the rest). Takes the lock only when a marker exists, to restore, and releases it.
+verb_verdict() {
+  local outdir="${1:-}"
+  if [ -f "$(marker_path)" ]; then
+    lock_take verdict || exit $?
+    restore_first
+    lock_release
+  fi
+  if [ ! -d "$outdir" ]; then
+    echo "r9700: verdict: \"$outdir\" is not an outdir (a directory of series results)" >&2
+    exit 2
+  fi
+  echo "r9700: verdict: not implemented in S2" >&2
+  exit 2
+}
+
+main() {
+  local verb="${1:-}"
+  if [ -z "$verb" ] || [[ ! $verb =~ ^[a-z]+$ ]] || ! declare -F "verb_$verb" > /dev/null; then
+    echo "r9700: unknown verb \"$verb\"; legal: $(verb_commands | tr '\n' ' ' | sed 's/ $//')" >&2
+    exit 2
+  fi
+  shift
+  "verb_$verb" "$@"
+}
+
+# run only when executed: tests/test_lifecycle.sh sources this file to call a verb function directly
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

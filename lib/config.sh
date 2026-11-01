@@ -58,10 +58,10 @@ _field machine QUIET_BUSY_IGNORE str? "" "a command-line substring that excludes
 _field machine DISK_GATE enum:on,off on "check the disk event log before each unit: on or off"
 _field machine DEADLINE hhmm? "" "the clock time (HH:MM, 24 h) by which a run must be over; empty means none"
 _field machine MAX_RUN_MINUTES int:10:2880 720 "the ceiling of a run in minutes when DEADLINE is empty or later"
-_field machine READY_TIMEOUT_S int:60:3480 1200 "how long a server may take to become ready, in seconds"
+_field machine READY_TIMEOUT_S int:60:3300 1200 "how long a server may take to become ready, in seconds"
 _field machine MAX_FAILED_TRIES int:1:20 6 "how many failed tries a step gets before the run gives up"
 _field machine MAX_SERVER_STOPS int:1:10 3 "how many times one invocation may stop the operator's server"
-_field machine CLEANUP_BUDGET_S int:60:3600 1500 "seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 120"
+_field machine CLEANUP_BUDGET_S int:60:3600 1500 "seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 300"
 
 _field model MODEL_DIR cpath required "the model directory, as a path inside the container"
 _field model SERVED_NAME name required "the served model name"
@@ -339,9 +339,9 @@ _cfg_cross() {
       "PROD_CONTAINER must not start with CONTAINER_PREFIX (the toolkit stops every container with that prefix)"
   fi
   if [ -z "${_C_BAD[CLEANUP_BUDGET_S]+set}${_C_BAD[READY_TIMEOUT_S]+set}" ] \
-    && ((_C_VAL[CLEANUP_BUDGET_S] < _C_VAL[READY_TIMEOUT_S] + 120)); then
+    && ((_C_VAL[CLEANUP_BUDGET_S] < _C_VAL[READY_TIMEOUT_S] + 300)); then
     _cfg_error "$(_cfg_where CLEANUP_BUDGET_S)" "${_C_LINE[CLEANUP_BUDGET_S]-}" CLEANUP_BUDGET_S \
-      "${_C_VAL[CLEANUP_BUDGET_S]} is less than READY_TIMEOUT_S ${_C_VAL[READY_TIMEOUT_S]} + 120" "at least READY_TIMEOUT_S + 120"
+      "${_C_VAL[CLEANUP_BUDGET_S]} is less than READY_TIMEOUT_S ${_C_VAL[READY_TIMEOUT_S]} + 300" "at least READY_TIMEOUT_S + 300"
   fi
 }
 

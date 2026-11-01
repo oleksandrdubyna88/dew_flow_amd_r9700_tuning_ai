@@ -22,7 +22,7 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 - Every error names the file, the line, the field and the legal values (`config: <file>:<line>: <KEY>: <problem>; legal:
   <legal>`). All errors are printed in one pass; the exit status is 2. Nothing is stopped or started before the config is valid.
 - After the single-field checks, the cross-field checks run (also when a single field is wrong; a field that failed its own check is skipped): every `PREFILL_LENS` value + 128 ≤ `MAX_MODEL_LEN`; every
-  `MOUNTS` source exists under `PATCH_DIR`; `PROD_CONTAINER` does not start with `CONTAINER_PREFIX` (the toolkit stops every container with that prefix, so the operator's own server must stay outside it); `CLEANUP_BUDGET_S` ≥ `READY_TIMEOUT_S` + 120 (the budget must hold the restore
+  `MOUNTS` source exists under `PATCH_DIR`; `PROD_CONTAINER` does not start with `CONTAINER_PREFIX` (the toolkit stops every container with that prefix, so the operator's own server must stay outside it); `CLEANUP_BUDGET_S` ≥ `READY_TIMEOUT_S` + 300 (the budget must hold the restore
   and its readiness wait).
 
 ## `machine.env`
@@ -53,10 +53,10 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 | `DISK_GATE` | enum `on` `off` | `on` | check the disk event log before each unit: on or off | `disk_gate.sh` |
 | `DEADLINE` | `HH:MM` 24 h, or empty = none | empty | the clock time (HH:MM, 24 h) by which a run must be over; empty means none | `night5.sh` line 10 |
 | `MAX_RUN_MINUTES` | integer 10..2880 — the ceiling when `DEADLINE` is empty or later | `720` | the ceiling of a run in minutes when DEADLINE is empty or later | new (every wait has a ceiling) |
-| `READY_TIMEOUT_S` | integer 60..3480 (the largest `CLEANUP_BUDGET_S`, 3600, minus 120) | `1200` | how long a server may take to become ready, in seconds | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 (E1.S2 decision 5) |
+| `READY_TIMEOUT_S` | integer 60..3300 (the largest `CLEANUP_BUDGET_S`, 3600, minus 300) | `1200` | how long a server may take to become ready, in seconds | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 (E1.S2 decision 5) |
 | `MAX_FAILED_TRIES` | integer 1..20 | `6` | how many failed tries a step gets before the run gives up | `night5.sh` line 36 (E1.S2 decision 6) |
 | `MAX_SERVER_STOPS` | integer 1..10 | `3` | how many times one invocation may stop the operator's server | new (E1.S2 decision 15) |
-| `CLEANUP_BUDGET_S` | integer 60..3600; cross-field: at least `READY_TIMEOUT_S` + 120 | `1500` | seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 120 | new (E1 done-when); default 1500 since E1.S2 decision 8 (was 900) |
+| `CLEANUP_BUDGET_S` | integer 60..3600; cross-field: at least `READY_TIMEOUT_S` + 300 | `1500` | seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 300 | new (E1 done-when); default 1500 since E1.S2 decision 8 (was 900) |
 
 ## `models/<name>.env`
 

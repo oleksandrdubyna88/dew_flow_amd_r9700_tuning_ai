@@ -253,23 +253,23 @@ t_a_mount_source_that_does_not_exist_under_the_patch_directory_is_refused() {
 
 t_a_cleanup_budget_that_cannot_hold_the_restore_is_refused() {
   local root; root="$(case_root "$FUNCNAME")"
-  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1319"
-  assert_exit 2 "1319 < 1200 + 120 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
-  assert_contains "$ERR" "CLEANUP_BUDGET_S: 1319 is less than READY_TIMEOUT_S 1200 + 120" "names both fields"
-  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1320"
-  assert_exit 0 "1320 = 1200 + 120 passes" -- config_load "$root/machine.env" "$MODEL_35B"
-  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3480"
-  assert_exit 2 "the default budget 1500 cannot hold a 3480 s readiness wait" -- config_load "$root/machine.env" "$MODEL_35B"
-  assert_contains "$ERR" "READY_TIMEOUT_S 3480 + 120" "names the readiness value"
+  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1499"
+  assert_exit 2 "1499 < 1200 + 300 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "CLEANUP_BUDGET_S: 1499 is less than READY_TIMEOUT_S 1200 + 300" "names both fields"
+  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1500"
+  assert_exit 0 "1500 = 1200 + 300 passes (the default)" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3300"
+  assert_exit 2 "the default budget 1500 cannot hold a 3300 s readiness wait" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "READY_TIMEOUT_S 3300 + 300" "names the readiness value"
   printf '%s\n' "CLEANUP_BUDGET_S=3600" >> "$root/machine.env"
-  assert_exit 0 "READY_TIMEOUT_S 3480 with the largest budget 3600 = 3480 + 120 passes" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_exit 0 "READY_TIMEOUT_S 3300 with the largest budget 3600 = 3300 + 300 passes" -- config_load "$root/machine.env" "$MODEL_35B"
 }
 
 t_the_readiness_timeout_tops_out_where_the_largest_budget_can_still_hold_it() {
   local root; root="$(case_root "$FUNCNAME")"
-  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3481"
-  assert_exit 2 "3481 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
-  assert_contains "$ERR" 'READY_TIMEOUT_S: "3481" is outside 60..3480' "the range is 60..3480"
+  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3301"
+  assert_exit 2 "3301 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" 'READY_TIMEOUT_S: "3301" is outside 60..3300' "the range is 60..3300"
 }
 
 # ---- the resolved view -----------------------------------------------------------------------------------------

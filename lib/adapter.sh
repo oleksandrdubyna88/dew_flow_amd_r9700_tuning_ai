@@ -66,59 +66,180 @@ print("completion")'
 # adapter_probe_program: prints the readiness program (the tests run it against a fake urlopen)
 adapter_probe_program() { printf '%s\n' "$_ADAPTER_PROBE_PY"; }
 
+# adapter_marker_words: the two executables as the recovery marker records them, one KEY=VALUE word per line (WSLC, RESTORE_SHELL): the
+# restore needs them and must work without the config, and no other file may expand these variables.
+adapter_marker_words() {
+  printf 'WSLC=%s\n' "$R9700_WSLC"
+  printf 'RESTORE_SHELL=%s\n' "$R9700_RESTORE_SHELL"
+}
+
 # adapter_exe <value>: an absolute path is printed as given (it must be an executable file); a bare name is resolved on PATH now.
 adapter_exe() {
-  local value="${1:-}" found
-  if [[ $value == /* ]]; then
-    if [ -f "$value" ] && [ -x "$value" ]; then printf '%s\n' "$value"; return 0; fi
-    echo "adapter: $value is not an executable file" >&2
+  local _adapter_value="${1:-}" _adapter_found
+  if [[ $_adapter_value == /* ]]; then
+    if [ -f "$_adapter_value" ] && [ -x "$_adapter_value" ]; then printf '%s\n' "$_adapter_value"; return 0; fi
+    echo "adapter: $_adapter_value is not an executable file" >&2
     return 10
   fi
-  found="$(command -v -- "$value" 2> /dev/null)"
-  if [[ -n $value && $found == /* ]]; then printf '%s\n' "$found"; return 0; fi
-  echo "adapter: ${value:-(empty)} not found on PATH" >&2
+  _adapter_found="$(command -v -- "$_adapter_value" 2> /dev/null)"
+  if [[ -n $_adapter_value && $_adapter_found == /* ]]; then printf '%s\n' "$_adapter_found"; return 0; fi
+  echo "adapter: ${_adapter_value:-(empty)} not found on PATH" >&2
   return 10
 }
 
 # _adapter_ceiling <ceiling-s>: prints the ceiling of a call in seconds: t_ceiling of the argument, cut at R9700_T_STOP when that is sooner.
 # Returns 10 with an `adapter:` line when R9700_T_STOP is not an epoch second or is not in the future.
 _adapter_ceiling() {
-  local ceiling cut
-  ceiling="$(t_ceiling "$1")" || return 10
-  if [ -z "${R9700_T_STOP:-}" ]; then printf '%s\n' "$ceiling"; return 0; fi
+  local _adapter_ceil _adapter_cut
+  _adapter_ceil="$(t_ceiling "$1")" || return 10
+  if [ -z "${R9700_T_STOP:-}" ]; then printf '%s\n' "$_adapter_ceil"; return 0; fi
   if ! [[ $R9700_T_STOP =~ ^[0-9]+$ ]]; then
     echo "adapter: R9700_T_STOP \"$R9700_T_STOP\" is not an epoch second (digits only)" >&2
     return 10
   fi
-  cut="$(awk -v c="$ceiling" -v stop="$R9700_T_STOP" -v now="$(date +%s.%N)" \
-    'BEGIN { left = stop - now; if (left <= 0) { printf "%.0f\n", -left; exit 1 } if (left < c) c = left; if (c < 0.01) c = 0.01; printf "%.2f\n", c }')" || {
-    echo "adapter: R9700_T_STOP passed ${cut} s ago; no call is made after the stop time" >&2
+  _adapter_cut="$(awk -v c="$_adapter_ceil" -v stop="$R9700_T_STOP" -v now="$(date +%s.%N)" \
+    'BEGIN { left = stop - now; if (left <= 0) { printf "%.0f\n", -left; exit 1 } if (left < c) c = left; if (c < 0.01) c = 0.01; printf "%.2f\n", c }' 9>&-)" || {
+    echo "adapter: R9700_T_STOP passed ${_adapter_cut} s ago; no call is made after the stop time" >&2
     return 10
   }
-  printf '%s\n' "$cut"
+  printf '%s\n' "$_adapter_cut"
+}
+
+# _adapter_drop_lock: descriptor 9 is the supervisor's lock (amendment A1). A fork of the supervisor (a command substitution, the left side
+# of a pipeline) that kept it would keep the lock after a SIGKILL of the supervisor until its call ends. In a fork, close it for good;
+# in the process that took the lock (lock_take records it in _RG_LOCK_OWNER; without a lock: the main shell) do nothing. The commands on
+# the right of a pipe and `timeout` get `9>&-` on their own command line (a temporary redirection of a shell function would leave a saved
+# copy of the descriptor open in the fork).
+_adapter_drop_lock() { [ "$BASHPID" = "${_RG_LOCK_OWNER:-$$}" ] || exec 9>&-; }
+
+# _adapter_group_kill <pgid>: KILL for the process group <pgid>, in ONE step, when at least one live process of that group is in the
+# caller's own session. `timeout` makes its pid the id of a group of its own; once `timeout` is reaped that number is only a number, so a
+# group of another session with the same id (a pid that was reused) is never touched. The scan only confirms the group is ours: a group id
+# cannot be reused while it has a member, and a member that forks while the kill is on its way is in the group too. Nothing to kill is not
+# an error.
+_adapter_group_kill() {
+  local _adapter_pgid="$1" _adapter_stat _adapter_dir _adapter_mysid _adapter_mypgrp
+  { IFS= read -r _adapter_stat < "/proc/$BASHPID/stat"; } 2> /dev/null || return 0
+  _adapter_stat="${_adapter_stat##*) }"
+  set -- $_adapter_stat
+  _adapter_mypgrp="${3:-}"
+  _adapter_mysid="${4:-}"
+  [ "$_adapter_pgid" != "$_adapter_mypgrp" ] || return 0
+  for _adapter_dir in /proc/[0-9]*; do
+    { IFS= read -r _adapter_stat < "$_adapter_dir/stat"; } 2> /dev/null || continue
+    _adapter_stat="${_adapter_stat##*) }"
+    set -- $_adapter_stat
+    if [ "${1:-Z}" != Z ] && [ "${3:-}" = "$_adapter_pgid" ] && [ "${4:-}" = "$_adapter_mysid" ]; then
+      kill -KILL -- "-$_adapter_pgid" 2> /dev/null
+      return 0
+    fi
+  done
+  return 0
+}
+
+# The interrupt chain of a waiting call (amendment A14). Each call keeps what it saved of the caller's traps in a LOCAL associative array
+# _adapter_acts_<depth> of _adapter_wait, where <depth> counts the waits that are open (a handler may make an adapter call of its own, the
+# plan's cleanup path: a nested wait). Its hooks carry their depth, and _adapter_on_signal reads the array of that depth through bash's
+# dynamic scope; nothing is global but the counter, so nested calls never overwrite one another's saved actions.
+#   act:<SIG>   the caller's real action for the signal ('' when it has none)
+#   text:<SIG>  the `trap -p` text the signal had when the wait began (put back by eval when the wait ends)
+_ADAPTER_DEPTH=0
+
+# _adapter_on_signal <pgid> <signal> <owner|fork> <depth>: the trap of a waiting call. The call's group is killed FIRST. In the process that
+# owns the caller's traps (owner) the caller's own action for the signal then runs, with $? = 128 + the signal number as in any trap (no
+# action: the signal's default effect, by raising it again). A fork (a command substitution or a pipeline part) never owns them: `trap -p`
+# there shows the PARENT's, which the parent runs itself, so a fork only dies of the signal.
+_adapter_on_signal() {
+  local _adapter_n _adapter_act
+  local -n _adapter_frame="_adapter_acts_$4"
+  _adapter_group_kill "$1"
+  case $2 in TERM) _adapter_n=15 ;; INT) _adapter_n=2 ;; *) _adapter_n=1 ;; esac
+  _adapter_act="${_adapter_frame[act:$2]-}"
+  if [ "$3" = owner ] && [ -n "$_adapter_act" ]; then
+    trap -- "$_adapter_act" "$2"
+    (exit $((128 + _adapter_n)))
+    eval "$_adapter_act"
+    return
+  fi
+  trap - "$2"
+  kill -s "$2" "$BASHPID"
+}
+
+# _adapter_wait <pid>: `wait` for the call, with _adapter_on_signal installed for TERM, INT and HUP. A signal the caller IGNORES (trap '') is
+# left ignored: a cleanup that shuts signals out keeps its call. A signal that already carries a hook of an outer call (we are nested, inside
+# a handler) takes that call's saved action as the caller's real one. The caller's traps are back when it returns.
+_adapter_wait() {
+  local _adapter_pid="$1" _adapter_wrc _adapter_sig _adapter_text _adapter_handler _adapter_role=fork _adapter_depth _adapter_outer_depth
+  local -a _adapter_hooked=()
+  _ADAPTER_DEPTH=$((_ADAPTER_DEPTH + 1))
+  _adapter_depth=$_ADAPTER_DEPTH
+  local -A "_adapter_acts_$_adapter_depth"
+  local -n _adapter_mine="_adapter_acts_$_adapter_depth"
+  [ "$BASHPID" = "${_RG_LOCK_OWNER:-$$}" ] && _adapter_role=owner
+  for _adapter_sig in TERM INT HUP; do
+    _adapter_text="$(trap -p "$_adapter_sig")"
+    _adapter_mine[text:$_adapter_sig]="$_adapter_text"
+    _adapter_handler=""
+    if [ -n "$_adapter_text" ]; then
+      eval "set -- $_adapter_text"
+      _adapter_handler="${3-}"
+      if [[ $_adapter_handler == '_adapter_on_signal '* ]]; then
+        read -r _ _ _ _ _adapter_outer_depth <<< "$_adapter_handler"
+        local -n _adapter_outer="_adapter_acts_$_adapter_outer_depth"
+        _adapter_handler="${_adapter_outer[act:$_adapter_sig]-}"
+        unset -n _adapter_outer
+      elif [ -z "$_adapter_handler" ]; then
+        continue # an ignored signal stays ignored
+      fi
+    fi
+    _adapter_mine[act:$_adapter_sig]="$_adapter_handler"
+    trap "_adapter_on_signal $_adapter_pid $_adapter_sig $_adapter_role $_adapter_depth" "$_adapter_sig"
+    _adapter_hooked+=("$_adapter_sig")
+  done
+  wait "$_adapter_pid"
+  _adapter_wrc=$?
+  for _adapter_sig in "${_adapter_hooked[@]}"; do
+    _adapter_text="${_adapter_mine[text:$_adapter_sig]}"
+    if [ "$_adapter_role" = owner ] && [ -n "$_adapter_text" ]; then eval "$_adapter_text"; else trap - "$_adapter_sig"; fi
+  done
+  _ADAPTER_DEPTH=$((_ADAPTER_DEPTH - 1))
+  return "$_adapter_wrc"
 }
 
 # _adapter_call --merge|--quiet <ceiling-s> <executable value> <argv...>: the one place that starts a child. Standard input is /dev/null
 # (a child must never eat the caller's loop input). The child's stderr goes to its stdout (--merge) or is dropped (--quiet); the
 # adapter's own `adapter:` lines are never merged or dropped.
 _adapter_call() {
-  local mode ceiling grace exe
+  _adapter_drop_lock
+  local _adapter_mode _adapter_ceiling_s _adapter_grace _adapter_exe _adapter_tpid _adapter_rc
   case ${1:-} in
-    --merge | --quiet) mode="${1#--}"; shift ;;
+    --merge | --quiet) _adapter_mode="${1#--}"; shift ;;
     *) echo "adapter: _adapter_call needs --merge or --quiet (an internal error)" >&2; return 10 ;;
   esac
   if ! declare -F t_ceiling > /dev/null; then
     echo "adapter: t_ceiling is not defined (source lib/run_guarded.sh first)" >&2
     return 10
   fi
-  grace="$(t_ceiling 5)" || return 10
-  ceiling="$(_adapter_ceiling "$1")" || return 10
-  exe="$(adapter_exe "$2")" || return 10
+  _adapter_grace="$(t_ceiling 5)" || return 10
+  _adapter_ceiling_s="$(_adapter_ceiling "$1")" || return 10
+  _adapter_exe="$(adapter_exe "$2")" || return 10
   shift 2
-  case $mode in
-    merge) timeout --kill-after="$grace" "$ceiling" "$exe" "$@" < /dev/null 2>&1 ;;
-    quiet) timeout --kill-after="$grace" "$ceiling" "$exe" "$@" < /dev/null 2> /dev/null ;;
+  # The call runs in the background so that its pid is known: GNU timeout makes that pid the id of a process group of its own, and
+  # --kill-after kills only timeout's direct child (amendment A12). Descriptor 9, the supervisor's lock, is closed for the child (A1).
+  case $_adapter_mode in
+    merge) timeout --kill-after="$_adapter_grace" "$_adapter_ceiling_s" "$_adapter_exe" "$@" < /dev/null 9>&- 2>&1 & ;;
+    quiet) timeout --kill-after="$_adapter_grace" "$_adapter_ceiling_s" "$_adapter_exe" "$@" < /dev/null 9>&- 2> /dev/null & ;;
   esac
+  _adapter_tpid=$!
+  _adapter_wait "$_adapter_tpid"
+  _adapter_rc=$?
+  # The ceiling ended the call (124, or 137 after the grace), or the wait was interrupted (more than 128): whatever of the call's group is
+  # still alive gets the KILL.
+  if [ "$_adapter_rc" = 124 ] || [ "$_adapter_rc" -gt 128 ]; then
+    _adapter_group_kill "$_adapter_tpid"
+    wait "$_adapter_tpid" 2> /dev/null # reaps timeout; the code to return is the one the wait gave
+  fi
+  return "$_adapter_rc"
 }
 
 # _adapter_name_ok <function> <name>: 0 for a container name; else one stderr line naming the function, and 2
@@ -129,17 +250,19 @@ _adapter_name_ok() {
 }
 
 wslc_run() {
+  _adapter_drop_lock
   _adapter_name_ok wslc_run "${1:-}" || return 2
-  local name="$1"
+  local _adapter_name="$1"
   shift
-  _adapter_call --merge 120 "$R9700_WSLC" run -d --rm --name "$name" "$@" | tr -d '\r' | tail -n 2
+  _adapter_call --merge 120 "$R9700_WSLC" run -d --rm --name "$_adapter_name" "$@" | tr -d '\r' 9>&- | tail -n 2 9>&-
   return "${PIPESTATUS[0]}"
 }
 
 wslc_exec() {
-  local ceiling="${1:-}"
-  if ! [[ $ceiling =~ ^[1-9][0-9]*$ ]]; then
-    echo "wslc_exec: the ceiling \"$ceiling\" is not a positive integer (seconds)" >&2
+  _adapter_drop_lock
+  local _adapter_ceiling="${1:-}"
+  if ! [[ $_adapter_ceiling =~ ^[1-9][0-9]*$ ]]; then
+    echo "wslc_exec: the ceiling \"$_adapter_ceiling\" is not a positive integer (seconds)" >&2
     return 2
   fi
   _adapter_name_ok wslc_exec "${2:-}" || return 2
@@ -147,66 +270,76 @@ wslc_exec() {
     echo "wslc_exec: no command to run in $2" >&2
     return 2
   fi
-  local name="$2"
+  local _adapter_name="$2"
   shift 2
-  _adapter_call --merge "$ceiling" "$R9700_WSLC" exec "$name" "$@" | tr -d '\r'
+  _adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" exec "$_adapter_name" "$@" | tr -d '\r' 9>&-
   return "${PIPESTATUS[0]}"
 }
 
 # The container names: the last column of `list --no-trunc` (plain `list` cuts long names), without the header line.
 wslc_list() {
-  _adapter_call --quiet 60 "$R9700_WSLC" list --no-trunc | tr -d '\r' | awk 'NR > 1 && NF { print $NF }'
+  _adapter_drop_lock
+  _adapter_call --quiet 60 "$R9700_WSLC" list --no-trunc | tr -d '\r' 9>&- | awk 'NR > 1 && NF { print $NF }' 9>&-
   return "${PIPESTATUS[0]}"
 }
 
 wslc_stop() {
+  _adapter_drop_lock
   _adapter_name_ok wslc_stop "${1:-}" || return 2
   _adapter_call --merge 60 "$R9700_WSLC" stop "$1" > /dev/null
 }
 
 wslc_logs() {
+  _adapter_drop_lock
   _adapter_name_ok wslc_logs "${1:-}" || return 2
-  _adapter_call --merge 60 "$R9700_WSLC" logs "$1" | tr -d '\r'
+  _adapter_call --merge 60 "$R9700_WSLC" logs "$1" | tr -d '\r' 9>&-
   return "${PIPESTATUS[0]}"
 }
 
 # _adapter_integer <ceiling-s> <PowerShell command>: prints the integer the command answers; nothing and 1 unless the answer is exactly one
-# non-empty line (blank lines and spaces around it are trimmed) that is only digits: `100` then `0` is two answers, never 1000. A ceiling
-# or an adapter failure returns its own code.
+# non-empty line (blank lines and spaces around it are trimmed) that is only digits: `100` then `0` is two answers, never 1000. On 1 it
+# says on stderr what it got: `adapter: unreadable answer "<raw>"`. A ceiling or an adapter failure returns its own code.
 _adapter_integer() {
-  local out rc line value="" count=0
-  out="$(_adapter_call --quiet "$1" "$R9700_POWERSHELL" -NoProfile -Command "$2")"
-  rc=$?
-  if [ "$rc" -ne 0 ]; then return "$rc"; fi
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line//$'\r'/}"
-    line="${line#"${line%%[![:space:]]*}"}"
-    line="${line%"${line##*[![:space:]]}"}"
-    [ -n "$line" ] || continue
-    value="$line"
-    count=$((count + 1))
-  done <<< "$out"
-  [ "$count" -eq 1 ] && [[ $value =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "$value"
+  local _adapter_out _adapter_rc _adapter_line _adapter_value="" _adapter_count=0
+  _adapter_out="$(_adapter_call --quiet "$1" "$R9700_POWERSHELL" -NoProfile -Command "$2")"
+  _adapter_rc=$?
+  if [ "$_adapter_rc" -ne 0 ]; then return "$_adapter_rc"; fi
+  while IFS= read -r _adapter_line || [ -n "$_adapter_line" ]; do
+    _adapter_line="${_adapter_line//$'\r'/}"
+    _adapter_line="${_adapter_line#"${_adapter_line%%[![:space:]]*}"}"
+    _adapter_line="${_adapter_line%"${_adapter_line##*[![:space:]]}"}"
+    [ -n "$_adapter_line" ] || continue
+    _adapter_value="$_adapter_line"
+    _adapter_count=$((_adapter_count + 1))
+  done <<< "$_adapter_out"
+  if [ "$_adapter_count" -ne 1 ] || ! [[ $_adapter_value =~ ^[0-9]+$ ]]; then
+    _adapter_value="${_adapter_out//$'\r'/}"
+    _adapter_value="${_adapter_value//$'\n'/ | }"
+    echo "adapter: unreadable answer \"${_adapter_value:0:80}\"" >&2 # the raw answer, so a caller can show what it could not read
+    return 1
+  fi
+  printf '%s\n' "$_adapter_value"
 }
 
-win_ram_mb() { _adapter_integer 30 "$_ADAPTER_RAM_PS"; }
+win_ram_mb() { _adapter_drop_lock; _adapter_integer 30 "$_ADAPTER_RAM_PS"; }
 
-win_disk_newest() { _adapter_integer 60 "$_ADAPTER_DISK_PS"; }
+win_disk_newest() { _adapter_drop_lock; _adapter_integer 60 "$_ADAPTER_DISK_PS"; }
 
 # restore_start: the start script with the configured arguments, one argv element per word (restore_server.sh lines 18-21). RESTORE_ARGS
 # is what the operator wrote; -Detach is added only when it lacks one, so the start script never gets it twice.
 restore_start() {
-  local -a extra=()
-  local word detach=0
-  read -r -a extra <<< "$R9700_RESTORE_ARGS"
-  for word in "${extra[@]}"; do [ "${word,,}" = -detach ] && detach=1; done
-  [ "$detach" = 1 ] || extra+=(-Detach)
-  _adapter_call --merge 120 "$R9700_RESTORE_SHELL" -NoProfile -File "$R9700_RESTORE_SCRIPT_WIN" "${extra[@]}" | tr -d '\r' | tail -n 5
+  _adapter_drop_lock
+  local -a _adapter_extra=()
+  local _adapter_word _adapter_detach=0
+  read -r -a _adapter_extra <<< "$R9700_RESTORE_ARGS"
+  for _adapter_word in "${_adapter_extra[@]}"; do [ "${_adapter_word,,}" = -detach ] && _adapter_detach=1; done
+  [ "$_adapter_detach" = 1 ] || _adapter_extra+=(-Detach)
+  _adapter_call --merge 120 "$R9700_RESTORE_SHELL" -NoProfile -File "$R9700_RESTORE_SCRIPT_WIN" "${_adapter_extra[@]}" | tr -d '\r' 9>&- | tail -n 5 9>&-
   return "${PIPESTATUS[0]}"
 }
 
 restore_probe() {
+  _adapter_drop_lock
   _adapter_name_ok restore_probe "${1:-}" || return 2
   wslc_exec 70 "$1" python3 -c "$_ADAPTER_PROBE_PY"
 }

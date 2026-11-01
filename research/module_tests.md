@@ -16,6 +16,9 @@ add their test files to the same runner; there is no second one.
 | `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match |
 | `tests/test_adapter.sh` | the adapter seam (`lib/adapter.sh`) and `t_scale`, `t_ceiling` (`lib/run_guarded.sh`): argv, CR removal, the ceilings that kill the child, the `R9700_T_STOP` cut, the refusals (E1.S2 part (a): scenarios A2-A5, A7) |
 | `tests/test_serve_bench.sh` | `serve_start` (`lib/serve.sh`) and `bench_run` (`lib/bench.sh`): the measured commands (scenario A8) |
+| `tests/test_restore.sh` | the lock, the recovery marker (write, read, refusals), the worker gate and `worker_start`, the session stop, `container_stop_all`, `restore_from_marker` and `ready_wait` (E1.S2 part (b)) |
+| `tests/test_lifecycle.sh` | `bin/r9700` for part (b): `commands`, `init`, `verdict` as the restore-first shell; scenarios L1, L4–L10, L15–L18, L20, L21 in their restore-first or `init` forms |
+| `tests/lib/lifecycle.sh`, `tests/lib/fake_supervisor.sh` | helpers: a marker written by hand, `bin/r9700` as a user runs it, and a TEST DOUBLE of part (c)'s `step` (lock, marker, stop, worker behind the gate, kill) used to kill a supervisor |
 | `tests/test_stubs.sh` | the stubs: A1, the call log, the scripted answers, containers that refuse what the real `wslc` refuses, the stub worker, a stub never makes its directory |
 | `tests/stubs/wslc`, `powershell.exe`, `pwsh.exe`, `worker.sh`, `stub_common.sh` | the CI stand-ins for `wslc.exe`, Windows PowerShell and the restore shell, and the stub worker. Scripted by files below `$R9700_STUB_DIR`; an append-only call log; a "container" is a real `setsid sleep` recorded with its start ticks |
 | `tests/lib/stubcase.sh` | the helpers of the three files above (`setup_case`, `argv_of`, `log_args`, ...); it sources the libraries under test |
@@ -96,6 +99,10 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | the config loader (`config_load`, `config_keys`, `config_resolved`) | covered | `tests/test_config.sh` |
 | the arm table (`arms_load`, `arm_args`, `arm_env`, `arm_mounts`, `arms_check`) | covered | `tests/test_config.sh` |
 | the static checks (`tests/check_static.sh`) | covered | `tests/test_static.sh` |
+| `bin/r9700 commands` — the verb list, derived from the `verb_*` functions | covered | `tests/test_lifecycle.sh` (L18, L20) |
+| `bin/r9700 init` — lock, restore first, config, the checks, the leftover containers | covered; the step-driven scenarios wait for E1.S2 part (c) | `tests/test_lifecycle.sh` (L1, L4–L10, L15–L17, L21) |
+| `bin/r9700 verdict` — only the restore-first shell until E1.S3 | covered | `tests/test_lifecycle.sh` (L6, L9) |
+| the lock, the recovery marker, the worker gate, the session stop, the restore and its readiness wait (`lib/run_guarded.sh`, `lib/restore.sh`, `lib/worker_gate.sh`) | covered | `tests/test_restore.sh` |
 | the adapter functions (`wslc_run`, `wslc_exec`, `wslc_list`, `wslc_stop`, `wslc_logs`, `win_ram_mb`, `win_disk_newest`, `restore_start`, `restore_probe`): argv, CR removal, ceilings that kill the child, refusals | covered | `tests/test_adapter.sh` |
 | the adapter seam: only `lib/adapter.sh` expands the executable variables or runs the executables (`tests/check_static.sh --seam`) | covered | `tests/test_static.sh` |
 | `serve_start` (the measured container command) and `bench_run` (the six measured runs) | covered, with a `wait_ready` double until E1.S2 part (b) adds the real one | `tests/test_serve_bench.sh` |
@@ -120,6 +127,10 @@ Checked once on 2026-11-01 with Node 26 on Linux, by hand, because a test file c
    `leftovers: removed /<temp root>/testsToDelete-<owner token>-r9700-run-<id>` and the folder was gone.
 3. The stub-pid killing and the signal handling are no longer by hand: `tests/test_runner.sh` covers them (the first two steps above stay by hand,
    because they need a runner that is killed without a handler).
+
+## Lifecycle scenarios not covered until part (c)
+
+L1 (the `step` form: `init` has the same ordering and is tested), L2, L3, L11, L12, L13, L14, L19, L22, the bad-label half of L20 and the `TERM` half of L8 need the supervisor's `step` (admission, the retry loop, `step_run`, `supervise`, the cleanup path), the guards and the deadline watcher, which are E1.S2 part (c). L4, L5, L6, L7, L9, L10 and L21 are covered through the restore-first path (`bin/r9700 init`, `bin/r9700 verdict`) with a marker written by hand or by `tests/lib/fake_supervisor.sh`. The supervisor's own `SIGKILL` window (L21) is a double that kills itself after the worker start, not the real `step`.
 
 ## What it does not prove
 
