@@ -1,0 +1,28 @@
+# The formatting this repository follows (bash, Python, Node, Markdown, JSON, YAML). LF everywhere.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.py]
+indent_size = 4
+
+[*.{sh,mjs,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+# Two trailing spaces are a hard line break in Markdown; trimming them changes the rendering.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+# Measured data and captured output are kept byte for byte.
+[tests/fixtures/**]
+insert_final_newline = unset
+trim_trailing_whitespace = false
