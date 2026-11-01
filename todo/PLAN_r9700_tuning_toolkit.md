@@ -1,7 +1,15 @@
 # PLAN — a toolkit to tune vLLM on the R9700 without writing scripts
 
-> Status: **plan only, nothing implemented yet, 2026-11-01.** Scope: this new repository — the scripts
-> written ad hoc during the 2026-10-25..11-01 tuning work, made model-independent, tested and documented.
+> Status: **plan only, nothing implemented yet, 2026-11-01; `review_plan` proceed (2 reviewers, 8 findings
+> accepted).** Scope: this new repository — the scripts written ad hoc during the 2026-10-25..11-01 tuning
+> work, made model-independent, tested and documented.
+
+## Plan changes
+
+> Epoch 1 · approved 2026-11-01 · by reviewers · state: open
+
+  (note) The epoch-1 baseline includes the eight findings of the approving round, written into the
+  sections below, and the epic split the gate ordered with that verdict; neither is a change entry.
 
 ## Goal
 
@@ -65,6 +73,32 @@ todo/                          this plan, README.md
 POST_DEPLOY.md  README.md  LICENSE  .github/workflows (family checks, tests)
 ```
 
+**Lifecycle and recovery (plan-gate findings 0, 4, 6, 7).** One supervisor, the parent `bin/r9700`
+process, owns the workstation lock (`flock`, one run per machine), the recovery marker, the worker's process
+group and every container. Before it stops the operator's server it writes a recovery marker (what to
+restore, with which command); a guard stop or the deadline kills the WORKER group (`setsid`) and stops every
+container named with the fixed prefix (`machine.env: CONTAINER_PREFIX`, default `r9700tune-`), because
+killing a client does not stop a detached container. The supervisor itself stays outside that group, then
+restores once, waits for readiness (`/v1/models` answers and a one-token request completes, bounded), and only
+then clears the marker; a restore that does not become ready is a loud failure (exit code and a line on
+stderr), never silence. A run killed so hard that no cleanup ran leaves the marker: the next `bin/r9700`
+invocation of any kind restores first (idempotent: a ready server is left alone). A step that exits 3 (PC not
+quiet) is not a failure: the driver waits for `guard_quiet` (bounded by the deadline) and repeats the same
+step. `init` removes leftover containers with the prefix.
+
+**Config contract (finding 1).** `lib/config.sh` loads `machine.env` and `models/<name>.env` and validates
+every field before anything is stopped: required keys, types (path, integer, enum), allowed values; an error
+names the field and the legal values. The field list is in `research/module_config.md` (written in E1).
+
+**Run identity (finding 2).** A series outdir carries `fingerprint.json`: a hash of the resolved effective
+experiment (model files' identity, served name, image tag, mounted patches' hashes, generation config, the
+arms' resolved arguments, workloads and seeds). A resume with a different fingerprint is refused. An
+arm-round is complete only when its result file is written to a temporary name, validated (the expected
+lines present, the server alive at the end), and renamed into place.
+
+**MoE cache (finding 5).** The supervisor clears the Triton tuning cache after a MoE step in its exit path
+too, not only at the next chunk start.
+
 Behaviour that is kept exactly (it was measured): bench 1024/512 at c=1 (6 prompts) and c=4 (12) × 3
 seeds; prefill 8192/128 and 32768/128 × 3; spec-decode metrics; round 1 adds 20 greedy prompts and
 GSM8K-200; arms alternate; the operator's sampling defaults are mounted (`--generation-config`).
@@ -103,7 +137,8 @@ GSM8K-200; arms alternate; the operator's sampling defaults are mounted (`--gene
   personal path or account name.
 - **Acceptance on the R9700 (manual, recorded in `research/`):** `r9700 series` with `base` vs `ta3`, one
   round, on the 35B model (≈40 min); `r9700 moe-tune --coarse --keys 24` + kernel A/B (≈25 min); a
-  `r9700 run` plan with a forced RAM-guard limit to watch a clean stop and one restore.
+  `r9700 run` plan with a forced RAM-guard limit to watch a clean stop and one restore; `r9700 prefixtest`
+  and `r9700 linear-bench` once each with the 35B config, each producing its result file (finding 3).
 
 ## Definition of Done
 
