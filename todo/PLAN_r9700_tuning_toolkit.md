@@ -199,6 +199,11 @@ before the stop, idempotent restore and readiness, containers stopped by name. (
 fingerprint and the atomic arm-round record. The adapter seam is built inside (1), because the stub tests of (1)
 exercise it.
 
+**Stories.** [PLAN_r9700_tuning_toolkit_E1.md](PLAN_r9700_tuning_toolkit_E1.md): E1.S1 config contract, verdict,
+quality harness, test and CI base; E1.S2 lifecycle and restore protocol (cornerstone, area 1); E1.S3 run identity
+and completion, `series` and `verdict` (cornerstone, area 2). Its coverage table assigns every E1 item above to
+exactly one story.
+
 ### E2 — MoE config tuning on the E1 supervisor
 
 **Goal.** A person runs `bin/r9700 moe-tune` for a model (int4 expert layers and the BF16 MTP draft layer, full or
@@ -254,4 +259,4 @@ RAM-guard limit, the `prefixtest` and `linear-bench` runs, publication and the f
 
 **Cornerstone areas.** None. The driver reuses E1's protocol; its own logic is sequencing.
 
-Cornerstones: 0 of 2 — none marked yet
+Cornerstones: 2 of 2 — E1.S2, E1.S3
