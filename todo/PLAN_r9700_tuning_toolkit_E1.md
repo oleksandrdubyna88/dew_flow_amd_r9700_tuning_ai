@@ -660,7 +660,15 @@ Keys: `MARKER_VERSION=1`, `RUN_ID`, `WRITTEN_AT` (UTC), `PROD_CONTAINER`, `PROD_
 `WSLC`, `RESTORE_SHELL`, `RESTORE_SCRIPT_WIN`, `RESTORE_ARGS`, `CONTAINER_PREFIX`, `READY_TIMEOUT_S`,
 `WORKER_PGID`, `WORKER_START_TICKS`, `BOOT_ID`. It is written BEFORE the stop of the operator's server
 (`speed_A.sh` line 44 and `night7.sh` line 41 stopped it with no record — the fact of the source table) and
-rewritten once more when the worker has started, to add the three worker keys. It is removed only after the
+rewritten once more when the worker has started, to add the three worker keys. **The worker does no work before
+that second write is durable (plan-gate E1 finding 0):** `run_guarded` starts the worker as
+`setsid lib/worker_gate.sh <gate file> <cmd…>`; the gate script waits (bounded, 30 s, then exits 4) until
+`<gate file>` exists, then `exec`s the command. The supervisor writes the marker with the worker keys
+(`.part` + `mv`), then creates the gate file. A `SIGKILL` of the supervisor before the gate file exists leaves a
+worker that only waits and then exits 4 by itself — it never touches the GPU or a container; one after it
+leaves a marker that names the worker. Scenario L21 kills the supervisor in that window (a test hook
+`R9700_TEST_KILL_BEFORE_GATE=1` makes the supervisor `kill -9` itself right after the worker start) and checks:
+the worker exits 4 within the ceiling, no stub container call was made, the next invocation restores. It is removed only after the
 restore is ready (or, when the server was not running before, after every prefixed container is stopped).
 **If the operator's server was not running before the run, the restore does not start it**: a restore puts
 the machine back as it was, and starting a server the operator had stopped on purpose loads the GPU behind
@@ -1303,7 +1311,7 @@ S3 uses S2's names exactly: `verb_series`, `verb_verdict`, `run_guarded`, `quiet
 |---|---|---|---|
 | `model.dir`, `model.served_name`, `model.max_model_len`, `model.max_num_seqs`, `model.gpu_mem_util`, `model.extra_serve_args`, `model.tuned_config_dir` | the model fields | `config_resolved` | none |
 | `model.listing` | sha256 of `find <MODEL_DIR> -type f -printf '%P %s\n' \| LC_ALL=C sort` run INSIDE a throwaway container (`wslc_run` is for detached servers; this is `wslc run --rm` through a new adapter function `wslc_run_once <ceiling> <args…>`, 120 s, no GPU, the `hf-cache` volume and the generation config mounted) | the container | one container start, seconds; no weights are read |
-| `genconfig` | sha256 of every file under `/genconfig`, `<name> <sha256>` lines sorted, from the same throwaway container | the container | as above |
+| `genconfig` | sha256 of every regular file under `/genconfig`, recursive and hidden files included (`find . -type f -print0` → `sha256sum`), `<relative path> <sha256>` lines sorted with `LC_ALL=C` (plan-gate E1 finding 2; scenario F7 changes a nested and a hidden file and expects a refused resume) | the container | as above |
 | `image` | the `IMAGE` tag string | config | none |
 | `patches` | `{<rel source>: sha256}` for every mount of `MOUNTS` and of every arm's extra mounts | `PATCH_DIR` | one read per file |
 | `arms` | `{<arm>: {"args": [...], "env": [...], "mounts": [...]}}` for the arms of this series | `arm_args`, `arm_env`, `arm_mounts` | none |
@@ -1622,9 +1630,12 @@ by the operator's session from the real run — you write its template with the 
   (removed after the build; it is the one temporary thing, inside the outdir); the patches list from
   `R9700_MOUNTS` and `arm_mounts <arm>` for every arm, `sha256sum` under `R9700_PATCH_DIR`; the listing and the
   generation config from ONE throwaway container: `wslc_run_once 120 -v hf-cache:/root/.cache/huggingface -v
-  "$R9700_GENCONFIG_WIN:/genconfig:ro" "$R9700_IMAGE" sh -c 'find <MODEL_DIR> -type f -printf "%P %s\n" | LC_ALL=C
-  sort; echo ---; cd /genconfig && sha256sum *'` split at the `---` line (the volume names from
-  `R9700_HF_VOLUME`); the tools' hashes with `sha256sum lib/harness.py lib/bench.sh lib/series.sh`. Then
+  "$R9700_GENCONFIG_WIN:/genconfig:ro" "$R9700_IMAGE" sh -c 'find "$1" -type f -printf "%P %s\n" | LC_ALL=C
+  sort; echo ---; cd /genconfig && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum' sh
+  "$R9700_MODEL_DIR"` split at the `---` line (the volume names from `R9700_HF_VOLUME`). **The model path is an
+  argument (`$1`), never text inside the `sh -c` program** (plan-gate E1 finding 1): scenario F8 sets
+  `MODEL_DIR='/m; touch /tmp/x; #'` in a stub run and checks the stub received it as one argv element and no
+  command ran; the tools' hashes with `sha256sum lib/harness.py lib/bench.sh lib/series.sh`. Then
   `fingerprint.py build`; when `<outdir>/fingerprint.json` exists, `fingerprint.py compare --merge` instead of
   replacing it — a difference line means exit 2 with the lines on stderr (`verb_series` has not admitted, so
   nothing was stopped). With `--dry-run`: the same, then `series_dry_run` prints the resolved argv of the
