@@ -23,10 +23,22 @@
 // folder. A tree's top-level links (a `node_modules` junction) are unlinked BEFORE anything is removed, so a removal can never
 // follow one into its target.
 //
+// Windows lists and changes nothing (F16, interim). `isMine` there judges a path inside the caller's profile and never reads the owner SID, so
+// the scope key is not proven. `mutate` is decided ONCE from `platform` (`sweepLeftovers`): without it every resource a POSIX sweep would act on —
+// a quarantine to restore or a reservation to remove, a worktree to unlock, remove and prune, a folder to rename and remove, an orphan claim to
+// delete — is reported in `result.listed` as `unverified: <path> — the owner SID is not read on Windows (F16)`, and `removed` stays empty. The gate
+// is `withheld` (a verdict that says remove, or `foreign-uid`, which there is only the profile-path proxy: it is `unverified` too, never `foreign:`) and the quarantine pass; no other code path changes the disk. The Fix reads the SID and lifts the gate.
+//
+// The family's one implementation (F21). `identityOf`, `isOwnEmptyPlaceholder`, `removeOwnEmptyPlaceholder`, `moveExclusively` and `moveToQuarantine` are
+// exported with a last `{ io = fs, platform = process.platform }` argument: a consumer's own clean-up IMPORTS them through its pinned mount and never copies
+// them (a copy drifts). `io` replaces every `fs` call and `platform` the Windows branch, so a consumer's failure tests need no second implementation; the
+// options object is forwarded through every call between the helpers, and the sweep's own calls pass none.
+//
 // Order. Quarantine restores, worktrees (only those this repository lists), folders, orphaned claims. Never throws: every
 // failure is an `errors` entry, and the caller decides what to print — a sweep never changes a run's exit code.
 
 import * as crypto from "node:crypto";
+import fsDefault from "node:fs";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -39,6 +51,7 @@ import {
 export const MIN_AGE_MS = 10 * 60_000; // rule §4: ten minutes
 
 const OWNER_SUFFIX = ".owner";
+const UNVERIFIED = "unverified"; // the reason a removal is withheld where the owner SID is not read (F16)
 const QUARANTINE = /^\.(.+)\.teststodelete-quarantine-(\d+)-([0-9a-f]+)$/i;
 
 /** One line saying what went wrong: an errno code, or the first line of the message. */
@@ -122,10 +135,13 @@ function ownerFromLock(locked) {
 
 // --- identity ---------------------------------------------------------------------------------------------------
 
-/** `{ dev, ino, directory }` of an entry itself (a link is not followed), or `undefined` when it is not there. */
-function identityOf(target) {
+/**
+ * `{ dev, ino, directory }` of an entry itself (a link is not followed), or `undefined` when it is not there. `options` is the last argument of
+ * the five exported helpers (`identityOf` to `moveToQuarantine`): `{ io = fs, platform = process.platform }`, the seams a consumer's failure tests use.
+ */
+export function identityOf(target, { io = fs } = {}) {
   try {
-    const stat = fs.lstatSync(target, { bigint: true });
+    const stat = io.lstatSync(target, { bigint: true });
     return { dev: stat.dev, ino: stat.ino, directory: stat.isDirectory() };
   } catch {
     return undefined;
@@ -176,20 +192,22 @@ export function isTakenRename(error, thereAtTarget, platform = process.platform)
 }
 
 /** Is `placeholder` still the directory this move reserved: a directory, not a link, the reserved `(dev, ino)`, and empty? */
-function isOwnEmptyPlaceholder(placeholder, reserved) {
-  const now = identityOf(placeholder); // lstat: a link is its own entry, never a directory
+export function isOwnEmptyPlaceholder(placeholder, reserved, options = {}) {
+  const { io = fs } = options;
+  const now = identityOf(placeholder, options); // lstat: a link is its own entry, never a directory
   if (!sameIdentity(now, reserved) || !now.directory) return false;
   try {
-    return fs.readdirSync(placeholder).length === 0;
+    return io.readdirSync(placeholder).length === 0;
   } catch {
     return false;
   }
 }
 
 /** Remove the reserved placeholder only while it is still ours and empty (`rmdir`, never recursive): a name taken over in between is never touched. */
-function removeOwnEmptyPlaceholder(placeholder, reserved) {
+export function removeOwnEmptyPlaceholder(placeholder, reserved, options = {}) {
+  const { io = fs } = options;
   try {
-    if (isOwnEmptyPlaceholder(placeholder, reserved)) fs.rmdirSync(placeholder);
+    if (isOwnEmptyPlaceholder(placeholder, reserved, options)) io.rmdirSync(placeholder);
   } catch { /* gone, or not empty: leave it */ }
 }
 
@@ -202,33 +220,39 @@ function removeOwnEmptyPlaceholder(placeholder, reserved) {
  * the same user is not the threat this sweep guards against. A rename refused with ENOTEMPTY / EEXIST / ENOTDIR is the name taken after all
  * (EISDIR is the source that changed: it is thrown). When the rename fails the placeholder is removed — only while it is still our empty
  * directory with the reserved identity. `hooks.afterReserve(to, from)` and `hooks.beforeRename(to, from)` are the test seams between the
- * reservation and the pre-check, and between the pre-check and the rename.
+ * reservation and the pre-check, and between the pre-check and the rename. `options` (`{ io, platform }`) is forwarded to every helper it calls; `platform: "win32"` on a POSIX machine needs an `io` of its own and throws, before any rename, with the real `fs`.
  */
-function moveExclusively(from, to, hooks = {}) {
-  if (process.platform === "win32") {
+export function moveExclusively(from, to, hooks = {}, options = {}) {
+  const { io = fs, platform = process.platform } = options;
+  if (platform === "win32") {
+    // [code gate 0] The Windows branch renames directly and relies on the OS refusing an occupied name. On POSIX rename(2) REPLACES an empty directory, so
+    // `platform: "win32"` is a test seam for an `io` of the caller's own, never a way to run this branch on the real fs of a POSIX machine.
+    if (process.platform !== "win32" && (io === fs || io === fsDefault)) {
+      throw new Error(`moveExclusively: platform "win32" cannot be used with the real fs on ${process.platform}: rename(2) would replace an empty directory — pass an io of your own`);
+    }
     try {
-      fs.renameSync(from, to); // a directory rename onto an existing one fails here, so the move is exclusive by itself — unmeasured on Windows, which F9 settles
+      io.renameSync(from, to); // a directory rename onto an existing one fails here, so the move is exclusive by itself — unmeasured on Windows, which F9 settles
     } catch (error) {
-      if (isTakenRename(error, identityOf(to) !== undefined, "win32")) return false;
+      if (isTakenRename(error, identityOf(to, options) !== undefined, platform)) return false;
       throw error;
     }
     return true;
   }
   try {
-    fs.mkdirSync(to, { mode: 0o700 }); // exclusive: an existing folder, file or link under the name refuses
+    io.mkdirSync(to, { mode: 0o700 }); // exclusive: an existing folder, file or link under the name refuses
   } catch (error) {
     if (error?.code === "EEXIST") return false;
     throw error;
   }
-  const reserved = identityOf(to);
+  const reserved = identityOf(to, options);
   try {
     hooks.afterReserve?.(to, from);
-    if (!isOwnEmptyPlaceholder(to, reserved)) return false; // not ours any more: never renamed onto, never removed
+    if (!isOwnEmptyPlaceholder(to, reserved, options)) return false; // not ours any more: never renamed onto, never removed
     hooks.beforeRename?.(to, from);
-    fs.renameSync(from, to);
+    io.renameSync(from, to);
     return true;
   } catch (error) {
-    removeOwnEmptyPlaceholder(to, reserved);
+    removeOwnEmptyPlaceholder(to, reserved, options);
     if (TAKEN_CODES.has(error?.code)) return false;
     throw error;
   }
@@ -244,10 +268,10 @@ function restoreOnto(quarantined, original, hooks = {}) {
 }
 
 /** Move `dir` to a quarantine name that was free: a taken name draws a new suffix, at most `QUARANTINE_DRAWS` times; then the folder is kept (one error). Returns the name. */
-function moveToQuarantine(dir, hooks) {
+export function moveToQuarantine(dir, hooks, options = {}) {
   for (let draw = 0; draw < QUARANTINE_DRAWS; draw += 1) {
     const quarantine = quarantineName(dir);
-    if (moveExclusively(dir, quarantine, hooks)) return quarantine;
+    if (moveExclusively(dir, quarantine, hooks, options)) return quarantine;
   }
   throw new Error(`cannot move ${dir} into quarantine: no free name in ${QUARANTINE_DRAWS} draws — the folder is kept`);
 }
@@ -310,6 +334,7 @@ function reporter(result) {
     foreign: (kind, target, owner) => result.listed.push(`foreign: ${kind} ${path.basename(target)} — owner ${owner}`),
     legacy: (kind, target) => result.listed.push(`legacy: ${kind} ${path.basename(target)} — remove with: ${legacyCommand(kind, target)}`),
     unmarked: (kind, target) => result.listed.push(`unmarked: ${kind} ${path.basename(target)}`),
+    unverified: (target) => result.listed.push(`unverified: ${target} — the owner SID is not read on Windows (F16)`),
   };
   return {
     ...lines,
@@ -335,7 +360,21 @@ function decideLegacy({ kind, target, locked, ageMs, minAgeMs, probe, mine, plat
   return legacyOwnerState(old, probe, { platform }) === "gone" ? { remove: true } : { remove: false, reason: "legacy" };
 }
 
+/**
+ * THE gate of F16, for a sweep that may not change the disk (`context.mutate` is false). A verdict that says remove becomes `unverified`; so does
+ * `foreign-uid`, which on Windows is only the profile-path proxy of `isMine` (a shared TEMP outside the profile): neither key is read there, so
+ * nobody is called foreign by it. Every other verdict stands.
+ */
+function withheld(context, verdict) {
+  if (context.mutate) return verdict;
+  return verdict.remove || verdict.reason === "foreign-uid" ? { remove: false, reason: UNVERIFIED } : verdict;
+}
+
 function judge(context, entry) {
+  return withheld(context, verdictOf(context, entry));
+}
+
+function verdictOf(context, entry) {
   const { now, minAgeMs, state, mine } = context;
   const { target, kind, relation, nameOwner } = entry;
   if (relation === "legacy") {
@@ -348,6 +387,11 @@ function judge(context, entry) {
 function record(context, entry, verdict) {
   const { report } = context;
   if (verdict.remove) return;
+  if (verdict.reason === UNVERIFIED) {
+    report.keep(entry.target, UNVERIFIED);
+    report.unverified(entry.target);
+    return;
+  }
   if (entry.relation === "legacy") {
     report.keep(entry.target, verdict.reason);
     if (verdict.reason === "legacy") report.legacy(entry.kind, entry.target);
@@ -510,9 +554,9 @@ function sweepOrphanClaims(context) {
     if (look.has(path.basename(folderPath))) continue; // its folder sits in a quarantine: not an orphan, nothing is listed
     // A claim with no folder is what a helper that claims FIRST leaves when it dies between the claim and the create. It is a
     // claim like any other: its owner decides — gone removes it; live, foreign, unknown and unreadable keep it.
-    const verdict = related.relation === "legacy"
+    const verdict = withheld(context, related.relation === "legacy"
       ? decideLegacy({ kind: "claim", target: folderPath, ageMs: Infinity, minAgeMs, probe: context.probe, mine: () => mine(claim), platform: context.platform })
-      : decide({ owner: readOwner(folderPath, "folder", { mine }), ageMs: Infinity, minAgeMs, state, mine: mine(claim), nameOwner: related.nameOwner });
+      : decide({ owner: readOwner(folderPath, "folder", { mine }), ageMs: Infinity, minAgeMs, state, mine: mine(claim), nameOwner: related.nameOwner }));
     if (!verdict.remove) {
       record(context, { ...related, kind: "claim", target: claim }, verdict);
       continue;
@@ -559,6 +603,11 @@ function restoreQuarantines(context) {
     if (!mine(quarantined) || !isAskablePid(found[2], context.platform)) continue; // another uid's, or a pid that is no process: the probe is never asked
     if (context.probe(Number(found[2]))?.state !== "dead") continue; // its renamer may still be working
     if (!pastWindow(quarantined, context.now, context.minAgeMs)) continue; // a renamer in another pid namespace has a pid this process cannot see: it is "dead" here and may be mid-delete
+    if (!context.mutate) { // a restore or a reservation removal would change the disk: listed, as a POSIX sweep would act (F16)
+      context.report.keep(quarantined, UNVERIFIED);
+      context.report.unverified(quarantined);
+      continue;
+    }
     const original = path.join(tmp, found[1]);
     if (removeEmptyReservation(quarantined, original, listedAs, context.hooks)) { // a placeholder a killed sweep reserved and never renamed onto: nothing to put back
       result.listed.push(`notice: removed the empty reservation ${dirent.name} a killed sweep left`);
@@ -584,6 +633,7 @@ function step(result, label, run) {
  * temp root; `probe` the liveness query (a seam for tests), asked at most once per pid; `mine` the kernel-owner question
  * (a seam: a second uid cannot be had in a test); `hooks.afterCapture` / `hooks.afterVerdict` / `hooks.afterRename` / `hooks.afterReserve(placeholder, source)` / `hooks.beforeRename(placeholder, source)` (both run on the quarantine move AND on a restore, where the arguments are `(original, quarantined)`) / `hooks.beforeReservationRemoval(quarantine)` / `hooks.beforeClaimRemoval` (seams: a change between the
  * capture, the verdict and the removal). Never throws. `result.listed` holds the `foreign:` / `legacy:` / `unmarked:` lines.
+ * `platform` (a seam) decides `mutate` once: on `win32` the sweep changes nothing and lists `unverified:` lines instead (F16).
  */
 export function sweepLeftovers({ repo, tmp = tempRoot(), now = Date.now(), minAgeMs = MIN_AGE_MS, probe = processProbe, mine = isMine, hooks = {}, platform = process.platform } = {}) {
   const result = { removed: [], preserved: [], listed: [], errors: [] };
@@ -594,7 +644,7 @@ export function sweepLeftovers({ repo, tmp = tempRoot(), now = Date.now(), minAg
   };
   const owner = thisOwnerToken();
   const state = (record, nameOwner) => ownerState(record, cached, { nameOwner, callerOwner: owner, kernelMine: true });
-  const context = { repo, tmp, now, minAgeMs, result, owner, mine, hooks, platform, probe: cached, state, report: reporter(result) };
+  const context = { repo, tmp, now, minAgeMs, result, owner, mine, hooks, platform, mutate: platform !== "win32", probe: cached, state, report: reporter(result) };
   step(result, "quarantines", () => restoreQuarantines(context));
   const listing = step(result, "worktree list", () => listWorktrees(repo));
   if (listing !== undefined) step(result, "worktrees", () => sweepWorktrees(context, listing));
