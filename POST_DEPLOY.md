@@ -2,7 +2,7 @@
 
 Target: the toolkit checkout on the operator's R9700 PC (the WSL folder the operator runs `bin/r9700` from); pass its path as `--target`. "Deploy" here
 is installing the toolkit or updating it (`git pull`) on that machine. Run this file after every install or update.
-Last verified: 2026-11-02, target `~/git/dew_flow_amd_r9700_tuning_ai` on the operator's R9700 PC, version 017ed6d (main after PR #1) — PARTIAL: items 1 (`init` for both model files: rc 0), 4 (production answered `391`; 19.8 s, the known first-request stall), 5, 6, 7, 9 and 10 pass; 2 and 3 NOT RUN (the `--dry-run` starts a throwaway container on the GPU PC, and the operator holds GPU-side runs for now); 8 and 11 not yet possible (no series has run; the acceptance run is not done).
+Last verified: 2026-11-02 23:40, target `~/git/dew_flow_amd_r9700_tuning_ai` on the operator's R9700 PC, version 901b48e (`lib/` and `bin/` equal at 255aeac) — ALL 11 items observed: 1 (`init` rc 0 for both model files), 2 and 3 (both `--dry-run` rc 0, nothing written), 4 (production answered), 5, 6, 7, 8 (the placed harness equals `lib/harness.py`), 9, 10, and 11 (the acceptance run of `research/ACCEPTANCE_series_2026-11-02.md`: `ta3` PASS in one round, run with the quiet gate off by the operator's decision).
 
 | # | What a person loses if this is broken | Check | Auto |
 |---|---|---|---|
