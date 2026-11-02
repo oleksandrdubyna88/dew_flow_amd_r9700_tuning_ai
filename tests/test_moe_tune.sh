@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+# The verb `bin/r9700 moe-tune chunk|merge|activate|ab` (E2.S3): the argument grammar and its refusals before the lock, the placed files, the chunk and
+# the A/B as steps of ONE supervisor, the merge as a reading verb that writes a versioned record only, `activate` as the one atomic, explicit step that
+# changes what a server reads, the dry runs. Scenarios U1-U15 of the story (U13 and U14 are split into one function per case). Every test body is a
+# function t_<guarantee>; each runs in its own subshell and writes only below $R9700_TEST_ROOT. "A verb chunk" is `bin/r9700 moe-tune chunk
+# qwen3.6-35b-a3b-gptq --keys "24" --out m` and OUTD is its outdir (the assert library's OUT is the stdout of the last assert_exit).
+set -u
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(dirname "$HERE")"
+# shellcheck source=tests/lib/assert.sh
+source "$HERE/lib/assert.sh"
+# shellcheck source=tests/lib/stubcase.sh
+source "$HERE/lib/stubcase.sh"
+# shellcheck source=tests/lib/lifecycle.sh
+source "$HERE/lib/lifecycle.sh"
+# shellcheck source=tests/lib/moecase.sh
+source "$HERE/lib/moecase.sh"
+
+FIX_B2_NAME="$(basename "$(ls "$HERE"/fixtures/moe/b2/E=*.json)")"
+FIX_B1_NAME="$(basename "$(ls "$HERE"/fixtures/moe/b1/E=*.json)")"
+
+# mv_setup <name>: the 35B model, the operator's server running, the stub answers of a chunk of key 24; the files are NOT placed (the verb does it)
+mv_setup() {
+  step_setup "$1"
+  prod_running
+  MOE_MODEL="$(basename "$MODEL_35B" .env)"
+  OUTD="$R9700_RESULTS_DIR/m"
+  WORK="$R9700_WORK_DIR/r9700"
+  EX="$WORK/moe/$MOE_MODEL"
+  chunk_json_for b2 24
+}
+
+mv_verb() { r9700 moe-tune "$@"; }
+
+# mv_variant <KEY=VALUE>...: the 35B model file with these keys set (an existing line of the key is replaced), under its own name so the exchange folder
+# is the same; sets MVM
+mv_variant() {
+  local line
+  mkdir -p "$CASE/v"
+  MVM="$CASE/v/$MOE_MODEL.env"
+  cp "$MODEL_35B" "$MVM"
+  for line in "$@"; do # a key may be given once per file: the variant replaces its line
+    { grep -v "^${line%%=*}=" "$MVM" || true; } > "$MVM.new"
+    printf '%s\n' "$line" >> "$MVM.new"
+    mv "$MVM.new" "$MVM"
+  done
+}
+
+# mv_chunks <keys>...: one verb chunk per key
+mv_chunks() {
+  local key
+  for key in "$@"; do
+    chunk_json_for b2 "$key"
+    r9700 moe-tune chunk "$MOE_MODEL" --keys "$key" --out m > /dev/null 2>&1 || return 1
+  done
+}
+
+# mv_record <stamp> <b1|b2>: a merge record made by hand (the file of that merged fixture), for the tests that start at `activate`
+mv_record() {
+  mkdir -p "$OUTD/merged/$1"
+  cp "$HERE/fixtures/moe/$2"/E=*.json "$OUTD/merged/$1/"
+}
+
+# stamp_of_merge: the stamp the merge printed, from the last stdout
+stamp_of_merge() { printf '%s\n' "$OUT" | sed -n 's/^merged: \([^ ]*\) (activate it with: .*/\1/p' | tail -n 1; }
+
+keys_of() { python3 -c 'import json, sys; print(" ".join(k for k in json.load(open(sys.argv[1])) if k != "triton_version"))' "$1"; }
+
+calls_since() { tail -n +"$(($1 + 1))" "$STUB/calls.log"; }
+
+calls_n() { wc -l < "$STUB/calls.log" | tr -d ' '; }
+
+# since_count <n> <stub> <word>: the call-log lines after line <n> that have the word as an argument of that stub
+since_count() { calls_since "$1" | awk -v s="$2" -v w="$3" '$3 == s { for (i = 4; i <= NF; i++) if ($i == w) { n++; break } } END { print n + 0 }'; }
+
+# wait_glob <pattern> [<n>]: waits (bounded: n * 0.1 s, default 100) for a path matching the glob
+wait_glob() {
+  local i
+  for i in $(seq 1 "${2:-100}"); do compgen -G "$1" > /dev/null && return 0; sleep 0.1; done
+  return 1
+}
+
+parts_under() { find "$@" -name '*.part-*' 2> /dev/null | wc -l | tr -d ' '; }
+
+# ---- U1-U3: the chunk through the verb ---------------------------------------------------------------------------------------------------------
+
+t_u1_a_verb_chunk_places_the_files_records_the_chunk_and_names_it() {
+  mv_setup "$FUNCNAME"
+  assert_missing "$WORK/benchmark_moe.py" "the benchmark is not placed before"
+  assert_missing "$WORK/coarse_candidates.json" "nor the candidates"
+  assert_exit 0 "a verb chunk" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  local chunk_out="$OUT"
+  assert_exit 0 "benchmark_moe.py is placed, byte for byte" -- cmp "$REPO/vendor/benchmark_moe.py" "$WORK/benchmark_moe.py"
+  assert_exit 0 "coarse_candidates.json is placed, byte for byte" -- cmp "$REPO/config/coarse_candidates.json" "$WORK/coarse_candidates.json"
+  assert_exit 0 "the record has the default name <layer>-<full>-<keys>" -- test -s "$OUTD/chunks/experts-full-24/chunk.env"
+  assert_eq "moe-tune: outdir $OUTD" "$(printf '%s\n' "$chunk_out" | head -n 1)" "the first stdout line names the outdir"
+  assert_contains "$chunk_out" "recorded chunks/experts-full-24" "and the record is named later"
+  assert_eq "1" "$(prod_stops)" "the operator's server was stopped once"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "and restored once"
+}
+
+t_u1b_a_placed_file_that_differs_is_replaced_and_one_that_cannot_be_placed_is_refused_before_any_stop() {
+  mv_setup "$FUNCNAME"
+  mkdir -p "$WORK"
+  printf 'an older benchmark\n' > "$WORK/benchmark_moe.py"
+  assert_exit 0 "a verb chunk over a stale placed file" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  assert_exit 0 "the stale file is replaced by the vendored one" -- cmp "$REPO/vendor/benchmark_moe.py" "$WORK/benchmark_moe.py"
+  assert_eq "0" "$(parts_under "$WORK")" "no .part of a placement remains"
+  rm -rf "$WORK/benchmark_moe.py" "$WORK/coarse_candidates.json" "$OUTD"
+  chmod a-w "$WORK"
+  local before
+  before="$(calls_n)"
+  assert_exit 2 "an unwritable work folder: the placement fails" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  chmod u+w "$WORK"
+  assert_contains "$ERR" "moe-tune: benchmark_moe.py cannot be placed in $WORK" "the line names the file and the folder"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "nothing was stopped"
+  assert_eq "0" "$(since_count "$before" pwsh.exe -Detach)" "and nothing restored: no admission happened"
+}
+
+t_u2_coarse_layer_and_chunk_shape_the_name_and_the_worker_arguments() {
+  mv_setup "$FUNCNAME"
+  chunk_json_for b1 256 1024 2048
+  assert_exit 0 "a draft coarse chunk of three keys" -- mv_verb chunk "$MOE_MODEL" --keys "256 1024 2048" --coarse --layer draft --out m
+  assert_exit 0 "the record is named layer-search-keys" -- test -s "$OUTD/chunks/draft-coarse-256-1024-2048/chunk.env"
+  assert_contains "$(worker_log 1)" "(draft, coarse, keys 256 1024 2048)" "the worker was started with the words: layer, search, keys"
+  assert_eq "coarse" "$(env_get "$OUTD/chunks/draft-coarse-256-1024-2048/chunk.env" SEARCH)" "SEARCH in the record"
+  assert_eq "draft" "$(env_get "$OUTD/chunks/draft-coarse-256-1024-2048/chunk.env" LAYER)" "LAYER in the record"
+  chunk_json_for b2 24
+  assert_exit 0 "--chunk names the record" -- mv_verb chunk "$MOE_MODEL" --keys "24" --chunk mine --out m
+  assert_exit 0 "the record is chunks/mine" -- test -s "$OUTD/chunks/mine/chunk.env"
+}
+
+t_u3_a_recorded_chunk_is_counted_before_admission() {
+  mv_setup "$FUNCNAME"
+  assert_exit 0 "the first verb chunk" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  local before
+  before="$(calls_n)"
+  assert_exit 0 "the same command again" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  assert_contains "$OUT" "moe-tune: chunk experts-full-24 is recorded, nothing to do" "it says so"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "no stop"
+  assert_eq "0" "$(since_count "$before" pwsh.exe -Detach)" "no restore"
+  assert_eq "0" "$(since_count "$before" wslc run)" "no container of any kind"
+  assert_eq "no step" "$(ls "$(last_run_dir)/steps" 2> /dev/null | grep . > /dev/null && echo steps || echo 'no step')" "the second invocation's run folder holds no step"
+}
+
+# ---- U4: the arguments are refused before the lock ---------------------------------------------------------------------------------------------
+
+# refused_before_lock <name> <expected stderr text> <args...>: exit 2, the text on stderr, no lock file, no call at all
+refused_before_lock() {
+  local name="$1" want="$2" before
+  shift 2
+  before="$(calls_n)"
+  assert_exit 2 "$name" -- mv_verb "$@"
+  assert_contains "$ERR" "$want" "$name: the line names the legal shape"
+  assert_missing "$R9700_STATE_DIR/lock" "$name: no lock was taken"
+  assert_eq "$before" "$(calls_n)" "$name: nothing was called"
+}
+
+t_u4_the_arguments_are_refused_before_the_lock_naming_the_legal_shape() {
+  mv_setup "$FUNCNAME"
+  local m="$MOE_MODEL"
+  refused_before_lock "no mode" "usage: moe-tune chunk|merge|activate|ab <model> [options]"
+  refused_before_lock "an unknown mode" 'unknown mode "frob"; legal: chunk merge activate ab' frob
+  refused_before_lock "chunk without a model" "usage: moe-tune chunk|merge|activate|ab <model> [options]" chunk
+  refused_before_lock "chunk without --keys" "moe-tune: chunk: --keys is required" chunk "$m"
+  refused_before_lock "a key that is not a number" '"a" is not a whole number from 1 to 65536' chunk "$m" --keys "a 2"
+  refused_before_lock "a key given twice" "given twice" chunk "$m" --keys "2 2"
+  refused_before_lock "a key too big" '"65537" is not a whole number from 1 to 65536' chunk "$m" --keys "65537"
+  refused_before_lock "a layer that is none" "experts draft" chunk "$m" --keys 1 --layer heads
+  refused_before_lock "a chunk name with a space" '^[a-z0-9][a-z0-9-]{0,30}$' chunk "$m" --keys 1 --chunk "Bad Name"
+  refused_before_lock "a default name that is too long" "pass --chunk" chunk "$m" --keys "11111 22222 33333 44444 55555"
+  refused_before_lock "an option the mode does not take" 'unknown option "--rule"; legal: --keys, --coarse, --layer, --chunk, --out, --dry-run' chunk "$m" --keys 1 --rule each
+  refused_before_lock "an outdir that is a path" '--out "../x" is not a name' chunk "$m" --keys 1 --out ../x
+  refused_before_lock "an option without its value" "--keys needs a value" chunk "$m" --keys
+  refused_before_lock "ab with a rule that is none" "each median" ab "$m" --keys "1 4" --rule mean --rule-keys "1"
+  refused_before_lock "ab without --rule" "moe-tune: ab: --rule is required" ab "$m" --keys "1 4" --rule-keys "1"
+  refused_before_lock "ab without --rule-keys" "moe-tune: ab: --rule-keys is required" ab "$m" --keys "1 4" --rule each
+  refused_before_lock "a rule key that is not a key" "rule key 5 is not in --keys" ab "$m" --keys "1 4" --rule each --rule-keys "5"
+  refused_before_lock "reps out of range" '--reps "0" is not a whole number from 1 to 9' ab "$m" --keys "1 4" --rule each --rule-keys "1" --reps 0
+  refused_before_lock "merge without a chunk" "moe-tune: merge: at least one chunk name is needed" merge "$m"
+  refused_before_lock "merge with a chunk name that is a path" '^[a-z0-9][a-z0-9-]{0,30}$' merge "$m" ../x
+  refused_before_lock "activate without a stamp" "moe-tune: activate: a stamp is needed" activate "$m"
+  refused_before_lock "activate with a stamp that is a path" "is not a stamp" activate "$m" ../x
+  assert_exit 0 "the operator's server is untouched" -- test -f "$STUB/containers/vllm.pid"
+}
+
+# ---- U5: MOE_DTYPE=none is refused after the restore-first and before any stop -----------------------------------------------------------------
+
+t_u5_moe_dtype_none_is_refused_before_any_stop() {
+  mv_setup "$FUNCNAME"
+  mv_variant "MOE_DTYPE=none"
+  local before
+  before="$(calls_n)"
+  assert_exit 2 "a chunk of a model without MoE layers" -- mv_verb chunk "$MVM" --keys 24 --out m
+  assert_contains "$ERR" "moe-tune: $MOE_MODEL: MOE_DTYPE=none: no MoE layers to tune" "the line names the model and the field"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "no stop vllm"
+  assert_exit 2 "an A/B of the experts layer too" -- mv_verb ab "$MVM" --keys "24" --rule median --rule-keys "24" --out m
+  assert_eq "0" "$(since_count "$before" wslc stop)" "still no stop"
+}
+
+t_u5b_the_restore_comes_first_then_the_refusal() {
+  mv_setup "$FUNCNAME"
+  mv_variant "MOE_DTYPE=none"
+  wslc stop vllm > /dev/null
+  write_marker
+  assert_exit 2 "a refused model with a marker present" -- mv_verb chunk "$MVM" --keys 24 --out m
+  assert_eq "r9700: recovery marker found (run hand-1), restoring first" "$(printf '%s\n' "$OUT" | head -n 1)" "the first stdout line is the marker's"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "the restore ran"
+  assert_contains "$ERR" "MOE_DTYPE=none" "and then the refusal"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+}
+
+# ---- U6: --dry-run prints the container lines and starts nothing -------------------------------------------------------------------------------
+
+t_u6_a_dry_run_prints_the_container_lines_and_starts_nothing() {
+  mv_setup "$FUNCNAME"
+  local before line
+  before="$(calls_n)"
+  assert_exit 0 "a chunk dry run" -- mv_verb chunk "$MOE_MODEL" --keys "24" --coarse --dry-run --out m
+  local dry_out="$OUT"
+  assert_eq "1" "$(printf '%s\n' "$dry_out" | grep -c '^dry-run: wslc run --rm --name r9700tune-moe-tune-experts-coarse-24 ')" "one chunk line"
+  assert_contains "$dry_out" "-e MOE_TUNE_CANDIDATES=/work/r9700/coarse_candidates.json" "with the candidates word"
+  assert_contains "$dry_out" "--batch-size 24 " "and the keys"
+  assert_eq "1" "$(printf '%s\n' "$dry_out" | grep -c '^dry-run: wslc run --rm --name r9700tune-moe-clear ')" "and the clear's line"
+  assert_eq "0" "$(since_count "$before" wslc run)" "no container was started"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "nothing was stopped"
+  assert_eq "0" "$(since_count "$before" pwsh.exe -Detach)" "nothing was restored"
+  assert_missing "$OUTD/chunks" "no chunks folder"
+  assert_eq "0" "$(parts_under "$OUTD")" "no part under the outdir"
+  assert_exit 0 "a dry run places the files (a hash-checked copy, no record)" -- cmp "$REPO/vendor/benchmark_moe.py" "$WORK/benchmark_moe.py"
+  # the line is what the worker runs: the same words as the real call, in the same order
+  local dry_chunk dry_clear
+  dry_chunk="$(printf '%s\n' "$dry_out" | grep '^dry-run: wslc run --rm --name r9700tune-moe-tune-')"
+  dry_clear="$(printf '%s\n' "$dry_out" | grep '^dry-run: wslc run --rm --name r9700tune-moe-clear ')"
+  assert_exit 0 "the same command for real" -- mv_verb chunk "$MOE_MODEL" --keys "24" --coarse --out m
+  run_argv moe-tune-experts-coarse-24
+  line="dry-run: wslc ${ARGV[*]}"
+  assert_eq "$line" "$dry_chunk" "the chunk's dry-run line is the real call's words"
+  run_argv moe-clear
+  line="dry-run: wslc ${ARGV[*]}"
+  assert_eq "$line" "$dry_clear" "the clear's dry-run line is the real call's words"
+}
+
+t_u6b_an_ab_dry_run_prints_six_container_lines_that_are_the_real_calls() {
+  mv_setup "$FUNCNAME"
+  local before line n arm rep ab_args
+  ab_args=(ab "$MOE_MODEL" --keys "1 2 3 4 6 8 12 16" --rule each --rule-keys "1 4" --layer draft --out m)
+  before="$(calls_n)"
+  assert_exit 0 "an A/B dry run (no activated file is needed to look)" -- mv_verb "${ab_args[@]}" --dry-run
+  local dry_out="$OUT"
+  assert_eq "6" "$(printf '%s\n' "$dry_out" | grep -c '^dry-run: wslc run --rm --name r9700tune-moe-ab-')" "six A/B lines"
+  assert_eq "0" "$(since_count "$before" wslc run)" "no container was started"
+  assert_missing "$OUTD/ab" "no ab folder"
+  local -a dry=()
+  mapfile -t dry < <(printf '%s\n' "$dry_out" | grep '^dry-run: wslc run --rm --name r9700tune-moe-ab-')
+  mkdir -p "$EX/merged"
+  cp "$HERE/fixtures/moe/b1"/E=*.json "$EX/merged/"
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  assert_exit 0 "the same A/B for real" -- mv_verb "${ab_args[@]}"
+  n=0
+  for rep in 1 2 3; do
+    for arm in default tuned; do
+      run_argv "moe-ab-$arm-$rep"
+      line="dry-run: wslc ${ARGV[*]}"
+      assert_eq "$line" "${dry[$n]}" "the dry-run line of $arm-$rep is the real call's words (the folders of both arms included)"
+      n=$((n + 1))
+    done
+  done
+}
+
+# ---- U7-U10: merge ---------------------------------------------------------------------------------------------------------------------------
+
+# base_place: the production file of 2026-10-27 where the 35B model's TUNED_CONFIG_DIR (/work/moe/tune/merged) points inside the work folder
+base_place() {
+  mkdir -p "$R9700_WORK_DIR/moe/tune/merged"
+  cp "$HERE/fixtures/moe/b2_base"/E=*.json "$R9700_WORK_DIR/moe/tune/merged/"
+}
+
+t_u7_a_merge_writes_a_versioned_record_only_with_the_base_of_the_models_tuned_folder() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 32 || return
+  base_place
+  local before stamp
+  before="$(calls_n)"
+  assert_exit 0 "merge of two chunks" -- mv_verb merge "$MOE_MODEL" --out m experts-full-24 experts-full-32
+  local merge_out="$OUT"
+  stamp="$(stamp_of_merge)"
+  assert_exit 0 "the merged file is in merged/<stamp>/" -- test -s "$OUTD/merged/$stamp/$FIX_B2_NAME"
+  assert_eq "1 2 4 8 12 16 24 32 256 1024 2048" "$(keys_of "$OUTD/merged/$stamp/$FIX_B2_NAME")" "the nine production keys and the two new ones"
+  assert_eq "$R9700_WORK_DIR/moe/tune/merged/$FIX_B2_NAME" "$(env_get "$OUTD/merged/$stamp/merge.env" BASE)" "BASE is the model's tuned folder file"
+  assert_eq "$(sha256sum "$HERE/fixtures/moe/b2_base/$FIX_B2_NAME" | cut -d' ' -f1)" "$(env_get "$OUTD/merged/$stamp/merge.env" BASE_SHA256)" "BASE_SHA256 is the production file's hash"
+  assert_eq "$(sha256sum "$OUTD/merged/$stamp/$FIX_B2_NAME" | cut -d' ' -f1)" "$(env_get "$OUTD/merged/$stamp/merge.env" OUTPUT_SHA256)" "OUTPUT_SHA256 is the output's hash"
+  assert_eq "experts-full-24 experts-full-32" "$(env_get "$OUTD/merged/$stamp/merge.env" CHUNKS)" "CHUNKS"
+  assert_contains "$(env_get "$OUTD/merged/$stamp/merge.env" WRITTEN_AT)" "T" "WRITTEN_AT is a UTC time"
+  assert_eq "merged: $stamp (activate it with: moe-tune activate $MOE_MODEL $stamp --out m)" "$(printf '%s\n' "$merge_out" | tail -n 1)" "the last stdout line says how to activate it"
+  assert_contains "$merge_out" "base: $R9700_WORK_DIR/moe/tune/merged/$FIX_B2_NAME" "and the base is named"
+  assert_missing "$EX/merged" "the exchange folder has no merged/ folder"
+  assert_eq "0" "$(parts_under "$OUTD" "$EX")" "no .part- file anywhere"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "a reading verb: nothing was stopped"
+  assert_eq "0" "$(since_count "$before" pwsh.exe -Detach)" "and nothing restored"
+  assert_exit 0 "the merged file passes check for its keys" -- python3 "$REPO/lib/merge_moe.py" check --keys "1 2 4 8 12 16 24 32 256 1024 2048" "$OUTD/merged/$stamp/$FIX_B2_NAME"
+}
+
+t_u8_a_merge_without_a_readable_base_says_so_and_goes_on_and_base_none_skips_it() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 32 || return
+  mv_variant "TUNED_CONFIG_DIR=/data/moe"
+  assert_exit 0 "merge with a tuned folder outside /work" -- mv_verb merge "$MVM" --out m experts-full-24 experts-full-32
+  assert_contains "$OUT" "base: TUNED_CONFIG_DIR /data/moe is not under /work, no base" "the line says why there is no base"
+  assert_eq "24 32" "$(keys_of "$OUTD/merged/$(stamp_of_merge)/$FIX_B2_NAME")" "the output holds the chunks' keys only"
+  assert_exit 0 "--base none with the unedited model" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 experts-full-32
+  assert_not_contains "$OUT" "base:" "no base line at all"
+  assert_eq "24 32" "$(keys_of "$OUTD/merged/$(stamp_of_merge)/$FIX_B2_NAME")" "the same two keys"
+  assert_eq "none" "$(env_get "$OUTD/merged/$(stamp_of_merge)/merge.env" BASE)" "BASE=none in the record"
+  base_place
+  assert_exit 2 "--base with a file that is not there" -- mv_verb merge "$MOE_MODEL" --out m --base "$CASE/nosuch.json" experts-full-24
+  assert_contains "$ERR" "moe-tune: merge: --base $CASE/nosuch.json is not a file" "named"
+}
+
+t_u8b_a_merge_names_the_layer_of_its_chunks() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 || return
+  assert_exit 2 "--layer draft over a chunk of the experts layer" -- mv_verb merge "$MOE_MODEL" --out m --base none --layer draft experts-full-24
+  assert_contains "$ERR" "moe-tune: merge: chunk experts-full-24 is of the layer experts, not draft" "the refusal names the chunk and both layers"
+  assert_missing "$OUTD/merged" "nothing was written"
+  assert_exit 0 "--layer experts accepts it" -- mv_verb merge "$MOE_MODEL" --out m --base none --layer experts experts-full-24
+}
+
+t_u9_a_merge_refuses_a_missing_chunk_and_leaves_nothing_behind() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 || return
+  assert_exit 2 "merge with a chunk that is not there" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 nosuch
+  assert_contains "$ERR" "merge: missing chunk: $OUTD/chunks/nosuch" "the line of merge_moe.py names the chunk"
+  assert_missing "$OUTD/merged" "no merged/<stamp>/"
+  assert_eq "0" "$(parts_under "$OUTD" "$EX")" "no .part- anywhere"
+}
+
+t_u9b_a_merge_restores_the_server_first_when_a_marker_is_left() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 || return
+  wslc stop vllm > /dev/null
+  write_marker
+  local before
+  before="$(calls_n)"
+  assert_exit 0 "merge with a marker present" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24
+  assert_eq "r9700: recovery marker found (run hand-1), restoring first" "$(printf '%s\n' "$OUT" | head -n 1)" "the first stdout line is the marker's"
+  assert_eq "1" "$(since_count "$before" pwsh.exe -Detach)" "the restore ran, once"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  assert_exit 0 "and the merge record was written after it" -- test -s "$OUTD/merged/$(stamp_of_merge)/$FIX_B2_NAME"
+}
+
+t_u10_a_second_merge_is_a_second_record_and_nothing_is_replaced() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 32 || return
+  base_place
+  assert_exit 0 "the first merge" -- mv_verb merge "$MOE_MODEL" --out m experts-full-24 experts-full-32
+  local first second sum_before time_before
+  first="$(stamp_of_merge)"
+  sum_before="$(sha256sum "$OUTD/merged/$first"/* | sort)"
+  time_before="$(stat -c '%n %Y' "$OUTD/merged/$first"/* | sort)"
+  assert_exit 0 "the same merge again" -- mv_verb merge "$MOE_MODEL" --out m experts-full-24 experts-full-32
+  second="$(stamp_of_merge)"
+  assert_eq "1" "$([ "$first" != "$second" ] && echo 1 || echo 0)" "the second stamp is another one"
+  assert_eq "$sum_before" "$(sha256sum "$OUTD/merged/$first"/* | sort)" "the first record has the same bytes"
+  assert_eq "$time_before" "$(stat -c '%n %Y' "$OUTD/merged/$first"/* | sort)" "and the same times"
+  assert_eq "2" "$(ls "$OUTD"/merged/*/merge.env | wc -l | tr -d ' ')" "two merge.env files"
+  assert_missing "$EX/merged" "the exchange folder is still untouched"
+}
+
+# ---- U13-U15: activate -----------------------------------------------------------------------------------------------------------------------
+
+# two_merges: two records that DIFFER (the first holds key 24, the second keys 24 and 32); sets S1 and S2 and NAME
+two_merges() {
+  mv_chunks 24 32 || return 1
+  mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 > /dev/null 2>&1 || return 1
+  S1="$(ls "$OUTD/merged" | sort | head -n 1)"
+  mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 experts-full-32 > /dev/null 2>&1 || return 1
+  S2="$(ls "$OUTD/merged" | sort | tail -n 1)"
+  NAME="$FIX_B2_NAME"
+}
+
+t_u13_activate_swaps_atomically_keeps_the_previous_file_and_records_what_is_active() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  two_merges || return
+  assert_exit 0 "activate the first record" -- mv_verb activate "$MOE_MODEL" "$S1" --out m
+  local act_out="$OUT"
+  assert_exit 0 "the exchange file equals the record, byte for byte" -- cmp "$OUTD/merged/$S1/$NAME" "$EX/merged/$NAME"
+  assert_eq "$S1" "$(env_get "$EX/merged/activate.env" STAMP)" "activate.env: STAMP"
+  assert_eq "$NAME" "$(env_get "$EX/merged/activate.env" NAME)" "activate.env: NAME"
+  assert_eq "$(sha256sum "$EX/merged/$NAME" | cut -d' ' -f1)" "$(env_get "$EX/merged/activate.env" SHA256)" "activate.env: SHA256"
+  assert_eq "none" "$(env_get "$EX/merged/activate.env" PREVIOUS)" "activate.env: PREVIOUS=none"
+  assert_eq "no" "$(env_get "$EX/merged/activate.env" FORCED)" "activate.env: FORCED=no"
+  assert_contains "$(env_get "$EX/merged/activate.env" ACTIVATED_AT)" "T" "activate.env: ACTIVATED_AT"
+  assert_contains "$act_out" "activated: $EX/merged/$NAME ($S1, sha256 $(sha256sum "$EX/merged/$NAME" | cut -c1-12); previous kept as none)" "the printed line"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- remains"
+  assert_exit 0 "activate the second record" -- mv_verb activate "$MOE_MODEL" "$S2" --out m
+  assert_exit 0 "the exchange file equals the second record" -- cmp "$OUTD/merged/$S2/$NAME" "$EX/merged/$NAME"
+  local kept
+  kept="$(ls "$EX/merged/previous")"
+  assert_eq "1" "$(printf '%s\n' "$kept" | grep -c .)" "one previous file"
+  assert_contains "$kept" "-$NAME" "named <UTC stamp>-<NAME>"
+  assert_exit 0 "and it holds the FIRST record's bytes" -- cmp "$OUTD/merged/$S1/$NAME" "$EX/merged/previous/$kept"
+  assert_eq "$EX/merged/previous/$kept" "$(env_get "$EX/merged/activate.env" PREVIOUS)" "activate.env: PREVIOUS is that path"
+  assert_eq "$S2" "$(env_get "$EX/merged/activate.env" STAMP)" "STAMP moved on"
+  assert_exit 0 "activate the second record again" -- mv_verb activate "$MOE_MODEL" "$S2" --out m
+  assert_contains "$OUT" "already active" "it says so"
+  assert_eq "1" "$(ls "$EX/merged/previous" | wc -l | tr -d ' ')" "and keeps nothing twice"
+}
+
+t_u13b_a_verb_killed_between_the_part_write_and_the_swap_leaves_the_old_file_and_the_next_activation_sweeps_the_part() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  two_merges || return
+  mv_verb activate "$MOE_MODEL" "$S1" --out m > /dev/null 2>&1 || return
+  local -a drop=()
+  local key
+  while read -r key; do drop+=(-u "R9700_$key"); done < <(config_keys | awk '{ print $2 }')
+  ( exec env "${drop[@]}" R9700_TEST_ACTIVATE_HOLD_S=30 "$REPO/bin/r9700" moe-tune activate "$MOE_MODEL" "$S2" --out m ) > "$CASE/sup.out" 2> "$CASE/sup.err" &
+  SUP=$!
+  guard_pid "$SUP" "supervisor-$SUP"
+  assert_exit 0 "the part file appears (bounded wait)" -- wait_glob "$EX/merged/$NAME.part-*"
+  kill -KILL "$SUP"
+  wait "$SUP" 2> /dev/null
+  assert_exit 0 "the exchange file is still the OLD bytes, never a half file" -- cmp "$OUTD/merged/$S1/$NAME" "$EX/merged/$NAME"
+  assert_exit 0 "a part file is left" -- wait_glob "$EX/merged/$NAME.part-*" 1
+  assert_exit 0 "the next activation" -- mv_verb activate "$MOE_MODEL" "$S2" --out m
+  assert_contains "$OUT" "removed stale $EX/merged/$NAME.part-$SUP-" "it removes the part of the dead owner and says so"
+  assert_contains "$OUT" "(owner $SUP gone)" "naming the owner"
+  assert_exit 0 "the exchange file equals the second record" -- cmp "$OUTD/merged/$S2/$NAME" "$EX/merged/$NAME"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- remains"
+}
+
+t_u14a_activate_is_refused_while_the_operators_server_is_listed() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  local before
+  before="$(calls_n)"
+  assert_exit 2 "activate with the server listed" -- mv_verb activate "$MOE_MODEL" rec1 --out m
+  assert_contains "$ERR" "moe-tune: activate: vllm is running and may read $EX/merged; stop it, or pass --force" "the refusal line"
+  assert_missing "$EX/merged" "the exchange folder was not touched"
+  assert_eq "1" "$(since_count "$before" wslc list)" "the list was read"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "the toolkit never stops the operator's server for this"
+}
+
+t_u14b_a_prefixed_container_counts_as_a_reader_too() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  wslc stop vllm > /dev/null
+  stub_container r9700tune-sp-x-1
+  assert_exit 2 "activate with a prefixed container listed" -- mv_verb activate "$MOE_MODEL" rec1 --out m
+  assert_contains "$ERR" "moe-tune: activate: r9700tune-sp-x-1 is running and may read $EX/merged" "it names the container"
+  assert_missing "$EX/merged" "nothing was written"
+}
+
+t_u14c_force_is_the_operators_word_and_is_logged() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  assert_exit 0 "activate --force with the server listed" -- mv_verb activate "$MOE_MODEL" rec1 --out m --force
+  assert_exit 0 "the swap is done" -- cmp "$OUTD/merged/rec1/$FIX_B2_NAME" "$EX/merged/$FIX_B2_NAME"
+  assert_eq "yes" "$(env_get "$EX/merged/activate.env" FORCED)" "FORCED=yes"
+  assert_contains "$(sup_log)" "activate: forced while vllm running" "the supervisor log says it"
+  assert_eq "0" "$(prod_stops)" "the server was not stopped"
+}
+
+t_u14d_a_marker_restores_the_server_first_and_the_restored_server_is_a_reader() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  wslc stop vllm > /dev/null
+  write_marker
+  assert_exit 2 "activate with a marker and the server absent" -- mv_verb activate "$MOE_MODEL" rec1 --out m
+  assert_eq "r9700: recovery marker found (run hand-1), restoring first" "$(printf '%s\n' "$OUT" | head -n 1)" "the first stdout line is the marker's"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "the restore ran"
+  assert_contains "$ERR" "vllm is running and may read" "and the restored server is a reader: refused"
+  assert_missing "$EX/merged" "nothing was written"
+}
+
+t_u14e_a_run_that_holds_the_lock_gives_exit_4() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  fake_supervisor run || return
+  assert_exit 4 "activate while a run holds the lock" -- mv_verb activate "$MOE_MODEL" rec1 --out m --force
+  assert_contains "$ERR" "r9700: another run holds $R9700_STATE_DIR/lock: pid $SUP, step" "the holder line"
+  assert_missing "$EX/merged" "nothing was written"
+  kill -KILL "$SUP"
+  kill -KILL -- "-$(awk '{ print $1 }' "$STUB"/workers/containers/worker-*.pid | head -n 1)" 2> /dev/null
+  kill_recorded_pids "$CASE"
+}
+
+t_u14f_a_container_list_that_cannot_be_read_refuses_too_and_force_goes_on() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  wslc stop vllm > /dev/null
+  printf '0 2\n' > "$STUB/fail-list"
+  assert_exit 2 "activate when the list fails" -- mv_verb activate "$MOE_MODEL" rec1 --out m
+  assert_contains "$ERR" "the container list cannot be read" "the line says so"
+  assert_missing "$EX/merged" "nothing was written"
+  assert_exit 0 "with --force it goes on" -- mv_verb activate "$MOE_MODEL" rec1 --out m --force
+  assert_eq "yes" "$(env_get "$EX/merged/activate.env" FORCED)" "FORCED=yes"
+}
+
+t_u15_activate_refuses_a_stamp_that_is_not_a_record() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  assert_exit 2 "a stamp with no folder" -- mv_verb activate "$MOE_MODEL" nosuch --out m
+  assert_contains "$ERR" "moe-tune: activate: $OUTD/merged/nosuch is not a merge record (no E=*.json)" "named"
+  mkdir -p "$OUTD/merged/two"
+  printf '{}\n' > "$OUTD/merged/two/E=a.json"
+  printf '{}\n' > "$OUTD/merged/two/E=b.json"
+  assert_exit 2 "a stamp folder with two JSON files" -- mv_verb activate "$MOE_MODEL" two --out m
+  assert_contains "$ERR" "E=a.json" "the first file is named"
+  assert_contains "$ERR" "E=b.json" "and the second"
+  assert_missing "$EX/merged" "nothing was written"
+}
+
+# ---- U11: ab through the verb ----------------------------------------------------------------------------------------------------------------
+
+t_u11_ab_through_the_verb_reads_the_activated_file_records_the_decision_and_registers_the_hook() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b1
+  assert_exit 0 "activate the b1 record (the server is listed: --force)" -- mv_verb activate "$MOE_MODEL" rec1 --out m --force
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  local ab
+  assert_exit 0 "ab through the verb" -- mv_verb ab "$MOE_MODEL" --keys "1 2 3 4 6 8 12 16" --rule each --rule-keys "1 4" --layer draft --out m
+  ab="$(ls -d "$OUTD"/ab/*/ | head -n 1)"
+  ab="${ab%/}"
+  assert_eq "KERNEL: faster (each of 1 4 is faster by more than 3 %)" "$(cat "$ab/decision.txt")" "decision.txt"
+  assert_eq "$(env_get "$EX/merged/activate.env" SHA256)" "$(env_get "$ab/ab.env" B_SHA256)" "B_SHA256 is the activated file's"
+  assert_contains "$(env_get "$ab/ab.env" B_CONFIG_LINE)" "/work/r9700/moe/$MOE_MODEL/merged/$FIX_B1_NAME" "B_CONFIG_LINE names the activated file"
+  local hook restored
+  hook="$(sup_log | grep -n 'cleanup hook: moe_cache_clear rc=0' | head -n 1 | cut -d: -f1)"
+  restored="$(sup_log | grep -n ' restored$' | head -n 1 | cut -d: -f1)"
+  assert_eq "1" "$([ -n "$hook" ] && [ -n "$restored" ] && [ "$hook" -lt "$restored" ] && echo 1 || echo 0)" "the cleanup hook ran before the restore (lines $hook and $restored)"
+  assert_eq "1" "$(prod_stops)" "the server was stopped once"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "and restored once"
+}
+
+t_u11b_ab_without_an_activation_is_refused_with_the_hint() {
+  mv_setup "$FUNCNAME"
+  assert_exit 2 "ab over a fresh exchange folder" -- mv_verb ab "$MOE_MODEL" --keys "1 4" --rule each --rule-keys "1 4" --layer draft --out m
+  assert_contains "$ERR" "merged/ holds no E=*.json" "the worker's detail"
+  assert_contains "$ERR" "run moe-tune activate first" "and the hint"
+  assert_missing "$OUTD/ab" "no A/B record"
+}
+
+# ---- U12: the verb is listed and catalogued ----------------------------------------------------------------------------------------------------
+
+t_u12_the_verb_is_listed_and_a_model_that_is_not_there_is_refused_by_the_shared_resolver() {
+  mv_setup "$FUNCNAME"
+  assert_exit 0 "commands" -- r9700 commands
+  assert_contains "$(printf '%s\n' "$OUT")" "moe-tune" "moe-tune is listed"
+  assert_eq "1" "$(printf '%s\n' "$OUT" | grep -cx 'moe-tune')" "once"
+  local before
+  before="$(calls_n)"
+  assert_exit 2 "a model that is not there" -- mv_verb chunk nosuchmodel --keys 1
+  assert_contains "$ERR" 'r9700: model "nosuchmodel" not found; legal: ' "E1's model_resolve line"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "nothing was stopped"
+  assert_exit 2 "the underscore spelling is not a verb" -- r9700 moe_tune chunk "$MOE_MODEL" --keys 1
+}
+
+run_all_tests

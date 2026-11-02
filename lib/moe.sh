@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lib/moe.sh — the MoE tuning units as workers under the E1 supervisor (E2.S2). Bash >= 4.4, `set -u` safe, no `set -e`. Two faces, like lib/series.sh:
-# SOURCED, it defines functions (the cache clear is the supervisor's cleanup hook); RUN as the worker, `bash lib/moe.sh chunk|ab <args>...`, which
+# SOURCED, it defines functions (the cache clear is the supervisor's cleanup hook; the verb `moe-tune`'s own half, E2.S3, is lib/moe_verb.sh); RUN as the worker, `bash lib/moe.sh chunk|ab <args>...`, which
 # `step_run` starts as ONE step. The worker sets no trap, takes no lock and never stops the operator's server: the supervisor owns all three.
 #
 #   bash lib/moe.sh chunk <outdir> <model> <chunk> <layer> <search> <keys...>     one tuning chunk (layer: experts|draft, search: full|coarse)
@@ -302,11 +302,11 @@ _moe_b_file() {
   done
   if [ -z "$found" ]; then
     files=("$merged"/E=*.json)
-    [ -f "${files[0]}" ] || { _moe_refuse "merged/ holds no E=*.json (run activate first)"; return 2; }
+    [ -f "${files[0]}" ] || { _moe_refuse "merged/ holds no E=*.json; run moe-tune activate first"; return 2; }
     [ "${#files[@]}" -eq 1 ] || { _moe_refuse "merged/ holds ${#files[@]} files E=*.json and no chunk of the layer $layer says which is its"; return 2; }
     found="${files[0]##*/}"
   fi
-  [ -f "$merged/$found" ] || { _moe_refuse "merged/ holds no $found (the file of the layer $layer; run activate first)"; return 2; }
+  [ -f "$merged/$found" ] || { _moe_refuse "merged/ holds no $found (the file of the layer $layer); run moe-tune activate first"; return 2; }
   _MOE_B_FILE="$found"
 }
 

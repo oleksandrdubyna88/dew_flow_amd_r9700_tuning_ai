@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
-# verdict (E1.S3: the arm-round records of a series and the ship test read back from them).
+# verdict (E1.S3: the arm-round records of a series and the ship test read back from them), moe-tune (E2.S3: chunk, merge, activate, ab).
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
@@ -9,7 +9,8 @@
 # Exit codes (the table with the stderr line of each is in research/architecture.md; README.md lists them too):
 #   0 ok
 #   1 verdict: at least one arm is INCOMPLETE (verdict.py's own code)
-#   2 config or arguments refused; a series refused to go on (the identity changed, no fingerprint over records); verdict input error
+#   2 config or arguments refused; a series refused to go on (the identity changed, no fingerprint over records); verdict input error;
+#     moe-tune: a refused argument, a model with MOE_DTYPE=none, a merge input error, an activation refused (not a record, or a server is listed)
 #   4 another run holds the lock
 #   5 the restore did not become ready
 #   6 the deadline stopped the step, or the worker said nothing more fits
@@ -25,7 +26,7 @@ set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
@@ -69,7 +70,7 @@ model_arg() {
 }
 
 verb_commands() {
-  declare -F | awk '{ print $3 }' | grep '^verb_' | sed 's/^verb_//' | LC_ALL=C sort
+  declare -F | awk '{ print $3 }' | grep '^verb_' | sed -e 's/^verb_//' -e 's/_/-/g' | LC_ALL=C sort
 }
 
 # init_line <check:> <text>: prints `init: <check>: <text>`. The label carries its own colon: a label that is a bare word of an
@@ -293,14 +294,237 @@ verb_series() {
   exit $?
 }
 
+# ---------- moe-tune (E2.S3) ----------
+_MOE_USAGE="r9700: moe-tune: usage: moe-tune chunk|merge|activate|ab <model> [options]"
+
+# _moe_err <text>: one refusal line of the argument grammar, on stderr
+_moe_err() { echo "r9700: moe-tune: $_MOE_MODE: $*" >&2; }
+
+# _moe_opt_legal <mode> <option>: 0 when the mode takes the option; _moe_opt_list <mode> prints its legal options
+_moe_opt_list() {
+  case $1 in
+    chunk) echo "--keys, --coarse, --layer, --chunk, --out, --dry-run" ;;
+    ab) echo "--keys, --rule, --rule-keys, --reps, --layer, --out, --dry-run" ;;
+    merge) echo "--layer, --base, --out" ;;
+    activate) echo "--out, --force" ;;
+  esac
+}
+
+_moe_opt_legal() { [[ ", $(_moe_opt_list "$1")," == *", $2,"* ]]; }
+
+# _moe_set_opt <option> <value>: stores the value of an option that takes one (a flag stores `yes`)
+_moe_set_opt() {
+  case $1 in
+    --keys) _MOE_KEYS="$2" ;;
+    --layer) _MOE_LAYER="$2" ;;
+    --chunk) _MOE_CHUNK="$2" ;;
+    --out) _MOE_OUT="$2" ;;
+    --rule) _MOE_RULE="$2" ;;
+    --rule-keys) _MOE_RULE_KEYS="$2" ;;
+    --reps) _MOE_REPS="$2" ;;
+    --base) _MOE_BASE="$2" ;;
+    --coarse) _MOE_COARSE=yes ;;
+    --dry-run) _MOE_DRY=yes ;;
+    --force) _MOE_FORCE=yes ;;
+  esac
+}
+
+# _moe_keys_check <option name> <keys text>: the batch sizes of an option, by the worker's own check (_moe_keys_problem), its line re-prefixed
+_moe_keys_check() {
+  local text="$2" line
+  local -a words=()
+  read -r -a words <<< "$text"
+  if line="$(_moe_keys_problem "${words[@]}" 2>&1)"; then return 0; fi
+  _moe_err "$1: ${line#moe: }"
+  return 2
+}
+
+# _moe_enum <option> <value> <legal words...>: 2 and one line naming the legal values
+_moe_enum() {
+  local opt="$1" value="$2" word
+  shift 2
+  for word in "$@"; do [ "$value" = "$word" ] && return 0; done
+  _moe_err "$opt \"$value\" is not one of: $*"
+  return 2
+}
+
+# _moe_args_gpu: the checks of the two GPU modes (chunk, ab)
+_moe_args_gpu() {
+  local default
+  _moe_enum --layer "$_MOE_LAYER" experts draft || return 2
+  [ -n "$_MOE_KEYS" ] || { _moe_err "--keys is required"; return 2; }
+  _moe_keys_check --keys "$_MOE_KEYS" || return 2
+  if [ "$_MOE_MODE" = chunk ]; then
+    default="$_MOE_LAYER-$([ "$_MOE_COARSE" = yes ] && echo coarse || echo full)-$(tr -s ' ' '-' <<< "$_MOE_KEYS" | sed -e 's/^-//' -e 's/-$//')"
+    [ -n "$_MOE_CHUNK" ] || _MOE_CHUNK="$default"
+    [[ $_MOE_CHUNK =~ $_MOE_CHUNK_RE ]] || {
+      _moe_err "the chunk name \"$_MOE_CHUNK\" is not $_MOE_CHUNK_RE (the name is made from the layer, the search and the keys: pass --chunk <name>)"
+      return 2
+    }
+    return 0
+  fi
+  [ -n "$_MOE_RULE" ] || { _moe_err "--rule is required"; return 2; }
+  _moe_enum --rule "$_MOE_RULE" each median || return 2
+  [ -n "$_MOE_RULE_KEYS" ] || { _moe_err "--rule-keys is required"; return 2; }
+  _moe_keys_check --rule-keys "$_MOE_RULE_KEYS" || return 2
+  local key
+  for key in $_MOE_RULE_KEYS; do
+    [[ " $_MOE_KEYS " == *" $key "* ]] || { _moe_err "rule key $key is not in --keys"; return 2; }
+  done
+  [[ $_MOE_REPS =~ ^[1-9]$ ]] || { _moe_err "--reps \"$_MOE_REPS\" is not a whole number from 1 to 9"; return 2; }
+}
+
+# _moe_args_other <positionals after the model...>: the checks of merge and activate
+_moe_args_other() {
+  local word
+  if [ "$_MOE_MODE" = merge ]; then
+    [ -z "$_MOE_LAYER" ] || _moe_enum --layer "$_MOE_LAYER" experts draft || return 2
+    [ "$#" -ge 1 ] || { _moe_err "at least one chunk name is needed"; return 2; }
+    for word in "$@"; do
+      [[ $word =~ $_MOE_CHUNK_RE ]] || { _moe_err "the chunk name \"$word\" is not $_MOE_CHUNK_RE"; return 2; }
+    done
+    _MOE_CHUNKS=("$@")
+    return 0
+  fi
+  [ "$#" -ge 1 ] || { _moe_err "a stamp is needed (the one that merge printed)"; return 2; }
+  [ "$#" -eq 1 ] || { _moe_err "unexpected argument \"$2\""; return 2; }
+  [[ $1 =~ $_MOE_NAME_RE ]] || { _moe_err "\"$1\" is not a stamp ($_MOE_NAME_RE)"; return 2; }
+  _MOE_STAMP="$1"
+}
+
+# moe_tune_args <mode> <args...>: checks the SYNTAX of a `moe-tune` command line (before the lock and the restore) and sets _MOE_MODE, _R9700_MODEL_ARG,
+# _MOE_MODEL (its name), _MOE_KEYS, _MOE_COARSE, _MOE_LAYER, _MOE_CHUNK, _MOE_OUT, _MOE_RULE, _MOE_RULE_KEYS, _MOE_REPS, _MOE_BASE, _MOE_CHUNKS,
+# _MOE_STAMP, _MOE_FORCE and _MOE_DRY; 2 with one `r9700: moe-tune: <mode>:` line. What needs the config (the model, MOE_DTYPE) is checked later.
+moe_tune_args() {
+  local mode="${1:-}"
+  local -a pos=()
+  case $mode in
+    chunk | merge | activate | ab) ;;
+    "") echo "$_MOE_USAGE" >&2; return 2 ;;
+    *) echo "r9700: moe-tune: unknown mode \"$mode\"; legal: chunk merge activate ab ($_MOE_USAGE)" >&2; return 2 ;;
+  esac
+  shift
+  _MOE_MODE="$mode" _R9700_MODEL_ARG="" _MOE_KEYS="" _MOE_COARSE=no _MOE_LAYER=experts _MOE_CHUNK="" _MOE_OUT="" _MOE_RULE="" _MOE_RULE_KEYS=""
+  _MOE_REPS=3 _MOE_BASE=auto _MOE_CHUNKS=() _MOE_STAMP="" _MOE_FORCE=no _MOE_DRY=no
+  [ "$mode" != merge ] || _MOE_LAYER=""
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      -*)
+        _moe_opt_legal "$mode" "$1" || { _moe_err "unknown option \"$1\"; legal: $(_moe_opt_list "$mode")"; return 2; }
+        case $1 in
+          --coarse | --dry-run | --force) _moe_set_opt "$1" yes; shift ;;
+          *) [ "$#" -ge 2 ] || { _moe_err "$1 needs a value"; return 2; }; _moe_set_opt "$1" "$2"; shift 2 ;;
+        esac
+        ;;
+      *) pos+=("$1"); shift ;;
+    esac
+  done
+  if [ "${#pos[@]}" -eq 0 ]; then echo "$_MOE_USAGE" >&2; return 2; fi
+  _R9700_MODEL_ARG="${pos[0]}"
+  _MOE_MODEL="${_R9700_MODEL_ARG##*/}"
+  _MOE_MODEL="${_MOE_MODEL%.env}"
+  [[ $_MOE_MODEL =~ $_MOE_MODEL_RE ]] || { _moe_err "the model name \"$_MOE_MODEL\" is not $_MOE_MODEL_RE"; return 2; }
+  [ -n "$_MOE_OUT" ] || _MOE_OUT="moe-$_MOE_MODEL" # no date: the same command resumes on another day
+  [[ $_MOE_OUT =~ $_MOE_NAME_RE ]] || { _moe_err "--out \"$_MOE_OUT\" is not a name ($_MOE_NAME_RE)"; return 2; }
+  case $mode in
+    chunk | ab) [ "${#pos[@]}" -eq 1 ] || { _moe_err "unexpected argument \"${pos[1]}\""; return 2; }; _moe_args_gpu ;;
+    *) _moe_args_other "${pos[@]:1}" ;;
+  esac
+}
+
+# moe_prepare: what `supervise` calls after the restore-first: the model and the machine config, the refusal of a model with no MoE layers (the experts
+# layer of a model with MOE_DTYPE=none; `activate` reads no model dtype), and the container labels of the longest names
+moe_prepare() {
+  prepare_run || return 2
+  if [ "$_MOE_MODE" != activate ] && [ "$_MOE_LAYER" = experts ] && [ "$R9700_MOE_DTYPE" = none ]; then
+    echo "r9700: moe-tune: $_MOE_MODEL: MOE_DTYPE=none: no MoE layers to tune" >&2
+    return 2
+  fi
+  if [ "$_MOE_MODE" = chunk ]; then container_name "moe-tune-$_MOE_CHUNK" > /dev/null || return 2; fi
+  if [ "$_MOE_MODE" = ab ]; then container_name "moe-ab-default-$_MOE_REPS" > /dev/null || return 2; fi
+  return 0
+}
+
+# moe_chunk_body: the body of `supervise` for `chunk`: the files are placed (hash-checked, before anything is stopped), the dry run, the count of a
+# recorded chunk (before admission: nothing is stopped for a chunk that is done), then the chunk as ONE step of the supervisor
+moe_chunk_body() {
+  local outdir="$R9700_RESULTS_DIR/$_MOE_OUT" search=full
+  local -a keys=()
+  read -r -a keys <<< "$_MOE_KEYS"
+  [ "$_MOE_COARSE" = yes ] && search=coarse
+  echo "moe-tune: outdir $outdir"
+  moe_place || return 2
+  if [ "$_MOE_DRY" = yes ]; then moe_dry_run chunk "$_MOE_MODEL" "$_MOE_LAYER" "$search" "$_MOE_CHUNK" "${keys[@]}"; return $?; fi
+  if [ -d "$outdir/chunks/$_MOE_CHUNK" ]; then
+    echo "moe-tune: chunk $_MOE_CHUNK is recorded, nothing to do"
+    return 0
+  fi
+  cleanup_hook_set moe_cache_clear || return 2
+  step_run moe-chunk -- bash "$R9700_ROOT/lib/moe.sh" chunk "$outdir" "$_MOE_MODEL" "$_MOE_CHUNK" "$_MOE_LAYER" "$search" "${keys[@]}" || return $?
+  if [ -d "$outdir/chunks/$_MOE_CHUNK" ]; then echo "recorded chunks/$_MOE_CHUNK"; fi # the worker's own lines are in the step's log
+}
+
+# moe_ab_body: the body of `supervise` for `ab`: the same order, the A/B as ONE step; the newest record and its decision are printed when it is done
+moe_ab_body() {
+  local outdir="$R9700_RESULTS_DIR/$_MOE_OUT" stamp
+  echo "moe-tune: outdir $outdir"
+  moe_place || return 2
+  if [ "$_MOE_DRY" = yes ]; then
+    moe_dry_run ab "$_MOE_MODEL" "$_MOE_LAYER" "$_MOE_REPS" $_MOE_KEYS
+    return $?
+  fi
+  cleanup_hook_set moe_cache_clear || return 2
+  step_run moe-ab -- bash "$R9700_ROOT/lib/moe.sh" ab "$outdir" "$_MOE_MODEL" "$_MOE_LAYER" "$_MOE_RULE" "$_MOE_RULE_KEYS" "$_MOE_REPS" "$_MOE_KEYS" || return $?
+  stamp="$(ls "$outdir/ab" 2> /dev/null | grep -v '\.part-' | LC_ALL=C sort | tail -n 1)"
+  if [ -n "$stamp" ] && [ -f "$outdir/ab/$stamp/decision.txt" ]; then
+    echo "recorded ab/$stamp"
+    cat "$outdir/ab/$stamp/decision.txt"
+  fi
+}
+
+# moe_activate_body: the body of `supervise` for `activate`: no step_run, so no admission, no marker and no cleanup hook; the lock, the restore-first and
+# the one cleanup of `supervise` stand around the swap of lib/moe_verb.sh
+moe_activate_body() {
+  local outdir="$R9700_RESULTS_DIR/$_MOE_OUT"
+  echo "moe-tune: outdir $outdir"
+  moe_activate_verb "$outdir" "$_MOE_MODEL" "$_MOE_STAMP" "$_MOE_FORCE"
+}
+
+# moe_merge_reading: `merge` is a READING verb (no GPU, no admission): like `verdict` it takes the lock only when a marker exists, to restore first
+moe_merge_reading() {
+  if [ -f "$(marker_path)" ]; then
+    lock_take moe-tune || return $?
+    restore_first
+    lock_release
+  fi
+  prepare_run || return 2
+  echo "moe-tune: outdir $R9700_RESULTS_DIR/$_MOE_OUT"
+  moe_merge_verb "$R9700_RESULTS_DIR/$_MOE_OUT" "$_MOE_MODEL" "$_MOE_LAYER" "$_MOE_BASE" "${_MOE_CHUNKS[@]}"
+}
+
+# verb_moe_tune chunk|merge|activate|ab <model> [options]: tune a chunk, merge chunks into a record, activate a record (the only step that changes what a
+# server reads), A/B the activated file against the default. Typed as `moe-tune`. Every GPU invocation is one supervisor: one lock, restore first, one
+# stop of the operator's server, one restore.
+verb_moe_tune() {
+  moe_tune_args "$@" || exit 2
+  case $_MOE_MODE in
+    merge) moe_merge_reading ;;
+    chunk) supervise moe-tune moe_prepare moe_chunk_body ;;
+    ab) supervise moe-tune moe_prepare moe_ab_body ;;
+    activate) supervise moe-tune moe_prepare moe_activate_body ;;
+  esac
+  exit $?
+}
+
 main() {
   local verb="${1:-}"
-  if [ -z "$verb" ] || [[ ! $verb =~ ^[a-z]+$ ]] || ! declare -F "verb_$verb" > /dev/null; then
+  # a verb is lower-case words joined by `-`; its function has `_` instead (verb_moe_tune is `moe-tune`)
+  if [ -z "$verb" ] || [[ ! $verb =~ ^[a-z]+(-[a-z]+)*$ ]] || ! declare -F "verb_${verb//-/_}" > /dev/null; then
     echo "r9700: unknown verb \"$verb\"; legal: $(verb_commands | tr '\n' ' ' | sed 's/ $//')" >&2
     exit 2
   fi
   shift
-  "verb_$verb" "$@"
+  "verb_${verb//-/_}" "$@"
 }
 
 # run only when executed: tests/test_lifecycle.sh sources this file to call a verb function directly

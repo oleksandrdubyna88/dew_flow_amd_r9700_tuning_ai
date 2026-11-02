@@ -2,7 +2,7 @@
 
 Target: the toolkit checkout on the operator's R9700 PC (the WSL folder the operator runs `bin/r9700` from); pass its path as `--target`. "Deploy" here
 is installing the toolkit or updating it (`git pull`) on that machine. Run this file after every install or update.
-Last verified: 2026-11-02, target `~/git/dew_flow_amd_r9700_tuning_ai` on the operator's R9700 PC, version 017ed6d (main after PR #1) — PARTIAL: items 1 (`init` for both model files: rc 0), 4 (production answered `391`; 19.8 s, the known first-request stall), 5, 6, 7, 9 and 10 pass; 2 and 3 NOT RUN (the `--dry-run` starts a throwaway container on the GPU PC, and the operator holds GPU-side runs for now); 8 and 11 not yet possible (no series has run; the acceptance run is not done).
+Last verified: 2026-11-02, target `~/git/dew_flow_amd_r9700_tuning_ai` on the operator's R9700 PC, version 017ed6d (main after PR #1) — PARTIAL: items 1 (`init` for both model files: rc 0), 4 (production answered `391`; 19.8 s, the known first-request stall), 5, 6, 7, 9 and 10 pass; 2 and 3 NOT RUN (the `--dry-run` starts a throwaway container on the GPU PC, and the operator holds GPU-side runs for now); 8, 11 and 12 not yet possible (no series has run; the acceptance runs are not done; nothing is activated).
 
 | # | What a person loses if this is broken | Check | Auto |
 |---|---|---|---|
@@ -16,4 +16,5 @@ Last verified: 2026-11-02, target `~/git/dew_flow_amd_r9700_tuning_ai` on the op
 | 8 | The quality step measures with an old harness: the copy in the work folder is not the one of this version | `cmp "$TARGET/lib/harness.py" "$(sed -n 's/^WORK_DIR=//p' "$TARGET/machine.env")/r9700/harness.py"` (it exists after the first series) | auto |
 | 9 | Round 1 of a real series fails late: the GSM8K test file is not where `GSM8K_DATA` says | `test -s "$(sed -n 's/^WORK_DIR=//p' "$TARGET/machine.env")/gsm8k/test.jsonl"` | auto |
 | 10 | The checkout on the PC is not the released version, or has local edits: results would carry an identity nobody can reproduce | `git -C "$TARGET" status --porcelain` is empty and `git -C "$TARGET" rev-parse HEAD` is the released commit | manual |
-| 11 | The release was never measured on the real GPU: every test is a stub | the acceptance run of `research/ACCEPTANCE_series_2026-11-02.md` was done for this commit and its observed sections are filled | manual |
+| 11 | The release was never measured on the real GPU: every test is a stub | the acceptance runs of `research/ACCEPTANCE_series_2026-11-02.md` and `research/ACCEPTANCE_moe_tune_2026-11-02.md` were done for this commit and their observed sections are filled | manual |
+| 12 | A tuned MoE config was activated but the operator's own server never reads it (its mount is not `<WORK_DIR>/r9700/moe/<model>/merged`): the speed gain never arrives and `activate.env` says it did | after `moe-tune activate`, the operator restarts their own server and its start log holds `Using configuration from <the activated file> for MoE layer` | manual |

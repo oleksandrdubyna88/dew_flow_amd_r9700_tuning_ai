@@ -381,13 +381,14 @@ t_init_refuses_a_machine_file_that_is_not_there() {
 t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
   lc_setup "$FUNCNAME"
   local expected catalogue
-  expected="$(grep -oE '^verb_[a-z]+\(\)' "$REPO/bin/r9700" | sed -e 's/^verb_//' -e 's/()$//' | sort)"
+  expected="$(grep -oE '^verb_[a-z_]+\(\)' "$REPO/bin/r9700" | sed -e 's/^verb_//' -e 's/()$//' -e 's/_/-/g' | sort)"
   assert_exit 0 "commands" -- r9700 commands
   assert_eq "$expected" "$OUT" "exactly the verb_* functions, sorted, one per line"
-  catalogue="$(grep -oE '^\| `bin/r9700 [a-z]+`' "$REPO/research/module_tests.md" | sed -E 's/^\| `bin\/r9700 ([a-z]+)`/\1/' | sort)"
+  catalogue="$(grep -oE '^\| `bin/r9700 [a-z-]+' "$REPO/research/module_tests.md" | sed -E 's/^\| `bin\/r9700 ([a-z-]+)/\1/' | sort)"
   assert_eq "$expected" "$catalogue" "every verb is a row of the flow catalogue in research/module_tests.md, and every verb row is a verb"
   assert_contains "$(printf '%s\n' "$expected")" "step" "step is a verb since part (c)"
   assert_contains "$(printf '%s\n' "$expected")" "series" "series is a verb since E1.S3"
+  assert_contains "$(printf '%s\n' "$expected")" "moe-tune" "moe-tune is a verb since E2.S3 (its function is verb_moe_tune; the name has a hyphen)"
 }
 
 # ---- L20: an unknown verb is refused ----------------------------------------------------------------------------------------------------------------
@@ -395,9 +396,9 @@ t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
 t_l20_an_unknown_verb_is_refused_naming_the_legal_ones() {
   lc_setup "$FUNCNAME"
   assert_exit 2 "an unknown verb" -- r9700 nosuch
-  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init series step verdict' "$ERR" "the line"
+  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init moe-tune series step verdict' "$ERR" "the line"
   assert_exit 2 "no verb" -- r9700
-  assert_contains "$ERR" "legal: commands init series step verdict" "the same list"
+  assert_contains "$ERR" "legal: commands init moe-tune series step verdict" "the same list"
   assert_exit 2 "a verb that only looks like one" -- r9700 'verb_init'
   assert_missing "$STUB/calls.log" "nothing was called"
 }
