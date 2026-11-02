@@ -145,13 +145,12 @@ computed 2026-11-02 from a vLLM checkout). Its header is `# SPDX-License-Identif
 | 2 — `MOE_TUNE_CANDIDATES` | main, 5 lines after `search_space = get_configs_compute_bound(…)`: when set, the JSON list in that file replaces the search space (the ROCm pruning still applies) | the coarse search | hunk 2; fixes lines 168–170 |
 | 3 — `MOE_TUNE_ACT_DTYPE` | `resolve_dtype` (lines 924–926: on ROCm the activations are forced to `float16`): `bfloat16` makes it return `torch.bfloat16` | the BF16 draft layer | § 11.4 line 481, speed-options lines 324–326 (the plan-gate finding) |
 
-**FACT TO VERIFY (hook 3).** The published copy has hooks 1 and 2 only (sha256
+**FACT (hook 3), verified 2026-11-02 by the main session.** The published copy has hooks 1 and 2 only (sha256
 `a47c4e1bd55c269164612dca92966970c99da694985669afa0c905b42e515539`, 1169 lines). The copy that ran the B1 chunks and
-the B2 run holds all three and has 1173 lines (the parent's *Inputs* table); it is in the operator's backup of the
-2026-11-01 session copy, which the main session gives to the S1 coder (as E1 did for its sources). Its exact text is
-not in any tracked file. Until it is read, hook 3 is known by its effect (`--dtype auto` with
-`MOE_TUNE_ACT_DTYPE=bfloat16` produced the draft files of § 11.4) and by its most likely shape (three or four lines
-inside `resolve_dtype`); S1 decision 5 says what to do when the backup cannot be found.
+the B2 run holds all three: it is `<WORK_DIR>/moe/benchmark_moe.py` on the operator's PC, 1173 lines, sha256
+`1584d339831452d4a568091e4d2a573dfed10200b04bdb4b49add37242698640`, and it contains `MOE_TUNE_ACT_DTYPE`. The S1
+coder vendors THIS file byte for byte (the main session gives its path); S1 decision 5's reconstruction fallback is
+not needed and stays only as the rule for a machine where that file is gone.
 
 **Fixtures** (copy byte for byte with `git -C <benchmark checkout> show origin/main:<path> > <target>`; the two
 `vllm_pr_work` files from that repository's `docs/pr-plans` branch the same way):
