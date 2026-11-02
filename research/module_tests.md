@@ -14,7 +14,7 @@ there is no second one.
 | `tests/test_verdict.py` | the ship test and the block check (`lib/verdict.py`) |
 | `tests/test_harness.py` | the quality harness (`lib/harness.py`), against an HTTP stub |
 | `tests/test_assert.sh` | `tests/lib/assert.sh` itself: a test function that dies early, exits early or asserts nothing fails its file; the pid killer |
-| `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match |
+| `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match; the process cap (a file that forks without end FAILS within seconds and leaves nothing: *The process cap*) |
 | `tests/test_adapter.sh` | the adapter seam (`lib/adapter.sh`) and `t_scale`, `t_ceiling` (`lib/run_guarded.sh`): argv, CR removal, the ceilings that kill the child, the `R9700_T_STOP` cut, the refusals (E1.S2 part (a): scenarios A2-A5, A7) |
 | `tests/test_adapter_signals.sh` | the adapter's signal and process rules, split from the file above (it was over the 800-line limit): `--kill-after` and the grandchild, the interrupt chain as the supervisor meets it (the caller's traps are back after a call, a handler that makes a nested call, a signal the caller ignores), the group kill, descriptor 9 (the supervisor's lock). The trap tests compare `trap -p` before and after a call and never spell a listing out: whether an ignored-at-entry signal is listed depends on how the shell was started |
 | `tests/test_serve_bench.sh` | `serve_start` (also `--print`), `container_name` (`lib/serve.sh`), `bench_run` and `prefill_run` (`lib/bench.sh`): the measured commands (scenario A8; E1.S3 adds the prefill runs, the container name and the dry-run text) |
@@ -67,6 +67,23 @@ The runner lowers its own priority first (`tests/lib/lower-priority.mjs`), so ev
 time (one worker, below the cap of 8) and gives each file a ceiling of 10 minutes, after which the child's whole process
 group is killed. It starts every child from an argv array, never a shell string. CI throttles nothing.
 
+## The process cap
+
+Why: on 2026-11-02 a test shim for `python3` found itself first on `PATH` (the second call of its helper looked the tool up and found the shim) and exec'd itself without end:
+about 15,900 processes, a crashed session. So no test file runs unguarded any more.
+
+- `tests/run.mjs` starts every file as `bash -c 'ulimit -u <cap>; exec <command>'`. The cap is the user's THREAD count at the start of the run (Linux counts the threads of the
+  whole user against `RLIMIT_NPROC`; `ps -L -u <uid> | wc -l`) plus `R9700_TEST_NPROC_HEADROOM` (default 3000), never above the hard limit the runner itself has. The runner
+  prints `run: process cap <n> …` first.
+- It also watches the file's own session every 0.4 s. When the session's threads reach 90 % of the headroom it prints `process cap reached (<n>): a test forks without end`,
+  stops and then kills every member of that session (round after round: a fork loop keeps making members while it is killed), and the file FAILS (`FAIL <file> (process cap
+  reached (<n>))`, the run exits 1). Only the file's session is signalled, never another process. The kernel limit is the backstop: a file that forks past it gets `EAGAIN`.
+- Proved by `tests/test_runner.sh` with `tests/fixtures/runner/test_forks_without_end.sh` (a folder the normal suite never lists; the runner is pointed at it with
+  `R9700_RUNNER_TESTS_DIR`): FAIL within seconds, exit non-zero, the user's thread count back to its start value. The fixture refuses to run without a cap.
+- Run every test command under an outer guard as well, so a bug in the runner itself is contained: `bash -c 'ulimit -u $(( $(ps -L -u $(id -u) --no-headers | wc -l) + 3000 )); exec nice -n 19 node tests/run.mjs <file>'`.
+- **Rule for every test shim: a shim never resolves to itself.** Look the real tool up with the shim directory removed from `PATH` (`PATH="${PATH//"$dir:"/}" command -v python3`), refuse a
+  result inside the shim directory, and put the directory on `PATH` once however often the shim is written.
+
 ## Test leftovers
 
 Every test file writes only inside ONE folder per run, `testsToDelete-<owner>-r9700-run-<id>`, which `tests/run.mjs` claims,
@@ -95,6 +112,8 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `R9700_TIME_SCALE` | `t_scale` in `lib/run_guarded.sh` | a positive integer; every sleep in `lib/` is divided by it (default 1); it is also the default of the ceiling scale |
 | `R9700_CEILING_SCALE` | `t_ceiling` in `lib/run_guarded.sh` | a positive integer; divides only the adapter's ceilings and its kill-after grace (default: `R9700_TIME_SCALE`). The adapter tests set it to 10 while the sleeps run 100 times faster (a bash stub call takes 39 ms idle and up to 227 ms under load; a 0.3 s ceiling would be a flaky test), and set it to 100 in the tests that must see a ceiling fire |
 | `R9700_T_STOP` | `lib/adapter.sh` | an epoch second, set by the supervisor: no adapter call waits past it (its ceiling is the smaller of its own and the time left) and none is made at or after it. Tested directly |
+| `R9700_TEST_NPROC_HEADROOM` | `tests/run.mjs` | the headroom of the process cap, a whole number from 100 (default 3000): every test file runs under `ulimit -u <the user's threads at the start + this>`; see *The process cap* below. `tests/test_runner.sh` sets 300 for its fork-without-end fixture |
+| `R9700_RUNNER_FORKBOMB_OK`, `R9700_RUNNER_FIXTURE_HARD_LIMIT` | `tests/fixtures/runner/test_forks_without_end.sh` | the fixture forks without end ON PURPOSE and refuses to run unless the first is `1` and the process cap (the hard limit) is at most 20000; the second replaces the hard limit when only the check (`--check`) is tested |
 | `R9700_RUNNER_CEILING_MS` | `tests/run.mjs` | replaces the 10-minute ceiling of one test file (`tests/test_runner.sh` uses it to reach the ceiling in seconds) |
 | `R9700_STUB_DIR` | the stubs | the only place a stub reads or writes; unset or empty: the stub exits 99 at once, so it can never run against a real machine |
 | `R9700_STUB_PROD` | `pwsh.exe` stub | the name of the operator's server container the restore creates (default `vllm`) |

@@ -11,7 +11,13 @@
 // every stub call, have a process group of their own but share the session). SIGINT, SIGTERM and SIGHUP end the current child's
 // process group and session, kill the recorded stub pids, remove the run folder and exit 130, 143 and 129.
 //
-// Test knobs: R9700_RUNNER_TESTS_DIR names another folder to discover `test_*.py` and `test_*.sh` in (the runner's own test
+// A process cap (2026-11-02: a test shim that exec'd itself forked about 15,900 processes and crashed the session): every test file runs under
+// `ulimit -u <cap>`, the cap being the user's thread count at the start of the run (Linux counts THREADS of the whole user against RLIMIT_NPROC) plus
+// R9700_TEST_NPROC_HEADROOM (default 3000). The runner also watches the file's session: when its threads come within 10 % of the headroom it reports
+// `process cap reached (<cap>): a test forks without end`, ends the whole session (stopped first, then killed, round after round) and the file FAILS. Only
+// the file's own session is ever signalled.
+//
+// Test knobs: R9700_TEST_NPROC_HEADROOM (the headroom, whole number from 100); R9700_RUNNER_TESTS_DIR names another folder to discover `test_*.py` and `test_*.sh` in (the runner's own test
 // uses it, so a signal test never has to put a sleeping file into tests/); R9700_RUNNER_CEILING_MS replaces the 10-minute ceiling of one
 // test file (the runner's own test uses it to reach the ceiling in seconds).
 
@@ -29,6 +35,76 @@ const REPO = path.dirname(TESTS);
 const FILE_CEILING_MS = Number(process.env.R9700_RUNNER_CEILING_MS) || 10 * 60_000; // test knob: the runner's own test shortens it
 const KILL_GRACE_MS = 2_000;
 const PID_FOLDER = "containers"; // scenario A4: a stub container records its pid in `<test root>/containers/<name>.pid`
+
+const HEADROOM_DEFAULT = 3000;
+const CAP_POLL_MS = 400;
+const EXIT_CAP = 125; // a file ended by the process cap
+
+/** Field `index` (0 = the state) of /proc/<pid>/stat after the command name, or undefined. */
+function statField(pid, index) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[index];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The threads of every process of this user (what RLIMIT_NPROC counts: `ps -L -u <uid> | wc -l`). */
+function userThreads() {
+  let total = 0;
+  const uid = process.getuid();
+  for (const name of fs.readdirSync("/proc")) {
+    if (!/^[0-9]+$/.test(name)) continue;
+    try {
+      if (fs.statSync(`/proc/${name}`).uid !== uid) continue;
+    } catch {
+      continue;
+    }
+    total += Number(statField(name, 17)) || 0;
+  }
+  return total;
+}
+
+/** The threads of one session (the child's own: it is spawned `detached`, so its session id is its pid). */
+function sessionThreads(sid) {
+  let total = 0;
+  for (const pid of sessionPids(sid)) total += Number(statField(pid, 17)) || 0;
+  return total;
+}
+
+/** The hard limit on processes of this process, or Infinity: a cap above it cannot be set. */
+function hardProcessLimit() {
+  try {
+    const line = fs.readFileSync("/proc/self/limits", "utf8").split("\n").find((l) => l.startsWith("Max processes"));
+    const hard = line?.trim().split(/\s+/).at(-2);
+    return /^[0-9]+$/.test(hard ?? "") ? Number(hard) : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
+
+/** {cap, headroom} of this run: the user's threads now plus the headroom, never above the hard limit. Throws a message for a bad headroom. */
+function processCap(env = process.env) {
+  const raw = env.R9700_TEST_NPROC_HEADROOM ?? String(HEADROOM_DEFAULT);
+  if (!/^[0-9]+$/.test(raw) || Number(raw) < 100) throw new Error(`R9700_TEST_NPROC_HEADROOM "${raw}" is not a whole number from 100`);
+  const headroom = Number(raw);
+  return { cap: Math.min(userThreads() + headroom, hardProcessLimit()), headroom };
+}
+
+/** Stop, then kill, every process of a session, round after round until none is left (a fork loop keeps making members while it is being killed). */
+function killSessionHard(sid, ticks) {
+  for (let round = 0; round < 60; round++) {
+    if (leaderIsForeign(sid, ticks)) return;
+    const members = sessionPids(sid);
+    if (members.length === 0) return;
+    for (const signal of ["SIGSTOP", "SIGKILL"]) {
+      for (const pid of members) {
+        try { process.kill(pid, signal); } catch { /* gone */ }
+      }
+    }
+  }
+}
 
 /** `test_*.py` and `test_*.sh` of a folder, sorted, as paths the runner resolves against the repository root (never typed: derived by listing). */
 function discoverTests(testsDir = process.env.R9700_RUNNER_TESTS_DIR ?? TESTS) {
@@ -61,9 +137,11 @@ function printSweep(result) {
 const live = { child: null, ticks: undefined, closed: null, run: null, scope: null, stopping: false };
 
 /** Run one child to its end or its ceiling; resolves with `{ code, signal }` (code `124` for a ceiling, `127` when it could not start; `signal` when the child was ended by one). */
-function runChild(command, args, env, ceilingMs = FILE_CEILING_MS) {
+function runChild(command, args, env, ceilingMs = FILE_CEILING_MS, limits = null) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd: REPO, env, stdio: "inherit", detached: true });
+    // under `ulimit -u <cap>`: the wrapper sets the limit and replaces itself by the test command (the cap is for this file and everything it starts)
+    const wrapped = limits ? ["-c", 'ulimit -u "$1" || exit 126; shift; exec "$@"', "_", String(limits.cap), command, ...args] : args;
+    const child = spawn(limits ? "bash" : command, wrapped, { cwd: REPO, env, stdio: "inherit", detached: true });
     let settled = false;
     let timedOut = false;
     let markClosed;
@@ -71,12 +149,21 @@ function runChild(command, args, env, ceilingMs = FILE_CEILING_MS) {
     live.child = child;
     live.ticks = ticks;
     live.closed = new Promise((done) => { markClosed = done; });
+    let capHit = false;
     const finish = (code, signal = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, signal, pid: child.pid, ticks });
+      clearInterval(watcher);
+      resolve({ code, signal, pid: child.pid, ticks, capHit });
     };
+    const watcher = limits ? setInterval(() => {
+      if (settled || capHit || sessionThreads(child.pid) < limits.headroom * 0.9) return;
+      capHit = true;
+      console.log(`  process cap reached (${limits.cap}): a test forks without end`);
+      killSessionHard(child.pid, ticks);
+      finish(EXIT_CAP);
+    }, CAP_POLL_MS) : null;
     const timer = setTimeout(() => {
       timedOut = true;
       console.log(`  ceiling of ${ceilingMs / 1000} s reached: ending the process group of ${path.basename(args.at(-1))}`);
@@ -85,7 +172,7 @@ function runChild(command, args, env, ceilingMs = FILE_CEILING_MS) {
       setTimeout(() => { killGroup(child.pid, "SIGKILL", ticks); killSession(child.pid, "SIGKILL", ticks); finish(124); }, KILL_GRACE_MS); // the group and the session, even when the leader is already gone
     }, ceilingMs);
     child.on("error", (error) => { console.log(`  could not start ${command}: ${error.code ?? error.message}`); markClosed(); finish(127); });
-    child.on("close", (code, signal) => { live.child = null; markClosed(); if (!timedOut) finish(code, signal); });
+    child.on("close", (code, signal) => { live.child = null; markClosed(); if (!timedOut && !capHit) finish(code, signal); });
   });
 }
 
@@ -245,16 +332,16 @@ function plan(file, run) {
   return { command: "bash", args: [file], env: { ...env, R9700_TEST_ROOT: root }, make: [path.join(run, "sh"), root] };
 }
 
-async function runFiles(files, run) {
+async function runFiles(files, run, limits) {
   const failed = [];
   for (const file of files) {
     if (live.stopping) break;
     const step = plan(file, run);
     for (const dir of step.make) fs.mkdirSync(dir, { recursive: true });
-    const { code, signal, pid, ticks } = await runChild(step.command, step.args, step.env);
+    const { code, signal, pid, ticks, capHit } = await runChild(step.command, step.args, step.env, FILE_CEILING_MS, limits);
     killSession(pid, "SIGKILL", ticks); // whatever the file left in its session (a passing file may leave a disowned subshell too)
     if (live.stopping) break; // an interrupt: the file was ended on purpose; no verdict line, no summary
-    const how = signal ? `signal ${signal}` : `exit ${code}`;
+    const how = capHit ? `process cap reached (${limits.cap})` : signal ? `signal ${signal}` : `exit ${code}`;
     console.log(code === 0 && !signal ? `PASS ${file}` : `FAIL ${file} (${how})`);
     if (code !== 0 || signal) failed.push(file);
   }
@@ -268,13 +355,21 @@ async function main() {
     console.log(`run: no test file matches: ${unknown.join(" ") || "(none discovered)"}`);
     return 2;
   }
+  let limits;
+  try {
+    limits = processCap();
+  } catch (error) {
+    console.log(`run: ${error.message}`);
+    return 2;
+  }
+  console.log(`run: process cap ${limits.cap} (the user's threads now + a headroom of ${limits.headroom}; R9700_TEST_NPROC_HEADROOM)`);
   const scope = cleanupScope();
   live.scope = scope;
   let failed = [];
   try {
     live.run = ownedDir(scope, "run");
     try {
-      failed = await runFiles(files, live.run);
+      failed = await runFiles(files, live.run, limits);
     } finally {
       const killed = killRecordedPids(live.run);
       if (killed.length > 0) console.log(`run: killed ${killed.length} recorded stub pid(s): ${killed.join(" ")}`);
@@ -293,4 +388,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 }
 
 // The runner's own test imports these to check the session kill against a pid that belongs to another process.
-export { killSession, startTicks };
+export { killSession, startTicks, processCap, userThreads };
