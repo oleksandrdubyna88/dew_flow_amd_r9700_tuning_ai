@@ -418,8 +418,10 @@ t_t12b_a_hung_hook_that_obeys_term_is_killed_at_its_ceiling_too() {
   unhang_all
 }
 
-# short_deadline: T_END 6 s and T_STOP 1.75 s after the start (scale 100): the new rule 60 + 365 holds with CLEANUP_BUDGET_S=425
-short_deadline() { step_cfg MAX_RUN_MINUTES=10 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60; }
+# short_deadline: T_END 26.4 s and T_STOP 9.4 s after the start (time scale 25, like E1's short_variant): the new rule 60 + 365 holds with
+# CLEANUP_BUDGET_S=425. T_STOP is rounded down to a whole second, and the admission, the worker start, the hashes, the gate, the clear and the chunk
+# start must all fit before it: at scale 100 it came 0.75-1.75 s after the start and the test was flaky. The ceilings keep their own scale (T19 sets it).
+short_deadline() { step_cfg MAX_RUN_MINUTES=11 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60; export R9700_TIME_SCALE=25; }
 
 t_t13_the_deadline_ends_a_chunk_and_the_part_becomes_evidence() {
   moe_setup "$FUNCNAME"
@@ -464,8 +466,8 @@ t_t19_a_run_that_reaches_the_cleanup_at_its_deadline_cuts_the_hook_and_still_com
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore"
   assert_eq "" "$(hung_alive | tr '\n' ' ')" "no process of the hook's tree is alive"
   assert_missing "$MARKER_FILE" "the marker is gone"
-  # the arithmetic: T_END is 6 s after the start, T_STOP 1.75 s; the hook takes 0.6 + 0.05 s, the restore a start and one readiness round
-  if awk -v b="$before" -v a="$after" 'BEGIN { exit !(a - b < 6) }'; then assert_eq ok ok "the whole invocation ended $(awk -v b="$before" -v a="$after" 'BEGIN { printf "%.2f", a - b }') s after its start, before T_END (6 s)"; else assert_eq "< 6 s" "$(awk -v b="$before" -v a="$after" 'BEGIN { print a - b }')" "the invocation ended before T_END"; fi
+  # the arithmetic: T_END is 26.4 s after the start, T_STOP 9.4 s; the hook takes 0.6 + 0.05 s, the restore a start and one readiness round
+  if awk -v b="$before" -v a="$after" 'BEGIN { exit !(a - b < 26.4) }'; then assert_eq ok ok "the whole invocation ended $(awk -v b="$before" -v a="$after" 'BEGIN { printf "%.2f", a - b }') s after its start, before T_END (26.4 s)"; else assert_eq "< 26.4 s" "$(awk -v b="$before" -v a="$after" 'BEGIN { print a - b }')" "the invocation ended before T_END"; fi
   unhang_all
 }
 
@@ -535,6 +537,98 @@ t_a_model_without_moe_layers_refuses_the_experts_layer_by_name_and_still_allows_
   assert_eq "0" "$(run_lines moe-tune-int4-24 | wc -l | tr -d ' ')" "no chunk container ran"
   chunk_json_for b1 256
   assert_exit 0 "a draft chunk of the same model (its dtype is auto)" -- moe_chunk draft-1 draft full 256
+}
+
+# ---- the S2 review findings: the identity of a record, the stop time at the gate, an exchange folder that cannot be cleared, a hook that is not ours ----
+
+# edit_during <container name> <file>: when that container starts, a script of the test appends a byte to the file (an edit during a long unit)
+edit_during() { printf 'printf x >> "%s"\n' "$2" > "$STUB/on-start-${R9700_CONTAINER_PREFIX}$1"; }
+
+t_t21_an_asset_edited_during_a_chunk_gives_a_rejected_record_never_one_that_names_hashes_the_container_did_not_run_with() {
+  moe_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1
+  edit_during moe-tune-int4-24 "$WORK/benchmark_moe.py"
+  assert_exit 7 "a stub chunk whose placed benchmark is edited while it runs" -- moe_chunk int4-24 experts full 24
+  local rej
+  rej="$(ls -d "$RECS"/rejected/int4-24-* 2> /dev/null | head -n 1)"
+  assert_exit 0 "rejected/int4-24-<stamp>/ exists" -- test -d "$rej"
+  assert_contains "$(cat "$rej/reason")" "benchmark_moe.py changed during the run" "the reason names the asset"
+  assert_eq "$(sha256sum "$REPO/vendor/benchmark_moe.py" | cut -d' ' -f1)" "$(env_get "$rej/chunk.env" BENCHMARK_SHA256)" "chunk.env names the hash the container STARTED with"
+  assert_missing "$RECS/chunks/int4-24" "no record"
+}
+
+t_t22_a_merged_file_edited_during_an_ab_gives_a_rejected_record() {
+  moe_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1
+  moe_merged_place b1
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  edit_during moe-ab-tuned-2 "$EX/merged/$FIX_B1_NAME"
+  assert_exit 7 "a stub A/B whose merged file is edited while it runs" -- moe_ab "${AB_ARGS[@]}"
+  local rej
+  rej="$(ls -d "$RECS"/rejected/ab-* 2> /dev/null | head -n 1)"
+  assert_exit 0 "rejected/ab-<stamp>/ exists" -- test -d "$rej"
+  assert_contains "$(cat "$rej/reason")" "$FIX_B1_NAME changed during the run" "the reason names the file"
+  assert_eq "$(sha256sum "$HERE/fixtures/moe/b1/$FIX_B1_NAME" | cut -d' ' -f1)" "$(env_get "$rej/ab.env" B_SHA256)" "ab.env names the hash the A/B STARTED with"
+  assert_eq "0" "$(ls "$RECS/ab" | wc -l | tr -d ' ')" "no A/B record"
+}
+
+t_t22b_a_placed_benchmark_edited_during_an_ab_gives_a_rejected_record_too() {
+  moe_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1
+  moe_merged_place b1
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  edit_during moe-ab-default-1 "$WORK/benchmark_moe.py"
+  assert_exit 7 "a stub A/B whose placed benchmark is edited while it runs" -- moe_ab "${AB_ARGS[@]}"
+  local rej
+  rej="$(ls -d "$RECS"/rejected/ab-* 2> /dev/null | head -n 1)"
+  assert_exit 0 "rejected/ab-<stamp>/ exists" -- test -d "$rej"
+  assert_contains "$(cat "$rej/reason")" "benchmark_moe.py changed during the run" "the reason names the asset"
+  assert_eq "$(sha256sum "$REPO/vendor/benchmark_moe.py" | cut -d' ' -f1)" "$(env_get "$rej/ab.env" BENCHMARK_SHA256)" "ab.env names the hash the A/B STARTED with"
+}
+
+t_t23_a_unit_at_the_stop_time_writes_kind_deadline_not_a_false_disk_alarm() {
+  moe_setup "$FUNCNAME"
+  local rc
+  R9700_T_STOP="$(($(date +%s) - 5))" worker_direct chunk "$RECS" "$MOE_MODEL" int4-24 experts full 24 > "$CASE/w.out" 2>&1
+  rc=$?
+  assert_eq "1" "$rc" "the worker exits 1"
+  outcome_read "$CASE/run/steps/1.outcome"
+  assert_eq "deadline" "$O_KIND" "the outcome is KIND=deadline (the adapter refuses every call after T_STOP, so the gate could only say 'query failed')"
+  assert_eq "0" "$(run_lines moe-tune-int4-24 | wc -l | tr -d ' ')" "no chunk container ran"
+}
+
+t_t24_an_exchange_folder_that_cannot_be_cleared_refuses_the_unit() {
+  moe_setup "$FUNCNAME"
+  mkdir -p "$EX/tune/int4-24/sub"
+  printf 'stale\n' > "$EX/tune/int4-24/sub/E=stale.json"
+  chmod a-w "$EX/tune/int4-24/sub" # rm -rf cannot delete the file inside
+  assert_exit 2 "a stub chunk over a folder that cannot be emptied" -- moe_chunk int4-24 experts full 24
+  chmod u+w "$EX/tune/int4-24/sub"
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused: a retry would meet the same folder"
+  assert_contains "$O_DETAIL" "cannot be cleared" "the detail says why"
+  assert_eq "0" "$(run_lines moe-tune-int4-24 | wc -l | tr -d ' ')" "no chunk container ran"
+  assert_missing "$RECS/chunks/int4-24" "no record"
+}
+
+t_t25_a_hook_registered_for_an_invocation_that_returned_early_is_not_run_by_the_next_one() {
+  moe_setup "$FUNCNAME"
+  local -a drop=()
+  local word
+  while read -r word; do drop+=(-u "R9700_$word"); done < <(config_keys | awk '{ print $2 }')
+  body_args int4-24 experts full 24
+  env "${drop[@]}" MOE_OUT="$RECS" MOE_MODEL_NAME="$MOE_MODEL" MOE_BODY_ARGS="$MOE_BODY_ARGS" bash -c "
+    source \"$REPO/bin/r9700\"; source \"$REPO/lib/moe.sh\"
+    REPO=\"$REPO\"
+    $(declare -f body_chunk)
+    prepare_refuses() { return 2; }
+    _R9700_MODEL_ARG=\"$MODEL\"
+    cleanup_hook_set moe_cache_clear
+    supervise moe prepare_refuses body_chunk; echo first=\$?
+    supervise moe prepare_run body_chunk; echo second=\$?" > "$CASE/two.out" 2> "$CASE/two.err"
+  assert_eq "first=2 second=0" "$(grep -E '^(first|second)=' "$CASE/two.out" | tr '\n' ' ' | sed 's/ $//')" "the first invocation is refused at prepare, the second runs its chunk"
+  assert_eq "0" "$(sup_log | grep -c 'cleanup hook:')" "the second invocation registered no hook and ran none"
+  assert_eq "1" "$(run_lines moe-clear | wc -l | tr -d ' ')" "one clear in all: the worker's, before its unit"
 }
 
 run_all_tests

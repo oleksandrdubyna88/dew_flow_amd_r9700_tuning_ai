@@ -431,14 +431,16 @@ _rg_fork_sleep() {
 #   server is restored once, at the end, by cleanup_once, and between steps only by the wait rule of decision 15. Returns the body's code, or
 #   5 when the restore at the end did not become ready, or 130/143 after an interrupt (the handler exits itself).
 supervise() {
-  local verb="${1:-}" prepare="${2:-}" body="${3:-}" rc kind crc
+  local verb="${1:-}" prepare="${2:-}" body="${3:-}" rc kind crc registered="${_RG_CLEANUP_HOOK:-}"
   shift 3
   _rg_state_reset
+  _RG_CLEANUP_HOOK="" # a hook belongs to ONE invocation: an early return below must not leave it for the next supervise of this process
   lock_take "$verb" || return $?
   restore_first
   if ! "$prepare"; then lock_release; return 2; fi
   if ! deadline_compute; then lock_release; return 2; fi
   if ! run_dir_new; then lock_release; return 2; fi
+  [ -n "$_RG_CLEANUP_HOOK" ] || _RG_CLEANUP_HOOK="$registered" # a hook the body set (cleanup_hook_set) wins; one registered before supervise is kept
   _rg_traps_on
   "$body" "$@"
   rc=$?

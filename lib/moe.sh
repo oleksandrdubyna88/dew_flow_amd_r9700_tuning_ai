@@ -119,6 +119,20 @@ moe_asset_hashes() {
   done < <(moe_assets)
 }
 
+# _moe_assets_unchanged: 0 when every placed asset still has the hash taken right after the identity check (_MOE_HASHES), which is what the record
+# names; else 1 and _MOE_REASON names the asset. An edit during a long unit would otherwise give a record with hashes the container did not run with.
+_moe_assets_unchanged() {
+  local name source need key before after
+  while read -r name source need _; do
+    key="$(_moe_hash_key "$name")_SHA256"
+    before="$(grep -m 1 "^$key=" <<< "$_MOE_HASHES")"
+    after="$(moe_asset_hashes | grep -m 1 "^$key=")"
+    [ "$before" = "$after" ] && continue
+    _MOE_REASON="$name changed during the run (${before#*=} -> ${after#*=})"
+    return 1
+  done < <(moe_assets)
+}
+
 # ---------- the container ----------
 # moe_layer_words <layer> <envs array> <dtype var>: the activation hook and the dtype of a layer (decision 2); 2 with one `moe:` line for another
 moe_layer_words() {
@@ -181,6 +195,8 @@ moe_sweep_parts() {
 # _moe_disk_gate: the disk gate; a stop is the typed outcome KIND=disk_gate (the supervisor's exit 9) and the gate's line on stdout. 1 on a stop.
 _moe_disk_gate() {
   local line
+  # after the stop time the adapter refuses every call (A9), so the gate could only say "query failed": that is the deadline, never a disk alarm
+  if _moe_stop_came; then _moe_deadline "the disk gate"; return 1; fi
   if ! line="$(disk_gate_check "${R9700_RUN_DIR:?}/disk_gate.state")"; then
     outcome_write "${R9700_OUTCOME_FILE:?}" KIND=disk_gate RC=1 "DETAIL=$line"
     echo "$line"
@@ -216,7 +232,7 @@ _moe_chunk_env() {
     _moe_env_line KEYS "$*"
     _moe_env_line DTYPE "$dtype"
     _moe_env_line ACT_DTYPE "$act"
-    moe_asset_hashes
+    printf '%s\n' "$_MOE_HASHES" # taken right after the identity check: what the container started with
     _moe_env_line IMAGE "$R9700_IMAGE"
     _moe_env_line MODEL_DIR "$R9700_MODEL_DIR"
     _moe_env_line CONTAINER "$name"
@@ -248,7 +264,7 @@ _moe_chunk_validate() {
 
 # moe_chunk_unit <outdir> <model> <chunk> <layer> <search> <keys...>
 moe_chunk_unit() {
-  local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc
+  local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc valid
   local -a keys=() argv=() extra=()
   shift 5
   keys=("$@")
@@ -256,13 +272,18 @@ moe_chunk_unit() {
   echo "=== $(_moe_iso) chunk $chunk ($layer, $search, keys ${keys[*]})"
   if [ "$layer" = experts ] && [ "$R9700_MOE_DTYPE" = none ]; then _moe_refuse "MOE_DTYPE is none: the model has no MoE layers to tune"; return 2; fi
   moe_identity_check || return 2
+  _MOE_HASHES="$(moe_asset_hashes)"
   _moe_disk_gate || return 1
   moe_cache_clear
   part="$outdir/chunks/$chunk.part-$RUN_ID"
   mkdir -p "$outdir/chunks" && mkdir "$part" || { echo "moe: $part cannot be made"; return 1; }
   tune="$(moe_exchange_dir "$model")/tune/$chunk"
-  rm -rf "${tune:?}" # a half-written chunk holds no evidence (tune_chunk.sh line 9): it is deleted, and never taken for a result
-  mkdir -p "$tune" || { echo "moe: $tune cannot be made"; return 1; }
+  # a half-written chunk holds no evidence (tune_chunk.sh line 9): it is deleted, and never taken for a result. A folder that cannot be emptied would
+  # let a stale file pass `check`, and a retry would meet it again: refused, not a failed try.
+  if ! rm -rf "${tune:?}" 2> /dev/null || ! mkdir -p "$tune" || [ -n "$(ls -A "$tune" 2> /dev/null)" ]; then
+    _moe_refuse "the exchange folder $tune cannot be cleared"
+    return 2
+  fi
   extra=()
   [ "$search" = coarse ] && extra=(-e "MOE_TUNE_CANDIDATES=$_MOE_CONTAINER_ROOT/coarse_candidates.json")
   moe_argv argv extra tune "$layer" "$model" "$chunk" "${keys[@]}" || return 2
@@ -276,7 +297,10 @@ moe_chunk_unit() {
   if [ "$rc" -ne 0 ] && _moe_stop_came; then _moe_deadline "chunk $chunk"; return 1; fi
   _moe_chunk_env "$part" "$chunk" "$layer" "$search" "$name" "$started" "$finished" "$((t1 - t0))" "$rc" "${keys[@]}"
   grep -E 'Start tuning|Tuning space|Completed tuning|Best config|Kernel time|Error|Traceback' "$part/chunk.log" | tail -n 6 > "$part/chunk.summary"
-  if ! _moe_chunk_validate "$part" "$tune" "$rc" "${keys[@]}"; then
+  _moe_chunk_validate "$part" "$tune" "$rc" "${keys[@]}"
+  valid=$?
+  _moe_assets_unchanged || valid=1 # the reason is then the change: the record would name hashes the container did not run with
+  if [ "$valid" -ne 0 ]; then
     moe_reject "$outdir" "$chunk" "$part" "$_MOE_REASON"
     echo "chunk $chunk: rejected, ${_MOE_REJECTED#"$outdir"/}: $_MOE_REASON"
     return 1
@@ -333,7 +357,7 @@ _moe_ab_validate() {
   done
 }
 
-# _moe_ab_env <part> <layer> <rule> <rule keys> <reps> <a folder> <b folder> <b file> <started> <finished> <keys>: ab.env
+# _moe_ab_env <part> <layer> <rule> <rule keys> <reps> <a folder> <b folder> <b file> <started> <finished> <keys> <b sha256>: ab.env
 _moe_ab_env() {
   local part="$1" layer="$2" dtype act=""
   local -a layer_envs=()
@@ -350,12 +374,12 @@ _moe_ab_env() {
     _moe_env_line A_FOLDER "$6"
     _moe_env_line B_FOLDER "$7"
     _moe_env_line B_FILE "$8"
-    _moe_env_line B_SHA256 "$(_moe_sha "${12:-/nonexistent}")"
+    _moe_env_line B_SHA256 "${12}"
     _moe_env_line A_CONFIG_LINE "$(_moe_config_line "$part/default-1.log")"
     _moe_env_line B_CONFIG_LINE "$(_moe_config_line "$part/tuned-1.log")"
     _moe_env_line IMAGE "$R9700_IMAGE"
     _moe_env_line MODEL_DIR "$R9700_MODEL_DIR"
-    moe_asset_hashes
+    printf '%s\n' "$_MOE_HASHES" # taken right after the identity check: what the containers started with
     _moe_env_line RUN_ID "$RUN_ID"
     _moe_env_line STARTED_AT "$9"
     _moe_env_line FINISHED_AT "${10}"
@@ -384,7 +408,7 @@ _moe_ab_containers() {
 
 # moe_ab_unit <outdir> <model> <layer> <rule> <rule keys> <reps> <keys>
 moe_ab_unit() {
-  local outdir="$1" model="$2" layer="$3" rule="$4" rule_keys="$5" reps="$6" keys="$7" stamp part dest n=1 started finished decision rc bfolder bfile
+  local outdir="$1" model="$2" layer="$3" rule="$4" rule_keys="$5" reps="$6" keys="$7" stamp part dest n=1 started finished decision rc bfolder bfile bpath bsha valid
   local -a keylist=()
   read -r -a keylist <<< "$keys"
   echo "=== $(_moe_iso) ab ($layer, rule $rule over $rule_keys, $reps reps, keys $keys)"
@@ -393,6 +417,9 @@ moe_ab_unit() {
   bfile="$_MOE_B_FILE"
   bfolder="$(moe_container_dir "$model")/merged"
   moe_identity_check || return 2
+  _MOE_HASHES="$(moe_asset_hashes)"
+  bpath="$(moe_exchange_dir "$model")/merged/$bfile"
+  bsha="$(_moe_sha "$bpath")" # the activated file as the containers will read it; checked again after the run
   moe_cache_clear
   stamp="$(_moe_stamp)"
   while [ -e "$outdir/ab/$stamp" ] || [ -e "$outdir/ab/$stamp.part-$RUN_ID" ]; do n=$((n + 1)); stamp="$(_moe_stamp)-$n"; done
@@ -401,9 +428,13 @@ moe_ab_unit() {
   started="$(_moe_iso)"
   _moe_ab_containers "$part" "$model" "$layer" "$reps" "$R9700_TUNED_CONFIG_DIR" "$bfolder" "${keylist[@]}" || return 1
   finished="$(_moe_iso)"
-  _moe_ab_env "$part" "$layer" "$rule" "$rule_keys" "$reps" "$R9700_TUNED_CONFIG_DIR" "$bfolder" "$bfile" "$started" "$finished" "$keys" \
-    "$(moe_exchange_dir "$model")/merged/$bfile"
-  if ! _moe_ab_validate "$part" "$reps" "$bfolder" "$bfile" "${#keylist[@]}"; then
+  _moe_ab_env "$part" "$layer" "$rule" "$rule_keys" "$reps" "$R9700_TUNED_CONFIG_DIR" "$bfolder" "$bfile" "$started" "$finished" "$keys" "$bsha"
+  _moe_ab_validate "$part" "$reps" "$bfolder" "$bfile" "${#keylist[@]}"
+  valid=$?
+  # an edit of a placed asset or of the activated file during the run: the record would name hashes the containers did not run with
+  if [ "$(_moe_sha "$bpath")" != "$bsha" ]; then _MOE_REASON="$bfile changed during the run (${bsha:0:12} -> $(_moe_sha "$bpath" | cut -c1-12))"; valid=1
+  elif ! _moe_assets_unchanged; then valid=1; fi
+  if [ "$valid" -ne 0 ]; then
     moe_reject "$outdir" "ab-$stamp" "$part" "$_MOE_REASON"
     echo "ab $stamp: rejected, ${_MOE_REJECTED#"$outdir"/}: $_MOE_REASON"
     return 1

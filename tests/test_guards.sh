@@ -213,7 +213,7 @@ t_g5_the_deadline_stops_the_step_and_keeps_the_cleanup_budget() {
   # The supervisor's 60 s net also writes KIND=deadline; only the watcher writes this detail.
   assert_contains "$O_DETAIL" "deadline reached" "the deadline watcher fired, not the supervisor's net"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "the restore ran (pwsh.exe once)"
-  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 26.4) }'; then assert_eq ok ok "the whole invocation ended before T_END (26.4 s): $(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }')"; else assert_eq "< 24 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
+  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 26.4) }'; then assert_eq ok ok "the whole invocation ended before T_END (26.4 s): $(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }')"; else assert_eq "< 26.4 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
   kill_recorded_pids "$CASE"
 }
 
@@ -392,7 +392,7 @@ t_a_deadline_watcher_that_is_gone_does_not_leave_the_worker_running_past_the_dea
   outcome_read "$(run_dir_of)/steps/1.outcome"
   assert_eq "deadline" "$O_KIND" "KIND=deadline"
   assert_contains "$O_DETAIL" "did not stop the worker" "the detail says the watcher was not the one"
-  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 26.4) }'; then assert_eq ok ok "the call ended before T_END ($(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }'))"; else assert_eq "< 24 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
+  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 26.4) }'; then assert_eq ok ok "the call ended before T_END ($(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }'))"; else assert_eq "< 26.4 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
   kill_recorded_pids "$CASE"
 }
 

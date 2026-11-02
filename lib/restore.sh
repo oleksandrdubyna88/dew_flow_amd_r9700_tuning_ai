@@ -43,6 +43,7 @@ _marker_check() {
     RESTORE_SCRIPT_WIN) _cfg_check win "$v" ;;
     RESTORE_ARGS) _cfg_check args "$v" && { [[ $v == *[![:space:]]* ]] || _PE="the value is empty or only spaces"; } ;;
     CONTAINER_PREFIX) _cfg_check prefix "$v" ;;
+    # wider than the loader's cap (3235, config.sh) on purpose: a marker written by an older version may hold up to 3300 and crash recovery must accept it
     READY_TIMEOUT_S) _cfg_check int:60:3300 "$v" ;;
     RUN_DIR) [[ $v =~ ^/[^\"\$\`[:cntrl:]]*$ ]] || _PE="\"$v\" is not an absolute path without quotes, \$ or a backtick" ;;
     WORKER_PGID) _cfg_check int:2:999999999 "$v" ;;

@@ -81,7 +81,6 @@ stub_hang() {
   sleep 1000 > /dev/null 2>&1 &
   sleeper=$!
   stub_record_pid "$R9700_STUB_DIR/hung/containers/$(stub_next hung || echo 0).pid" "$sleeper"
-  trap 'kill "$sleeper" 2> /dev/null; exit 143' TERM # a hung call that obeys TERM ends its sleeper with it
   wait "$sleeper"
 }
 
