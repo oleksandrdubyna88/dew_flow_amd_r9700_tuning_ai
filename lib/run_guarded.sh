@@ -28,6 +28,11 @@
 #   run_dir_new           RUN_DIR and RUN_ID under RESULTS_DIR/runs, with steps/ guard/ supervisor.log status; sets MARKER_FILE
 #   _rg_sleep <seconds>   a sleep a trapped signal ends at once (a foreground sleep would delay the trap until it ends)
 #   _rg_run <var> <cmd...>   an adapter call a trapped signal ends at once (the same reason: a $(...) or a pipeline would hold the trap)
+#   cleanup_hook_set <function>   registers ONE function the cleanup runs once, after the containers are stopped and before the restore (E2.S2
+#                         decision 6: the Triton cache clear of the MoE units); 2 for a name that is not a function. Register it BEFORE `supervise`
+#                         (which forgets it again when it ends). It runs only when a step was admitted.
+#   _rg_cleanup_hook_run  what cleanup_once calls: the hook as a background fork under an ENFORCED ceiling (t_ceiling 60 + the 5 s grace) that ends
+#                         its whole tree with _rg_tree_kill; neither a failed nor a killed hook changes the cleanup's result: the restore runs
 
 # _scale_div <scale variable name> <scale value> <seconds>: the one division. The result is never below 0.01, because `timeout 0` means
 # no ceiling at all.
@@ -440,6 +445,7 @@ supervise() {
   case $rc in 0) kind=done ;; 6) kind=deadline ;; 7) kind=failed ;; 8) kind=not-quiet ;; 9) kind=disk-gate ;; *) kind=failed ;; esac
   cleanup_once "$kind"
   crc=$?
+  _RG_CLEANUP_HOOK="" # registered before this invocation, for this invocation only
   [ "$crc" -eq 0 ] || rc="$crc"
   _rg_traps_off
   return "$rc"
@@ -487,9 +493,47 @@ _rg_status_write() {
   printf '%s\n' "$1" > "$RUN_DIR/status.part" && mv "$RUN_DIR/status.part" "$RUN_DIR/status"
 }
 
+# cleanup_hook_set <function>: the one function the cleanup runs once (see the header); 2 and one line for a name that is not a function
+cleanup_hook_set() {
+  if ! declare -F "${1:-}" > /dev/null; then
+    echo "cleanup_hook_set: \"${1:-}\" is not a function" >&2
+    return 2
+  fi
+  _RG_CLEANUP_HOOK="$1"
+}
+
+# _rg_cleanup_hook_run: the registered hook as a background fork of the supervisor (descriptor 9 closed, amendment A1; its output in
+# <run dir>/guard/cleanup-hook.log), waited for in ticks of t_scale 0.2 until t_ceiling 60 plus the 5 s grace have passed. A fork still alive then is
+# ended with _rg_tree_kill (TERM to its tree, KILL to every group leader of the tree and to the fork): a member that ignores TERM, a wedged adapter
+# call, all die. Why a fork and not a foreground call: the cleanup ignores signals and uses no _rg_run, so a foreground hook stuck in a call whose own
+# ceiling does not hold would hang the cleanup BEFORE the restore, the one failure worse than a late restore (E1 decision 8). The window is wall time,
+# so a tick that sleeps longer than asked cannot stretch it. Logged either way; the result of the hook never changes the result of the cleanup.
+_rg_cleanup_hook_run() {
+  local name="$_RG_CLEANUP_HOOK" pid window end tick shown rc
+  mkdir -p "${RUN_DIR:?}/guard" 2> /dev/null
+  ( "$name" ) 9>&- > "$RUN_DIR/guard/cleanup-hook.log" 2>&1 &
+  pid=$!
+  window="$(awk -v a="$(t_ceiling 60)" -v b="$(t_ceiling 5)" 'BEGIN { printf "%.2f", a + b }' 9>&-)"
+  end="$(awk -v n="$(date +%s.%N 9>&-)" -v w="$window" 'BEGIN { printf "%.3f", n + w }' 9>&-)"
+  tick="$(t_scale 0.2)"
+  shown="$(ceil_seconds "$(t_ceiling 60)")"
+  while kill -0 "$pid" 2> /dev/null; do
+    if awk -v e="$end" -v n="$(date +%s.%N 9>&-)" 'BEGIN { exit !(n >= e) }' 9>&-; then
+      _rg_tree_kill "$pid"
+      rg_log "cleanup hook: $name timeout after $shown s, killed"
+      return 0
+    fi
+    sleep "$tick" 9>&-
+  done
+  wait "$pid"
+  rc=$?
+  rg_log "cleanup hook: $name rc=$rc"
+  return 0
+}
+
 # cleanup_once <kind>: runs ONCE per invocation (a flag; the second call, from a second signal or the EXIT trap, returns the first one's
 # result). INT, TERM and HUP are ignored from its first line: a signal must not cut the restore in half. In this order: the guards, the whole
-# worker SESSION (amendment A8), every prefixed container (its log tail saved first), the restore of the operator's server when a marker
+# worker SESSION (amendment A8), every prefixed container (its log tail saved first), the registered cleanup hook (`cleanup_hook_set`; only after an admitted step, under its own enforced ceiling), the restore of the operator's server when a marker
 # stands (not again when a restore of this invocation already failed: the marker stays, decision 5), the status file, the lock. It has no stop
 # time (decision 8). Returns 0, or 5 when the restore did not become ready.
 cleanup_once() {
@@ -504,7 +548,10 @@ cleanup_once() {
   [ -z "${_RG_BG:-}" ] || _rg_bg_kill
   [ -z "${RUN_DIR:-}" ] || rm -f "$RUN_DIR"/.call."$$".* 2> /dev/null
   if [ -n "${_RG_WORKER_SID:-}" ]; then session_stop "$_RG_WORKER_SID"; _RG_WORKER_SID=""; fi
-  if [ "${_RG_STEP_N:-0}" -gt 0 ]; then container_stop_all "${RUN_DIR:-/nonexistent}" || true; fi
+  if [ "${_RG_STEP_N:-0}" -gt 0 ]; then
+    container_stop_all "${RUN_DIR:-/nonexistent}" || true
+    [ -z "${_RG_CLEANUP_HOOK:-}" ] || _rg_cleanup_hook_run
+  fi
   if [ "${_RG_RESTORE_RC:-0}" -ne 0 ]; then
     rc=5
   elif [ -n "${MARKER_FILE:-}" ] && [ -f "$MARKER_FILE" ]; then

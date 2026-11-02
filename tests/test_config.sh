@@ -56,7 +56,7 @@ t_the_machine_fixture_and_the_35b_example_load_and_apply_the_defaults() {
   assert_eq "8192 32768" "$R9700_PREFILL_LENS" "prefill lens"
   assert_eq "2048" "$R9700_RAM_MIN_MB" "RAM_MIN_MB default"
   assert_eq "r9700tune-" "$R9700_CONTAINER_PREFIX" "CONTAINER_PREFIX default"
-  assert_eq "1500" "$R9700_CLEANUP_BUDGET_S" "CLEANUP_BUDGET_S default (1500: S2 decision 8)"
+  assert_eq "1565" "$R9700_CLEANUP_BUDGET_S" "CLEANUP_BUDGET_S default (1565: E2.S2 decision 6; was 1500 in E1.S2 decision 8)"
 }
 
 t_the_s2_lifecycle_fields_take_their_defaults() {
@@ -251,18 +251,40 @@ t_a_mount_source_that_does_not_exist_under_the_patch_directory_is_refused() {
   assert_contains "$ERR" 'MOUNTS: "C/auto_gptq.py" does not exist under PATCH_DIR' "names the missing source"
 }
 
-t_a_cleanup_budget_that_cannot_hold_the_restore_is_refused() {
+t_a_cleanup_budget_that_cannot_hold_the_restore_and_the_hook_is_refused() {
   local root; root="$(case_root "$FUNCNAME")"
-  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1499"
-  assert_exit 2 "1499 < 1200 + 300 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
-  assert_contains "$ERR" "CLEANUP_BUDGET_S: 1499 is less than READY_TIMEOUT_S 1200 + 300" "names both fields"
-  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1500"
-  assert_exit 0 "1500 = 1200 + 300 passes (the default)" -- config_load "$root/machine.env" "$MODEL_35B"
-  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3300"
-  assert_exit 2 "the default budget 1500 cannot hold a 3300 s readiness wait" -- config_load "$root/machine.env" "$MODEL_35B"
-  assert_contains "$ERR" "READY_TIMEOUT_S 3300 + 300" "names the readiness value"
+  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1564"
+  assert_exit 2 "1564 < 1200 + 365 is refused (E2.S2 decision 6: 300 restore + 65 cleanup hook)" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "CLEANUP_BUDGET_S: 1564 is less than READY_TIMEOUT_S 1200 + 365" "names both fields"
+  assert_contains "$ERR" "300 for the restore + 65 for the cleanup hook" "and both parts of the reserve"
+  machine "$root" CLEANUP_BUDGET_S "CLEANUP_BUDGET_S=1565"
+  assert_exit 0 "1565 = 1200 + 365 passes (the default)" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3235"
+  assert_exit 2 "the default budget 1565 cannot hold a 3235 s readiness wait" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "READY_TIMEOUT_S 3235 + 365" "names the readiness value"
   printf '%s\n' "CLEANUP_BUDGET_S=3600" >> "$root/machine.env"
-  assert_exit 0 "READY_TIMEOUT_S 3300 with the largest budget 3600 = 3300 + 300 passes" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_exit 0 "READY_TIMEOUT_S 3235 with the largest budget 3600 = 3235 + 365 passes" -- config_load "$root/machine.env" "$MODEL_35B"
+}
+
+t_the_moe_fields_load_with_their_defaults_and_refuse_values_outside_their_legal_set() {
+  local root; root="$(case_root "$FUNCNAME")"; machine "$root"
+  assert_exit 0 "load" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "43200" "$R9700_MOE_CHUNK_MAX_S" "MOE_CHUNK_MAX_S default (12 h: E2.S2 decision 7)"
+  assert_eq "int4_w4a16" "$R9700_MOE_DTYPE" "MOE_DTYPE default"
+  machine "$root" MOE_CHUNK_MAX_S "MOE_CHUNK_MAX_S=599"
+  assert_exit 2 "599 s is below the range" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "MOE_CHUNK_MAX_S" "naming the field"
+  assert_contains "$ERR" "600..86400" "and the range"
+  machine "$root" MOE_CHUNK_MAX_S "MOE_CHUNK_MAX_S=86400"
+  assert_exit 0 "86400 is the top of the range" -- config_load "$root/machine.env" "$MODEL_35B"
+  local dtype
+  for dtype in auto fp8_w8a8 int8_w8a16 int4_w4a16 none; do
+    model "$MODEL_35B" "$root" MOE_DTYPE "MOE_DTYPE=$dtype"
+    assert_exit 0 "MOE_DTYPE=$dtype loads" -- config_load "$root/machine.env" "$root/model.env"
+  done
+  model "$MODEL_35B" "$root" MOE_DTYPE "MOE_DTYPE=int4"
+  assert_exit 2 "MOE_DTYPE=int4 is refused" -- config_load "$root/machine.env" "$root/model.env"
+  assert_contains "$ERR" "auto fp8_w8a8 int8_w8a16 int4_w4a16 none" "naming the five legal values"
 }
 
 t_a_try_limit_above_the_stop_limit_is_refused_because_every_try_stops_the_server() {
@@ -278,11 +300,11 @@ t_a_try_limit_above_the_stop_limit_is_refused_because_every_try_stops_the_server
   assert_exit 0 "both raised together pass" -- config_load "$root/machine.env" "$MODEL_35B"
 }
 
-t_the_readiness_timeout_tops_out_where_the_largest_budget_can_still_hold_it() {
+t_the_readiness_timeout_tops_out_where_the_largest_budget_can_still_hold_it_and_the_hook() {
   local root; root="$(case_root "$FUNCNAME")"
-  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3301"
-  assert_exit 2 "3301 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
-  assert_contains "$ERR" 'READY_TIMEOUT_S: "3301" is outside 60..3300' "the range is 60..3300"
+  machine "$root" READY_TIMEOUT_S "READY_TIMEOUT_S=3236"
+  assert_exit 2 "3236 is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" 'READY_TIMEOUT_S: "3236" is outside 60..3235' "the range is 60..3235 (E2.S2 decision 6: 3235 + 365 = 3600)"
 }
 
 # ---- the resolved view -----------------------------------------------------------------------------------------

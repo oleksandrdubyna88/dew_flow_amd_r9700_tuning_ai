@@ -53,10 +53,11 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 | `DISK_GATE` | enum `on` `off` | `on` | check the disk event log before each unit: on or off | `disk_gate.sh` |
 | `DEADLINE` | `HH:MM` 24 h, or empty = none | empty | the clock time (HH:MM, 24 h) by which a run must be over; empty means none | `night5.sh` line 10 |
 | `MAX_RUN_MINUTES` | integer 10..2880 — the ceiling when `DEADLINE` is empty or later | `720` | the ceiling of a run in minutes when DEADLINE is empty or later | new (every wait has a ceiling) |
-| `READY_TIMEOUT_S` | integer 60..3300 (the largest `CLEANUP_BUDGET_S`, 3600, minus 300) | `1200` | how long a server may take to become ready, in seconds | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 (E1.S2 decision 5) |
+| `READY_TIMEOUT_S` | integer 60..3235 (the largest `CLEANUP_BUDGET_S`, 3600, minus 365; was 3300 before E2.S2 decision 6) | `1200` | how long a server may take to become ready, in seconds | `wait_ready.sh` line 6 (120 × 10 s); `serve.sh` line 3 (E1.S2 decision 5) |
 | `MAX_FAILED_TRIES` | integer 1..20 | `3` | how many failed tries a step gets before the run gives up; at most MAX_SERVER_STOPS | `night5.sh` line 36 (E1.S2 decision 6) |
 | `MAX_SERVER_STOPS` | integer 1..10 | `3` | how many times one invocation may stop the operator's server | new (E1.S2 decision 15) |
-| `CLEANUP_BUDGET_S` | integer 60..3600; cross-field: at least `READY_TIMEOUT_S` + 300 | `1500` | seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 300 | new (E1 done-when); default 1500 since E1.S2 decision 8 (was 900) |
+| `CLEANUP_BUDGET_S` | integer 60..3600; cross-field: at least `READY_TIMEOUT_S` + 365 (300 for the restore, 65 for the cleanup hook) | `1565` | seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 365 | new (E1 done-when); default 1565 since E2.S2 decision 6 (was 1500 since E1.S2 decision 8, 900 before) |
+| `MOE_CHUNK_MAX_S` | integer 600..86400 | `43200` | the ceiling of one MoE tuning chunk container, in seconds | new (E2.S2 decision 7; the longest measured chunk was 214 min, a full bs-24 search was estimated at 11 h) |
 
 ## `models/<name>.env`
 
@@ -68,6 +69,7 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 | `MAX_NUM_SEQS` | integer 1..256 | required | the number of concurrent sequences of the server | `serve.sh` line 20 |
 | `GPU_MEM_UTIL` | decimal 0.10..0.95 | `0.85` | the GPU memory fraction of the server | `serve.sh` line 20 |
 | `PREFILL_LENS` | list of distinct positive integers of at most 9 digits, separated by spaces; each + 128 output tokens must be ≤ `MAX_MODEL_LEN` | required | the prefill lengths to measure, in tokens; each plus 128 must fit MAX_MODEL_LEN | `speed_A.sh` line 12 |
+| `MOE_DTYPE` | enum `auto` `fp8_w8a8` `int8_w8a16` `int4_w4a16` `none` | `int4_w4a16` | the weight dtype of the model's MoE layers for tuning; none means no MoE layers | `tune_chunk.sh` line 4 (`TUNE_DTYPE`), `benchmark_moe.py` line 1155 (E2.S2 decision 7) |
 | `TUNED_CONFIG_DIR` | container path `^/`, or empty | empty | the folder of tuned MoE configs, as a path inside the container; empty means none | `speed_A.sh` line 58 |
 | `MOUNTS` | list of `<relative source>:<container path>[:ro]` words; the source is relative to `PATCH_DIR`, has no `..`, no leading `/`, and must exist | empty | extra mounts: <source relative to PATCH_DIR>:<container path>[:ro], separated by spaces | `serve.sh` lines 13–16 |
 | `EXTRA_SERVE_ARGS` | string, split on spaces; quotes, tabs and `*` `?` `[` are refused | empty | extra arguments of the serve command, split on spaces; quotes are refused | `serve.sh` line 21 |
