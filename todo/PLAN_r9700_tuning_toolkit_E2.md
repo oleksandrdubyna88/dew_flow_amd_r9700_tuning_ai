@@ -165,7 +165,7 @@ not needed and stays only as the rule for a machine where that file is gone.
 | Source | Target | Content |
 |---|---|---|
 | `night-2026-10-31/phaseB1_kernel_ab/default-{1,2,3}.log`, `tuned-{1,2,3}.log` | `tests/fixtures/moe/b1_ab/<same name>` | 22 lines each; 8 `Kernel time` lines |
-| `night-2026-10-31/phaseB1_kernel_ab/summary.log` lines 19–32 | `tests/fixtures/moe/b1_ab/expected.txt` | the table, the config lines, `B1 KERNEL: faster` (the last line is replaced by the new decision line, scenario K1) |
+| `night-2026-10-31/phaseB1_kernel_ab/summary.log` lines 19–32 | `tests/fixtures/moe/b1_ab/expected.txt` | the table, the config lines, `B1 KERNEL: faster` (the last line is replaced by the new decision line, scenario K1; the recorded run printed config lines for bs 1 and 4 only, so `decide` prints more and K1 allows exactly `default|tuned bs k config:` for k in 2 3 6 8 12 16) |
 | `night-2026-10-31/phaseB1_kernel_ab/merged_b1_E=256,N=512,device_name=AMD_Radeon_R9700.json` | `tests/fixtures/moe/b1/E=256,N=512,device_name=AMD_Radeon_R9700.json` | 7 keys, `triton_version` 3.8.0 |
 | `night-2026-11-01/phaseB2/kernel_ab/default-{1,2,3}.log`, `tuned-{1,2,3}.log` | `tests/fixtures/moe/b2_ab/<same name>` | 28 lines each; 11 `Kernel time` lines |
 | `night-2026-11-01/phaseB2/b2_kernel_ab.log` lines 19–53 | `tests/fixtures/moe/b2_ab/expected.txt` | as above, `B2 KERNEL: not faster (…)` replaced (K2) |
@@ -372,7 +372,7 @@ merged files were made (*Facts*). Test names state the guarantee.
 **Kernel A/B (`tests/test_moe_kernel_ab.py`)**
 
 1. *The B1 table and decision are reproduced exactly.* `decide AB1 --keys "1 2 3 4 6 8 12 16" --rule each --rule-keys
-   "1 4"`: exit 0; stdout equals `AB1/expected.txt` line for line. The fixture's last line (`B1 KERNEL: faster`) is
+   "1 4"`: exit 0; stdout equals `AB1/expected.txt` line for line, plus exactly the twelve config lines `default|tuned bs k config:` for k in 2 3 6 8 12 16 (the recorded run printed config lines for bs 1 and 4 only; an older script). The fixture's last line (`B1 KERNEL: faster`) is
    replaced by `KERNEL: faster (each of 1 4 is faster by more than 3 %)` when the fixture is made; `expected.txt`
    holds no comment (a comment would break the equality), the fixtures table of `research/module_tests.md` says it.
 2. *The B2 table and decision are reproduced exactly.* `decide AB2 --keys "8 16 20 24 32 48 64 96 128 192 256" --rule

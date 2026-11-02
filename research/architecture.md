@@ -55,10 +55,10 @@ A guard is a background fork of the supervisor with descriptor 9 closed. It writ
   written once, every config holding the six fields (`FIELDS`; more are allowed, `waves_per_eu` and `SPLIT_K` are), and exactly the promised keys. Exit 0, or 1 with the first problem on stdout.
 - `lib/merge_moe.py merge --out <dir> [--base <file>] [--expect "<bs…>"] <chunk dir>…` reads every chunk dir (exactly one `E=*.json`, read back and never typed, and an optional `chunk.env` with
   `KEYS=` and the identity words `IMAGE`, `MODEL_DIR`, `DTYPE`, `LAYER`), reports every problem in one pass (`merge: …`, exit 2), and writes `<out>/<NAME>` in the sources' format. The expected key
-  set is the base's keys plus each chunk's `KEYS=` promise (what the chunk holds when it promised nothing); `--expect` replaces it. The write goes to `<NAME>.part-<pid>-<start ticks>` and is
+  set is the base's keys plus each chunk's `KEYS=` promise (what the chunk holds when it has no `chunk.env`; a `chunk.env` without `KEYS=` is refused); `--expect` replaces it. An identity word set in some chunks and not in others is refused. The write goes to `<NAME>.part-<pid>-<start ticks>` and is
   moved with `os.link`, which fails when the name exists: **a merge never replaces a file** (append-only; which file a server reads is a separate step). A part whose owner is gone is removed
-  before the next write; a part whose owner lives is a refusal.
-- `lib/moe_kernel_ab.py decide <dir> --keys … --rule each|median --rule-keys …` takes the median of `reps` values per batch size and arm (exact decimals, strict comparison with the threshold),
+  before the next write; a part whose owner lives is a refusal. Where hard links fail, the write takes a `<NAME>.claim` (`O_EXCL`, owner inside, swept when dead) around check and replace.
+- `lib/moe_kernel_ab.py decide <dir> --keys … --rule each|median --rule-keys …` takes the median of `reps` values per batch size and arm (a rep is a log: every log must be there and hold each batch size once) (exact decimals, strict comparison with the threshold),
   prints the table, one config line per arm and batch size, and `KERNEL: faster|not faster (<why>)`. Exit 0 faster, 1 not faster, 2 not decidable (a missing rep is `incomplete:`, nothing on stdout).
 - `vendor/benchmark_moe.py`: see `vendor/README.md` (upstream commit and hash, the three hooks, the diff). `config/coarse_candidates.json`: 82 configs, the 81-config product plus the batch-size-1 winner.
 

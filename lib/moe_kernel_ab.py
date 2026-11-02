@@ -10,8 +10,8 @@ threshold. Rule `median`: the median change over the rule keys is below minus th
 Numbers are decimal.Decimal parsed from the text and compared unrounded and strict: (97.00 - 100.00) / 100.00 * 100 is -3.0000000000000004 in
 binary floating point, which a float comparison calls "faster" at exactly -3 %.
 
-A log that is not there counts as no values (the refusal then says which arm and batch size is short): a decision is made only when every
-batch size has `reps` values in both arms. Exit codes: 0 faster, 1 not faster, 2 an input that cannot be decided (stderr, nothing on stdout).
+A decision is made only when every log is there and holds every batch size exactly once (a missing log, a batch size twice in one log and a short
+arm are each refused, naming the file or the arm and batch size). Exit codes: 0 faster, 1 not faster, 2 an input that cannot be decided (stderr, nothing on stdout).
 Python >= 3.10, standard library only.
 """
 import argparse
@@ -51,20 +51,32 @@ def read_log(path):
     return [(int(bs), config, Decimal(us)) for bs, config, us in PAIR.findall(text)]
 
 
+def log_problems(path, rows, keys):
+    """The problems of ONE present log: a batch size outside --keys (the first, once), a batch size written more than once (each, naming the file)."""
+    seen = [bs for bs, _config, _us in rows]
+    problems = [f"bs {bs} is in {path} {seen.count(bs)} times" for bs in dict.fromkeys(seen) if seen.count(bs) > 1 and bs in keys]
+    outside = next((bs for bs in seen if bs not in keys), None)
+    return problems + ([f"bs {outside} in {path} is not in --keys"] if outside is not None else [])
+
+
 def collect(folder, reps, keys):
-    """({arm: {bs: [times]}}, {arm: {bs: config text}}, [problems]); the config is the one of the last log read, as in the published script."""
+    """({arm: {bs: [times]}}, {arm: {bs: config text}}, [problems]); the config is the one of the last log read, as in the published script.
+
+    A rep is a LOG: each present log must hold each batch size once, so two logs joined into one cannot pass for two reps; a log that is not there
+    is refused by name."""
     times, configs, problems = {arm: {} for arm in ARMS}, {arm: {} for arm in ARMS}, []
     for arm in ARMS:
         for number in range(1, reps + 1):
             path = folder / f"{arm}-{number}.log"
             if not path.is_file():
+                problems.append(f"missing log: {path}")
                 continue
-            for bs, config, us in read_log(path):
-                if bs not in keys:
-                    problems += [] if any(f" in {path} " in problem for problem in problems) else [f"bs {bs} in {path} is not in --keys"]
-                    continue
-                times[arm].setdefault(bs, []).append(us)
-                configs[arm][bs] = config
+            rows = read_log(path)
+            problems += log_problems(path, rows, keys)
+            for bs, config, us in rows:
+                if bs in keys:
+                    times[arm].setdefault(bs, []).append(us)
+                    configs[arm][bs] = config
     return times, configs, problems
 
 

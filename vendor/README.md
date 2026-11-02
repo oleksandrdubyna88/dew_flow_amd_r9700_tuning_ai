@@ -96,5 +96,6 @@ runs it from `/work/r9700`. Nothing else in the repository imports it, and no te
 Empty until the acceptance run of the MoE tuning story is done on the R9700.
 
 - Hooks 1 and 2: observed in the work of 2026-10-26..11-01 (the chunks and the B2 run ran with this file); not yet observed through the toolkit.
-- Hook 3: known only by its effect, in the B1 draft-layer chunks of 2026-10-28..31 (BF16 activations; the kernel A/B of the draft layer ran with
-  `MOE_TUNE_ACT_DTYPE=bfloat16`). The acceptance does not run a draft-layer chunk, so it stays NOT observed through the toolkit until one runs.
+- Hook 3 (`MOE_TUNE_ACT_DTYPE`) has NOT yet been observed on the machine through the toolkit. It is known only by its effect, in the B1 draft-layer chunks of
+  2026-10-28..31 (BF16 activations; the kernel A/B of the draft layer ran with `MOE_TUNE_ACT_DTYPE=bfloat16`). The acceptance run does not run a draft-layer chunk,
+  so it stays unobserved until one runs.

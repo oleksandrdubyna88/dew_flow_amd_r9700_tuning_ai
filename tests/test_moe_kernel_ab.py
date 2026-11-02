@@ -59,7 +59,8 @@ def test_the_b1_table_and_decision_are_reproduced_exactly():
     assert code == 0, err
     assert [line for line in lines if line in recorded or " config: " not in line] == recorded
     extra = [line for line in lines if line not in recorded]
-    assert len(extra) == 12 and all(" config: " in line for line in extra), extra
+    expected_extra = [f"{arm} bs {bs} config: " for arm in ARMS for bs in (2, 3, 6, 8, 12, 16)]
+    assert len(extra) == 12 and [line[:len(prefix)] for line, prefix in zip(extra, expected_extra)] == expected_extra, extra
     assert lines[-1] == "KERNEL: faster (each of 1 4 is faster by more than 3 %)"
 
 
@@ -113,6 +114,39 @@ def test_an_arm_short_of_a_rep_is_incomplete_not_a_decision(tmp_path):
     assert code == 2
     assert err.splitlines()[0] == "incomplete: tuned bs 1 has 2 of 3 values"
     assert "KERNEL:" not in out and out == ""
+
+
+def test_a_missing_log_is_refused_naming_the_file(tmp_path):
+    folder = tmp_path / "ab"
+    shutil.copytree(AB1, folder)
+    (folder / "tuned-3.log").unlink()
+    code, out, err = decide(folder, KEYS1, "each", "1 4")
+    assert code == 2
+    assert f"missing log: {folder / 'tuned-3.log'}" in err.splitlines()
+
+
+def test_two_logs_joined_into_one_do_not_pass_for_three_reps(tmp_path):
+    """The reviewer's case: tuned-2 appended to tuned-1 and tuned-3 deleted made n=3/3 and `faster`. Each log holds each key once."""
+    folder = tmp_path / "ab"
+    shutil.copytree(AB1, folder)
+    first = folder / "tuned-1.log"
+    first.write_text(first.read_text() + (folder / "tuned-2.log").read_text())
+    (folder / "tuned-2.log").unlink()
+    (folder / "tuned-3.log").unlink()
+    code, out, err = decide(folder, KEYS1, "each", "1 4")
+    assert code == 2 and out == ""
+    assert f"bs 1 is in {first} 2 times" in err.splitlines()
+    assert f"missing log: {folder / 'tuned-3.log'}" in err.splitlines()
+
+
+def test_a_key_twice_in_one_log_is_refused_naming_the_file(tmp_path):
+    folder = tmp_path / "ab"
+    shutil.copytree(AB1, folder)
+    log = folder / "default-2.log"
+    log.write_text(log.read_text() + "Batch size: 1, config: {}\nKernel time: 1.00 us\n")
+    code, out, err = decide(folder, KEYS1, "each", "1 4")
+    assert code == 2 and out == ""
+    assert f"bs 1 is in {log} 2 times" in err.splitlines()
 
 
 def test_a_batch_size_the_logs_do_not_hold_is_refused_and_a_rule_key_outside_the_keys_too():

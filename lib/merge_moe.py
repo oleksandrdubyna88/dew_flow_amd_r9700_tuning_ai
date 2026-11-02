@@ -13,10 +13,11 @@ check: exit 0, or 1 with the FIRST problem on stdout. merge: exit 0, or 2 with e
 is `<out>/<NAME>`, the sources' key order (`json.dumps(indent=4)` and a newline), written to `<NAME>.part-<pid>-<start ticks>` (the part names
 its writer, as the marker of a worker does) and moved to its name by `os.link` (atomic, and it fails when the name exists). A merge never
 replaces a file: every merge is a new file, and which file a server reads is a separate, explicit step (`activate`).
-A part whose owner is gone (no such pid, or other start ticks) is removed before a write; a part whose owner lives is a refusal.
+A part (or claim) whose owner is gone (no such pid, or other start ticks) is removed before a write; a part whose owner lives is a refusal.
 
-Residual (the fallback only): in a folder that cannot make hard links the write checks that the name is free and then replaces; two merges
-that pass the check in the same instants could both replace. The sweep makes the second one meet the first one's part in all but that instant.
+Fallback: in a folder that cannot make hard links the write takes `<NAME>.claim` (created with O_EXCL, holding the owner's pid and start ticks),
+checks that the name is free, replaces, and removes the claim. A claim whose owner is gone is swept like a part; one whose owner lives is a
+refusal. Residual: the claim and the part are removed by their owner only, so a writer killed between the two leaves them for the next sweep.
 Test knob (environment only): R9700_TEST_MERGE_HOLD_S sleeps that many seconds between the part write and the move, so a test can kill the
 writer inside the window. Python >= 3.10, standard library only.
 """
@@ -51,6 +52,7 @@ class Source:
     configs: dict  # {batch size: config}
     promise: object  # the KEYS of chunk.env as a tuple, or None
     env: dict
+    base: bool = False  # a base file is not a chunk: it has no chunk.env and takes no part in the identity words
 
 
 # ---------- reading one file ----------
@@ -108,14 +110,14 @@ def entry_problems(label, data):
     return problems
 
 
-def load_file(path, label, env=None, promise=None):
+def load_file(path, label, env=None, promise=None, base=False):
     """(Source or None, [problems]) of one chunk file. A Source is returned even when its entries have problems, so the key sets stay complete."""
     data, duplicates, problems = read_json(path)
     if data is None:
         return None, problems
     problems = [f"duplicate key {key} in {label} (twice in the file)" for key in dict.fromkeys(duplicates)] + entry_problems(label, data)
     configs = {int(key): config for key, config in data.items() if KEY.fullmatch(key) and isinstance(config, dict)}
-    return Source(label, path.name, data.get("triton_version"), configs, promise, env or {}), problems
+    return Source(label, path.name, data.get("triton_version"), configs, promise, env or {}, base), problems
 
 
 # ---------- reading a chunk dir ----------
@@ -143,8 +145,8 @@ def chunk_env(directory):
         env, problems = read_env(path)
     except (OSError, UnicodeDecodeError) as error:
         return {}, None, [f"{path}: cannot read ({getattr(error, 'strerror', None) or error})"]
-    if "KEYS" not in env:
-        return env, None, problems
+    if "KEYS" not in env:  # a chunk.env that promises nothing would make the promise a no-op: refused (no chunk.env at all is another case)
+        return env, None, [*problems, f"{path}: KEYS= is missing"]
     try:
         return env, tuple(key_list(env["KEYS"], f"{path}: KEYS")), problems
     except InputError as error:
@@ -166,9 +168,13 @@ def load_chunk_dir(label):
 
 # ---------- putting the sources together ----------
 def identity_problems(sources):
-    problems = []
+    """An identity word must be held by every chunk or by none, and be equal where held (a base file is not a chunk)."""
+    chunks, problems = [source for source in sources if not source.base], []
     for word in IDENTITY:
-        holders = [source for source in sources if word in source.env]
+        holders = [source for source in chunks if word in source.env]
+        if not holders:
+            continue
+        problems += [f"{word} is set in {holders[0].label} but not in {other.label}" for other in chunks if word not in other.env]
         problems += [f"{word} differs: {holders[0].label} {holders[0].env[word]} vs {other.label} {other.env[word]}"
                      for other in holders[1:] if other.env[word] != holders[0].env[word]]
     return problems
@@ -218,9 +224,47 @@ def proc_ticks(pid):
     return stat[stat.rindex(")") + 2:].split(" ")[19]
 
 
+def claim_owner(claim):
+    """(pid, ticks) written in a claim file, or None when it cannot be read."""
+    try:
+        pid, ticks = claim.read_text().split()
+    except (OSError, ValueError):
+        return None
+    return (pid, ticks) if pid.isdigit() and ticks.isdigit() else None
+
+
+def take_claim(claim):
+    """The fallback's lock: `<NAME>.claim`, created with O_EXCL, holding `<pid> <start ticks>`. A claim of a dead owner is swept (once); a live or unreadable one is a refusal."""
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            owner = claim_owner(claim)
+            if owner is None:
+                raise InputError(f"merge: cannot tell the owner of {claim}; remove it by hand") from None
+            if proc_ticks(owner[0]) == owner[1]:
+                raise InputError(f"merge: another merge is writing {claim} (pid {owner[0]})") from None
+            claim.unlink(missing_ok=True)
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"{os.getpid()} {proc_ticks('self')}\n")
+        return
+    raise InputError(f"merge: another merge is writing {claim}")
+
+
+def sweep_claim(out, name):
+    """The line printed when a claim of a dead owner is removed before a write (a live one is left: `take_claim` refuses it)."""
+    claim = out / f"{name}.claim"
+    owner = claim_owner(claim) if claim.exists() else None
+    if owner is None or proc_ticks(owner[0]) == owner[1]:
+        return []
+    claim.unlink(missing_ok=True)
+    return [f"merge: removed stale {claim} (owner {owner[0]} gone)"]
+
+
 def sweep_parts(out, name):
     """Remove the parts of dead owners (the lines it prints); a part of a live owner, or one whose name tells no owner, is a refusal."""
-    lines = []
+    lines = sweep_claim(out, name)
     for part in sorted(path for path in out.iterdir() if path.name.startswith(f"{name}.part-")):
         match = PART.search(part.name)
         if not match:
@@ -243,10 +287,15 @@ def publish(part, target):
         os.link(part, target)
     except FileExistsError as error:
         raise exists_error(target) from error
-    except OSError:  # a folder that cannot link: check, then replace (the residual window of the header)
-        if target.exists():
-            raise exists_error(target) from None
-        os.replace(part, target)
+    except OSError:  # a folder that cannot link: under a claim (O_EXCL), check, then replace
+        claim = target.with_name(f"{target.name}.claim")
+        take_claim(claim)
+        try:
+            if target.exists():
+                raise exists_error(target) from None
+            os.replace(part, target)
+        finally:
+            claim.unlink(missing_ok=True)
         return
     part.unlink()
 
@@ -284,7 +333,7 @@ def prepare_out(out, name):
 def load_inputs(base, chunk_dirs):
     """([sources, base first], [problems], whether every input could be read)."""
     sources, problems, complete = [], [], True
-    loaded = [load_file(Path(base), base)] if base else []
+    loaded = [load_file(Path(base), base, base=True)] if base else []
     loaded += [load_chunk_dir(label) for label in chunk_dirs]
     for source, found in loaded:
         problems += found

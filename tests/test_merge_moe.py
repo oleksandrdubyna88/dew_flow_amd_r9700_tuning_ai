@@ -45,10 +45,13 @@ def fixture_file(folder):
     return found[0]
 
 
-def chunk_dir(tmp_path, label, folder, keys, version=None, env=None, mutate=None):
+def chunk_dir(tmp_path, label, folder, keys, version=None, env=None, mutate=None, promise=True):
     """A chunk dir under tmp_path cut from a merged fixture: the fixture's file name, its triton_version (or `version`), its entries for `keys`.
 
-    `mutate(data)` may change the written dictionary; `env` is the text of a chunk.env."""
+    `mutate(data)` may change the written dictionary; `env` is the text of a chunk.env, which gets `KEYS="<keys>"` in front unless it holds one or
+    `promise` is False (a chunk.env must promise)."""
+    if env is not None and promise and "KEYS=" not in env:
+        env = f'KEYS="{keys}"\n' + env
     source = fixture_file(folder)
     whole = json.loads(source.read_text())
     data = {"triton_version": version or whole["triton_version"]}
@@ -241,12 +244,37 @@ def test_every_identity_word_of_chunk_env_is_compared(tmp_path):
 
 
 def test_a_chunk_env_that_is_not_the_grammar_is_refused_never_executed(tmp_path):
-    chunk = chunk_dir(tmp_path, "c", B1, "1", env="not a pair\n")
+    chunk = chunk_dir(tmp_path, "c", B1, "1", env="not a pair\n", promise=False)
     code, out, err = run(["merge", "--out", tmp_path / "m", chunk])
     assert code == 2
     assert f"merge: {chunk / 'chunk.env'}:1: not KEY=value" in err.splitlines()
     chunk2 = chunk_dir(tmp_path, "c2", B1, "1", env='KEYS="1 x"\n')
     assert "is not a list of positive integers" in run(["merge", "--out", tmp_path / "m", chunk2])[2]
+
+
+def test_a_chunk_env_without_keys_is_refused_so_the_promise_cannot_be_a_no_op(tmp_path):
+    chunk = chunk_dir(tmp_path, "c", B1, "1", env="IMAGE=rocm/vllm:a\n", promise=False)
+    code, out, err = run(["merge", "--out", tmp_path / "m", chunk])
+    assert code == 2
+    assert f"merge: {chunk / 'chunk.env'}: KEYS= is missing" in err.splitlines()
+
+
+def test_an_identity_word_held_by_only_some_chunks_is_refused(tmp_path):
+    one = chunk_dir(tmp_path, "one", B1, "1", env='KEYS="1"\nIMAGE=rocm/vllm:a\n')
+    two = chunk_dir(tmp_path, "two", B1, "2", env='KEYS="2"\n')
+    three = chunk_dir(tmp_path, "three", B1, "4")
+    code, out, err = run(["merge", "--out", tmp_path / "m", one, two, three])
+    assert code == 2
+    lines = err.splitlines()
+    assert f"merge: IMAGE is set in {one} but not in {two}" in lines
+    assert f"merge: IMAGE is set in {one} but not in {three}" in lines
+    assert run(["merge", "--out", tmp_path / "ok", one, chunk_dir(tmp_path, "four", B1, "2", env='KEYS="2"\nIMAGE=rocm/vllm:a\n')])[0] == 0
+
+
+def test_a_base_file_does_not_count_as_a_chunk_that_lacks_an_identity_word(tmp_path):
+    chunk = chunk_dir(tmp_path, "coarse", B2, "24 32 64 128", env='KEYS="24 32 64 128"\nIMAGE=rocm/vllm:a\n')
+    code, out, err = run(["merge", "--out", tmp_path / "m", "--base", fixture_file(BASE), chunk])
+    assert code == 0, err
 
 
 def test_all_problems_are_reported_in_one_pass(tmp_path):
@@ -389,6 +417,38 @@ def test_publishing_over_an_existing_name_is_refused_and_the_file_is_untouched(t
     with pytest.raises(module.InputError, match="exists; merges are append-only"):
         module.publish(part, target)
     assert target.read_text() == "first"
+
+
+def forced_fallback(monkeypatch):
+    module = load_module()
+
+    def no_links(*_args, **_kwargs):
+        raise OSError(errno.EPERM, "links not supported")
+    monkeypatch.setattr(module.os, "link", no_links)
+    return module
+
+
+def test_in_the_fallback_a_live_claim_stops_a_second_merge_before_it_replaces_anything(tmp_path, monkeypatch, capsys):
+    module = forced_fallback(monkeypatch)
+    out = tmp_path / "m"
+    out.mkdir()
+    claim = out / f"{fixture_file(B1).name}.claim"
+    claim.write_text(f"{os.getpid()} {own_ticks()}\n")
+    assert module.main(["merge", "--out", str(out), *map(str, b1_chunks(tmp_path))]) == 2
+    assert f"merge: another merge is writing {claim} (pid {os.getpid()})" in capsys.readouterr().err.splitlines()
+    assert not (out / fixture_file(B1).name).exists() and claim.exists()
+
+
+def test_in_the_fallback_a_claim_with_a_dead_owner_is_swept_and_no_claim_is_left(tmp_path, monkeypatch, capsys):
+    module = forced_fallback(monkeypatch)
+    out = tmp_path / "m"
+    out.mkdir()
+    claim = out / f"{fixture_file(B1).name}.claim"
+    claim.write_text("999999 1\n")
+    assert module.main(["merge", "--out", str(out), *map(str, b1_chunks(tmp_path))]) == 0
+    assert f"merge: removed stale {claim} (owner 999999 gone)" in capsys.readouterr().out.splitlines()
+    assert (out / fixture_file(B1).name).read_bytes() == fixture_file(B1).read_bytes()
+    assert sorted(path.name for path in out.iterdir()) == [fixture_file(B1).name]
 
 
 # ---- M14: check ------------------------------------------------------------------------------------------------------------------------------------------------
