@@ -1538,6 +1538,23 @@ replaces its first sentence):
 - **A19 — the throwaway container probe runs through `_rg_run`**, so a TERM before admission ends the supervisor
   at once, not after the probe's 120 s ceiling.
 
+**Amendments from the epic code gate and the cross-part review, 2026-11-02:**
+
+- **A20 — the stop limit and the try limit agree.** Every admission is one stop of the operator's server
+  (decision 15), so with `MAX_FAILED_TRIES` 6 and `MAX_SERVER_STOPS` 3 exit 7 could never happen and exit 8
+  named stops that did not happen. The config refuses `MAX_FAILED_TRIES > MAX_SERVER_STOPS`; the default
+  `MAX_FAILED_TRIES` becomes 3; the exit-8 line says `admitted <n> times (each admission stops the operator's
+  server)`.
+- **A21 — the worker gate's own timeout is a failed try.** `worker_gate.sh` exits 5 (not 4) when its gate never
+  opens; 4 stays "nothing more fits before the deadline".
+- **A22 — the restore retries its preparation.** Before it starts the server, a restore retries the container
+  list and the stop of test containers up to 3 times (a scaled 10 s apart); only then it fails with the contract
+  line `not ready after <n> s (<reason>)`.
+- **A23 — resume by name.** The default `--out` has no date (`<model>`), so the same command resumes on another
+  day; `series` prints the outdir on its first line.
+- **A24 — the fingerprint's tools are every module a unit runs** (`lib/*.sh`, `lib/*.py` that the worker sources
+  or calls), not a hand list.
+
 ### Test scenarios
 
 `tests/test_series.sh` (S1–S16, bash, the S2 preamble: stubs first on `PATH`, `R9700_STATE_DIR`,
