@@ -2,7 +2,7 @@
 
 The test harness of the R9700 vLLM tuning toolkit, as built by E1.S1: the runner, the assertion file, the fixtures, the
 static checks and the CI workflow. E1.S2 added the adapter's test file, the stub executables and the supervisor's tests; E1.S3 added the
-tests of the series, of the run identity and of the verdict read back from the records. Later stories add their test files to the same runner;
+tests of the series, of the run identity and of the verdict read back from the records. E2.S1 added the tests of the pure parts of MoE tuning (the merge and check of chunk files, the kernel A/B decision, the coarse candidates, the vendored benchmark). Later stories add their test files to the same runner;
 there is no second one.
 
 ## Where it is
@@ -27,6 +27,10 @@ there is no second one.
 | `tests/test_series_identity.sh` | `bin/r9700 series` (E1.S3): the run identity. S7 (a resume skips exactly the recorded arm-rounds, a finished series admits nothing), S8-S10 (a changed model field, patch file, listing, generation config or base is refused naming what differs BEFORE anything is stopped; a new arm and more rounds are extensions), F7 and F8 (the throwaway container's program is run for real on a tree with nested and hidden files, and receives the model path as ONE argument), S19 (`--dry-run`, which writes nothing: byte-identical `fingerprint.json` after a dry run with more rounds and another arm), a deleted `fingerprint.json` over records is refused, a `TERM` during a hanging throwaway container ends the supervisor with 143 within seconds and nothing stopped, S20 (`harness.py` placed with its hash checked, the GSM8K data checked before round 1), the refusals of the arguments, the lock |
 | `tests/test_series_verdict.sh` | `bin/r9700 verdict` (E1.S3): S15 (a base with no final record is refused; an in-flight or rejected attempt never reaches the verdict; a missing round is INCOMPLETE), S16 (the recorded verdict of 2026-10-31 reproduced from records built out of the fixture), S17 (an unsupported arm is reported and left out; an unsupported base is refused), S18 (a one-round series names its condition), the options |
 | `tests/test_fingerprint.py` | `lib/fingerprint.py` (E1.S3): F1-F6, a stored document whose digest or version does not hold is refused, `show`, `check-quality`, the extensions (a new arm, more rounds) and the catalogue rows of its commands |
+| `tests/test_merge_moe.py` | `lib/merge_moe.py` (E2.S1): M1 and M2 (the two published merged files, byte for byte), M3-M11 and M15 (the refusals, all in one pass), M12, M13, M17 (append-only, the atomic write, a part with a dead owner swept, a live owner refused, a merge killed in its write window, two merges at once), M14 (`check`), M16 (the catalogue) |
+| `tests/test_moe_kernel_ab.py` | `lib/moe_kernel_ab.py` (E2.S1): K1 and K2 (the recorded B1 and B2 tables and decisions), K3-K11 (both rules, the exact threshold, the median of three, incomplete and malformed logs), K12 (the catalogue) |
+| `tests/test_candidates.py` | `config/coarse_candidates.json` (E2.S1): C1 (the 81-config product plus the batch-size-1 winner), C2 (the merge's field check), C3 (the published hash) |
+| `tests/test_vendor.sh` | `vendor/benchmark_moe.py` (E2.S1): V1-V5 (`patch -R` gives upstream's hash; three hunks, each a `LOCAL CHANGE`; the licence header; it compiles) and the README (the diff embedded verbatim, the hashes named) |
 | `tests/lib/seriescase.sh` | the helpers of the three series files: `series_setup` (the stub answers of a stub series), `sr`, `series_bg`, `starts`, `build_fixture_outdir`, `lose_server_after` |
 | `tests/lib/stepcase.sh` | the helpers of part (c): `step_setup`, `step_bg`/`step_end`, `session_fixture`, `append_answer`; it sources the part (c) libraries |
 | `tests/lib/lifecycle.sh`, `tests/lib/fake_supervisor.sh` | helpers: a marker written by hand, `bin/r9700` as a user runs it, and a TEST DOUBLE of part (c)'s `step` (lock, marker, stop, worker behind the gate, kill) used to kill a supervisor |
@@ -37,7 +41,7 @@ there is no second one.
 | `tests/lib/assert.sh` | the bash assertions (`assert_eq`, `assert_contains`, `assert_exit`, `t_finish`, `run_all_tests`) |
 | `tools/lib/owned.mjs`, `git.mjs`, `leftovers-sweep.mjs`, `owned-token.mjs` | the leftovers helper: byte-identical copies of the shared files, plus this repository's own token file. They sit in `tools/lib/` because that is where the leftovers guard recognises a copied helper (product code, never scanned as a test) |
 | `tests/lib/lower-priority.mjs` | the priority preload (the shared template with its `MOUNT` line edited) |
-| `tests/fixtures/` | measured bench lines and quality files of 2026-10-28..31 (`ship_test/`, `prompts/`) and the machine fixture (`config/`) |
+| `tests/fixtures/` | measured bench lines and quality files of 2026-10-28..31 (`ship_test/`, `prompts/`), the machine fixture (`config/`) and the MoE tuning fixtures (`moe/`, below) |
 | `.github/workflows/tests.yml` | CI: the same commands as below, then the leftovers guard and the plan check |
 
 Python is `pytest`, the only third-party package, pinned in `tests/requirements.txt`. Shell tests are plain bash with
@@ -94,6 +98,7 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `R9700_STUB_OK_HOLD` | `worker.sh ok` | seconds the stub worker holds before it exits 0 (default 0.3, so a guard gets reads) |
 | `R9700_QUIET_CHECKS` | `quiet_wait` in `lib/guard_quiet.sh` | the number of quiet checks in a row, 1..10 (default 3); the lifecycle and guard tests set it to 1, and the test of the check count sets 3 (amendment A3). Never in `machine.env` |
 | `R9700_LOADAVG_FILE` | `quiet_check` in `lib/guard_quiet.sh` | the file the 1-minute load is read from (default `/proc/loadavg`); every part (c) test points it at its own file, so the PC's real load never decides a test |
+| `R9700_TEST_MERGE_HOLD_S` | `merge` in `lib/merge_moe.py` | seconds the merge sleeps between writing its part and moving it to its name, so a test can kill it inside the window (M17). Never in `machine.env` |
 | `R9700_TEST_KILL_BEFORE_GATE` | `step_run` in `lib/step.sh` | `1` makes the supervisor `kill -KILL` itself right after the worker start, before the gate file exists (scenario L21) |
 | `R9700_STUB_SERVE_HOLD` | `worker.sh serve` | seconds the serve worker holds after the server is ready (default 1000: it stays up until it is stopped) |
 | `R9700_ARM_SECONDS` | `series_main` in `lib/series.sh` | the time one arm-round is allowed to need for the fit check (default 1500, the figure of the old `night5.sh`); it goes through `t_scale`. Scenario S13 sets it |
@@ -126,6 +131,11 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | `lib/fingerprint.py compare` — every differing leaf with its path, a new arm is an extension, `--merge` | covered | `tests/test_fingerprint.py` (F2-F4) |
 | `lib/fingerprint.py show` — one leaf of a document | covered | `tests/test_fingerprint.py` |
 | `lib/fingerprint.py check-quality` — the round-1 quality files of a record | covered | `tests/test_fingerprint.py` |
+| `lib/merge_moe.py check` — one chunk file against its promised keys: JSON, version, positive-integer keys written once, the six fields (extras pass) | covered | `tests/test_merge_moe.py` (M14) |
+| `lib/merge_moe.py merge` — chunk dirs and a base into one new file: the two published merged files byte for byte, every refusal in one pass, the promise of `chunk.env`, identity words, append-only, atomic, parts with an owner | covered | `tests/test_merge_moe.py` (M1-M13, M15, M17) |
+| `lib/moe_kernel_ab.py decide` — the table, the config lines and the decision of a kernel A/B folder: the recorded B1 and B2 results, exact decimals, `incomplete` | covered | `tests/test_moe_kernel_ab.py` (K1-K11) |
+| `config/coarse_candidates.json` — the 82 candidates of the coarse search | covered | `tests/test_candidates.py` |
+| `vendor/benchmark_moe.py` — upstream vLLM plus three marked hooks, proven by `vendor/hooks.diff` and `vendor/UPSTREAM` | covered (the file is never RUN in CI) | `tests/test_vendor.sh` |
 | the config loader (`config_load`, `config_keys`, `config_resolved`) | covered | `tests/test_config.sh` |
 | the arm table (`arms_load`, `arm_args`, `arm_env`, `arm_mounts`, `arms_check`) | covered | `tests/test_config.sh` |
 | the static checks (`tests/check_static.sh`) | covered | `tests/test_static.sh` |
@@ -147,7 +157,22 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | the runner: one owned folder, removed after a run, swept after a `kill -9` | covered by hand, below | — |
 | the assertion file (`tests/lib/assert.sh`) | covered | `tests/test_assert.sh` |
 
-Everything E1 builds is in the catalogue.
+Everything E1 builds and everything E2.S1 builds is in the catalogue.
+
+## The MoE fixtures (E2.S1)
+
+`tests/fixtures/moe/` holds measured files of the 2026-10-27..11-01 MoE work, copied byte for byte with `git show` from the published results (they are `-text` in `.gitattributes`):
+
+| Folder | What | Where it comes from |
+|---|---|---|
+| `b1_ab/` | `default-{1,2,3}.log`, `tuned-{1,2,3}.log` of the B1 kernel A/B (the draft layer, 8 batch sizes) and `expected.txt` | the results of the night of 2026-10-31, `phaseB1_kernel_ab/`; `expected.txt` is lines 19-32 of its `summary.log` with ONE edit: the last line `B1 KERNEL: faster` is replaced by the new decision line. The recorded run printed config lines for batch sizes 1 and 4 only (an older version of the script); `decide` prints one per batch size, so K1 compares the recorded lines and allows exactly the config lines of the other sizes |
+| `b1/` | the merged BF16 config of that night (7 keys, triton 3.8.0) | `phaseB1_kernel_ab/merged_b1_*.json`, renamed to its own file name |
+| `b2_ab/` | the logs of the B2 kernel A/B (the int4 experts, 11 batch sizes) and `expected.txt` | the night of 2026-11-01, `phaseB2/kernel_ab/` and lines 19-53 of `b2_kernel_ab.log`, with the same one edit (the last line becomes the new decision line) |
+| `b2/` | the merged int4 config of that night (13 keys) | `phaseB2/merged_b2_*.json` |
+| `b2_base/` | the 9-key production int4 file of 2026-10-27 (sha256 `072d2506...`) | the config folder of the MoE tuning work of 2026-10-27 |
+
+The chunk files of those nights are not published; a test builds a chunk dir from a merged fixture (the fixture's own file name, its `triton_version` and its entries for the chunk's keys), which is exactly how the merged files were made.
+`config/coarse_candidates.json` is a fixture too: the published 82-config file, pinned by its hash (C3).
 
 ## The runner check, by hand (scenario 46)
 
@@ -179,6 +204,12 @@ Every scenario L1–L22 and G1–G14 of the story is covered. L1, L4 and L5 have
   serves at those settings.
 - **The time scale shapes the S12 and S13 numbers.** Their margins are measured against a deadline that is whole seconds; a machine slower than
   the one they were tuned on can move an arm-round across one of them.
+
+- **The vendored benchmark is never run in CI.** `tests/test_vendor.sh` proves it is upstream plus the three marked changes; it does not prove the changes work. Hooks 1 and 2 were observed
+  in the 2026-10 work and hook 3 is known by its effect only (the B1 draft-layer chunks); none is observed through the toolkit until the acceptance run of the MoE story (`vendor/README.md`, *Verified on the machine*).
+- **`merge` and `decide` are proven on the files of the published runs, not on a new chunk.** A chunk file made by a newer vLLM may hold other fields or another key order; `check` accepts extra fields and
+  the merge keeps each config's own order, but only the real run shows the real file.
+- **The atomic write rests on `os.link`.** M17 proves no overwrite and no half file on this filesystem; a results folder on a filesystem without hard links uses the fallback (check, then replace), whose window the header of `lib/merge_moe.py` states and one test forces (not observed on such a filesystem).
 
 - **No GPU, no real `wslc`, no real vLLM server.** `lib/harness.py` is tested against a Python `http.server` stub on
   `127.0.0.1` that answers the two routes with fixed bodies; the real server's logprobs and chat template are not exercised.
