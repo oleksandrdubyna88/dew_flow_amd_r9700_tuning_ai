@@ -121,18 +121,14 @@ _adapter_drop_lock() { [ "$BASHPID" = "${_RG_LOCK_OWNER:-$$}" ] || exec 9>&-; }
 # cannot be reused while it has a member, and a member that forks while the kill is on its way is in the group too. Nothing to kill is not
 # an error.
 _adapter_group_kill() {
-  local _adapter_pgid="$1" _adapter_stat _adapter_dir _adapter_mysid _adapter_mypgrp
-  { IFS= read -r _adapter_stat < "/proc/$BASHPID/stat"; } 2> /dev/null || return 0
-  _adapter_stat="${_adapter_stat##*) }"
-  set -- $_adapter_stat
-  _adapter_mypgrp="${3:-}"
-  _adapter_mysid="${4:-}"
+  local _adapter_pgid="$1" _adapter_dir _adapter_mysid _adapter_mypgrp
+  proc_stat_fields "$BASHPID" || return 0
+  _adapter_mypgrp="${PROC_STAT[2]:-}"
+  _adapter_mysid="${PROC_STAT[3]:-}"
   [ "$_adapter_pgid" != "$_adapter_mypgrp" ] || return 0
   for _adapter_dir in /proc/[0-9]*; do
-    { IFS= read -r _adapter_stat < "$_adapter_dir/stat"; } 2> /dev/null || continue
-    _adapter_stat="${_adapter_stat##*) }"
-    set -- $_adapter_stat
-    if [ "${1:-Z}" != Z ] && [ "${3:-}" = "$_adapter_pgid" ] && [ "${4:-}" = "$_adapter_mysid" ]; then
+    proc_stat_fields "${_adapter_dir#/proc/}" || continue
+    if [ "${PROC_STAT[0]:-Z}" != Z ] && [ "${PROC_STAT[2]:-}" = "$_adapter_pgid" ] && [ "${PROC_STAT[3]:-}" = "$_adapter_mysid" ]; then
       kill -KILL -- "-$_adapter_pgid" 2> /dev/null
       return 0
     fi

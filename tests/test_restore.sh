@@ -318,12 +318,12 @@ t_the_worker_gate_runs_the_command_in_its_own_process_after_the_gate_file_appear
   assert_eq $'a\nb c' "$(sed -n '2,3p' "$CASE/args")" "its arguments arrive whole"
 }
 
-t_the_worker_gate_without_a_gate_file_exits_4_by_itself_and_runs_nothing() {
+t_the_worker_gate_without_a_gate_file_exits_5_by_itself_and_runs_nothing() {
   lc_setup "$FUNCNAME"
   local started ended
   export R9700_CEILING_SCALE=100 # 30 s of the gate wait become 0.3 s
   started="$(date +%s.%N)"
-  assert_exit 4 "no gate file: exit 4" -- "$REPO/lib/worker_gate.sh" "$CASE/never" touch "$CASE/ran"
+  assert_exit 5 "no gate file: exit 5 (A21: 4 stays the deadline code of a worker)" -- "$REPO/lib/worker_gate.sh" "$CASE/never" touch "$CASE/ran"
   ended="$(date +%s.%N)"
   assert_missing "$CASE/ran" "the command never ran"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"
@@ -484,6 +484,71 @@ t_a_marker_stays_when_a_prefixed_container_cannot_be_stopped() {
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"
   assert_contains "$ERR" "r9700tune-old" "naming the container"
   assert_exit 0 "the marker is kept" -- test -f "$MARKER_FILE"
+  kill_recorded_pids "$CASE"
+}
+
+# ---- A22: the restore retries its preparation ------------------------------------------------------------------------------------------------
+
+t_one_transient_container_list_failure_still_restores_the_server() {
+  lc_setup "$FUNCNAME"
+  write_marker
+  printf '1\n' > "$STUB/fail-list"
+  assert_exit 0 "the first list fails, the retry answers" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "the server was started once"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  assert_eq "" "$ERR" "nothing on stderr: a retried fault is not a line"
+  kill_recorded_pids "$CASE"
+}
+
+t_two_transient_failures_of_the_list_that_decides_whether_to_start_the_server_still_restore() {
+  lc_setup "$FUNCNAME"
+  write_marker
+  printf '1 2\n' > "$STUB/fail-list" # the preparation's list answers; then two failures hit the list of the server start
+  assert_exit 0 "restored" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "the server was started once"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  kill_recorded_pids "$CASE"
+}
+
+t_three_list_failures_give_the_contract_line_exit_5_and_no_start() {
+  lc_setup "$FUNCNAME"
+  write_marker
+  printf '3\n' > "$STUB/fail-list"
+  assert_exit 5 "three failures in a row" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"
+  if [[ $ERR =~ ^r9700:\ restore:\ vllm\ not\ ready\ after\ [0-9]+\ s\ \(the\ container\ list\ failed ]]; then assert_eq ok ok "the contract line: r9700: restore: vllm not ready after <n> s (the container list failed ...)"; else assert_eq "r9700: restore: vllm not ready after <n> s (the container list failed ...)" "$ERR" "the contract line"; fi
+  assert_eq "0" "$(log_count pwsh.exe -Detach)" "the server was not started"
+  assert_exit 0 "the marker is kept" -- test -f "$MARKER_FILE"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_failed_stop_of_a_test_container_is_retried_before_the_restore_gives_up() {
+  lc_setup "$FUNCNAME"
+  write_marker PROD_WAS_RUNNING=no
+  wslc_run r9700tune-old img > /dev/null
+  mkdir -p "$CASE/bin"
+  # the stop fails twice, then works: a transient fault
+  printf '#!/usr/bin/env bash\nif [ "$1" = stop ]; then n=$(cat "%s/stops" 2> /dev/null || echo 0); echo $((n + 1)) > "%s/stops"; [ "$n" -lt 2 ] && exit 1; fi\nexec "%s/wslc" "$@"\n' "$CASE" "$CASE" "$STUBS" > "$CASE/bin/wslc"
+  chmod +x "$CASE/bin/wslc"
+  write_marker PROD_WAS_RUNNING=no "WSLC=$CASE/bin/wslc"
+  assert_exit 0 "the third try stops it" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq "" "$(wslc_list)" "nothing runs"
+  assert_eq "3" "$(cat "$CASE/stops")" "three stop calls"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_stop_that_keeps_failing_ends_in_the_contract_line_naming_the_container() {
+  lc_setup "$FUNCNAME"
+  write_marker PROD_WAS_RUNNING=no
+  wslc_run r9700tune-old img > /dev/null
+  mkdir -p "$CASE/bin"
+  printf '#!/usr/bin/env bash\n[ "$1" = stop ] && exit 1\nexec "%s/wslc" "$@"\n' "$STUBS" > "$CASE/bin/wslc"
+  chmod +x "$CASE/bin/wslc"
+  write_marker PROD_WAS_RUNNING=no "WSLC=$CASE/bin/wslc"
+  assert_exit 5 "the stop never works" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"
+  if [[ $ERR =~ ^r9700:\ restore:\ vllm\ not\ ready\ after\ [0-9]+\ s\ \(r9700tune-old\ did\ not\ stop ]]; then assert_eq ok ok "the contract line names the container that did not stop"; else assert_eq "r9700: restore: vllm not ready after <n> s (r9700tune-old did not stop ...)" "$ERR" "the contract line"; fi
   kill_recorded_pids "$CASE"
 }
 

@@ -6,7 +6,7 @@
 #                        a busy pattern is set, prints "load unreadable: not quiet" and returns 1: nothing counts an unreadable value as fine
 #   quiet_wait <s>       the loop of the old wait_quiet.sh: R9700_QUIET_CHECKS quiet checks in a row (default 3), 300 s apart, for at most <s>
 #                        production seconds; 0 quiet, 1 ceiling reached, 2 a bad argument. Each check is one supervisor line ending in
-#                        quiet-checks=<k>/<n>
+#                        quiet-checks=<k>/<n>, then `next check in <s> s` (production seconds) unless it is the last
 #
 # Test knobs (the environment only, never machine.env): R9700_QUIET_CHECKS (the number of checks, 1..10; the lifecycle tests use 1) and
 # R9700_LOADAVG_FILE (the file the load is read from; default /proc/loadavg).
@@ -35,7 +35,7 @@ quiet_check() {
 }
 
 quiet_wait() {
-  local ceiling="${1:-}" need="${R9700_QUIET_CHECKS:-3}" streak=0 limit tick start end now left out
+  local ceiling="${1:-}" need="${R9700_QUIET_CHECKS:-3}" streak=0 limit tick start end now left more out
   if ! [[ $ceiling =~ ^[0-9]+(\.[0-9]+)?$ ]]; then echo "quiet_wait: the ceiling \"$ceiling\" is not a number of seconds" >&2; return 2; fi
   if ! [[ $need =~ ^([1-9]|10)$ ]]; then echo "quiet_wait: R9700_QUIET_CHECKS \"$need\" is not a whole number from 1 to 10" >&2; return 2; fi
   limit="$(t_scale "$ceiling")" || return 2
@@ -44,10 +44,14 @@ quiet_wait() {
   end="$(awk -v a="$start" -v l="$limit" 'BEGIN { printf "%.3f", a + l }' 9>&-)"
   while :; do
     out="$(quiet_check)" && streak=$((streak + 1)) || streak=0
-    rg_log "$out quiet-checks=$streak/$need"
-    if [ "$streak" -ge "$need" ]; then rg_log QUIET; return 0; fi
     now="$(date +%s.%N 9>&-)"
-    left="$(awk -v e="$end" -v n="$now" -v t="$tick" 'BEGIN { l = e - n; if (l <= 0) { print 0; exit } if (l > t) l = t; printf "%.3f", l }' 9>&-)"
+    read -r left more < <(awk -v e="$end" -v n="$now" -v t="$tick" 'BEGIN { l = e - n; if (l <= 0) { print "0 0"; exit } m = (l > t); if (l > t) l = t; printf "%.3f %d\n", l, m }' 9>&-)
+    if [ "$streak" -ge "$need" ] || [ "$more" != 1 ]; then
+      rg_log "$out quiet-checks=$streak/$need"
+    else
+      rg_log "$out quiet-checks=$streak/$need next check in $(awk -v l="$left" -v k="${R9700_TIME_SCALE:-1}" 'BEGIN { printf "%d", l * k + 0.5 }' 9>&-) s"
+    fi
+    if [ "$streak" -ge "$need" ]; then rg_log QUIET; return 0; fi
     [ "$left" != 0 ] || return 1
     _rg_sleep "$left"
     now="$(date +%s.%N 9>&-)"

@@ -59,7 +59,7 @@ _field machine DISK_GATE enum:on,off on "check the disk event log before each un
 _field machine DEADLINE hhmm? "" "the clock time (HH:MM, 24 h) by which a run must be over; empty means none"
 _field machine MAX_RUN_MINUTES int:10:2880 720 "the ceiling of a run in minutes when DEADLINE is empty or later"
 _field machine READY_TIMEOUT_S int:60:3300 1200 "how long a server may take to become ready, in seconds"
-_field machine MAX_FAILED_TRIES int:1:20 6 "how many failed tries a step gets before the run gives up"
+_field machine MAX_FAILED_TRIES int:1:20 3 "how many failed tries a step gets before the run gives up; at most MAX_SERVER_STOPS"
 _field machine MAX_SERVER_STOPS int:1:10 3 "how many times one invocation may stop the operator's server"
 _field machine CLEANUP_BUDGET_S int:60:3600 1500 "seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 300"
 
@@ -337,6 +337,11 @@ _cfg_cross() {
     _cfg_error "$(_cfg_where PROD_CONTAINER)" "${_C_LINE[PROD_CONTAINER]-}" PROD_CONTAINER \
       "\"${_C_VAL[PROD_CONTAINER]}\" starts with the container prefix \"${_C_VAL[CONTAINER_PREFIX]}\"" \
       "PROD_CONTAINER must not start with CONTAINER_PREFIX (the toolkit stops every container with that prefix)"
+  fi
+  if [ -z "${_C_BAD[MAX_FAILED_TRIES]+set}${_C_BAD[MAX_SERVER_STOPS]+set}" ] && ((_C_VAL[MAX_FAILED_TRIES] > _C_VAL[MAX_SERVER_STOPS])); then
+    _cfg_error "$(_cfg_where MAX_FAILED_TRIES)" "${_C_LINE[MAX_FAILED_TRIES]-}" MAX_FAILED_TRIES \
+      "${_C_VAL[MAX_FAILED_TRIES]} is more than MAX_SERVER_STOPS ${_C_VAL[MAX_SERVER_STOPS]}" \
+      "at most MAX_SERVER_STOPS (each try stops the operator's server, so more tries than stops could never all happen)"
   fi
   if [ -z "${_C_BAD[CLEANUP_BUDGET_S]+set}${_C_BAD[READY_TIMEOUT_S]+set}" ] \
     && ((_C_VAL[CLEANUP_BUDGET_S] < _C_VAL[READY_TIMEOUT_S] + 300)); then

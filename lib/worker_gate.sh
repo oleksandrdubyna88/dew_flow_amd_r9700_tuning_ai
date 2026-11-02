@@ -3,8 +3,8 @@
 # `setsid lib/worker_gate.sh <gate file> <command...> 9>&-` by the supervisor. It waits, bounded (30 s through t_ceiling: a wait with a ceiling), until <gate
 # file> exists, then `exec`s the command, which is then the same process. The supervisor creates the gate file only AFTER the recovery
 # marker names this worker (its process group, its start ticks), so a worker never touches the GPU or a container before a restore could
-# find it. When the gate file never appears (the supervisor was killed in that window) the worker exits 4 by itself and runs nothing.
-#   exit 2  bad arguments or an invalid scale      exit 4  the gate file did not appear in time
+# find it. When the gate file never appears (the supervisor was killed in that window) the worker exits 5 by itself and runs nothing (4 is the series worker's "nothing more fits before the deadline").
+#   exit 2  bad arguments or an invalid scale      exit 5  the gate file did not appear in time (a failed try for the supervisor)
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/run_guarded.sh
@@ -23,4 +23,4 @@ for ((i = 0; i < steps; i++)); do
 done
 [ -f "$gate" ] && exec "$@"
 echo "worker_gate: the gate file $gate did not appear within ${limit} s; the worker gives up and runs nothing" >&2
-exit 4
+exit 5

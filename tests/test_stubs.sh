@@ -362,4 +362,16 @@ t_the_stub_harness_writes_as_many_prompt_results_as_answers_prompts_n_says() {
   kill_recorded_pids "$CASE"
 }
 
+t_the_fail_list_file_makes_the_next_list_calls_fail_after_the_skipped_good_ones() {
+  setup_case "$FUNCNAME"
+  printf '1 2\n' > "$STUB/fail-list"
+  assert_exit 0 "the first call is good (skip 1)" -- wslc list
+  assert_exit 1 "the next one fails" -- wslc list
+  assert_contains "$ERR" "scripted" "with a line that says so"
+  assert_exit 1 "and the one after" -- wslc list
+  assert_exit 0 "then it works again" -- wslc list
+  printf '2\n' > "$STUB/fail-list"
+  assert_exit 1 "a single number is a count with no skip" -- wslc list
+}
+
 run_all_tests

@@ -4,10 +4,23 @@
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
-# exists, to restore first, and releases it before it reads. Exit codes: 0 ok, 2 config or arguments refused, 4 another run holds the lock,
-# 5 the restore did not become ready, 6 the deadline stopped the step, 7 the step failed MAX_FAILED_TRIES times, 8 not quiet before the
-# deadline or the server-stop budget is used, 9 the disk gate stopped the run, 10 init found a problem, 11 the recovery marker cannot be read,
-# 130 and 143 interrupted by INT and TERM, cleanup done (the table is in research/architecture.md).
+# exists, to restore first, and releases it before it reads.
+#
+# Exit codes (the table with the stderr line of each is in research/architecture.md; README.md lists them too):
+#   0 ok
+#   1 verdict: at least one arm is INCOMPLETE (verdict.py's own code)
+#   2 config or arguments refused; a series refused to go on (the identity changed, no fingerprint over records); verdict input error
+#   4 another run holds the lock
+#   5 the restore did not become ready
+#   6 the deadline stopped the step, or the worker said nothing more fits
+#   7 the step failed MAX_FAILED_TRIES times
+#   8 not quiet before the deadline, or admitted MAX_SERVER_STOPS times (each admission stops the operator's server)
+#   9 the disk gate stopped the run
+#   10 init found a problem
+#   11 the recovery marker cannot be read
+#   129 interrupted by HUP, cleanup done
+#   130 interrupted by INT, cleanup done
+#   143 interrupted by TERM, cleanup done
 set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
@@ -76,7 +89,7 @@ init_problem() {
 init_adapter_problem() {
   local rc="$1" text="$2" ceiling
   if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
-    ceiling="$(awk -v c="$(t_ceiling 60)" 'BEGIN { n = int(c); print (c > n ? n + 1 : n) }')"
+    ceiling="$(ceil_seconds "$(t_ceiling 60)")"
     printf 'timeout after %s s' "$ceiling"
   else
     printf '%s' "${text%%$'\n'*}"
@@ -234,7 +247,7 @@ series_args() {
   done
   if [ -z "$_SERIES_OUT" ]; then
     base="${_R9700_MODEL_ARG##*/}"
-    _SERIES_OUT="${base%.env}-$(date -u +%Y%m%d)"
+    _SERIES_OUT="${base%.env}" # no date (A23): the same command resumes on another day
   fi
   [[ $_SERIES_OUT =~ $_SERIES_OUT_RE ]] || { echo "r9700: series: --out \"$_SERIES_OUT\" is not a name (letters, digits, . _ -; starting with a letter or digit; at most 64)" >&2; return 2; }
 }
@@ -253,6 +266,7 @@ series_prepare() {
 # the checks of round 1, then the series as ONE step of the supervisor
 series_body() {
   local outdir="$R9700_RESULTS_DIR/$_SERIES_OUT" left recorded
+  echo "series: outdir $outdir"
   if [ "$_SERIES_DRY" = yes ]; then
     series_fingerprint "$outdir" "$_SERIES_ROUNDS" dry "${_SERIES_ARMS[@]}" || return 2
     series_dry_run "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}"

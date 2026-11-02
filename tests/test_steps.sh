@@ -259,6 +259,7 @@ t_quiet_wait_returns_0_at_the_first_quiet_check_when_one_is_asked_for() {
   step_setup "$FUNCNAME"
   assert_exit 0 "quiet_wait 900 with R9700_QUIET_CHECKS=1" -- quiet_wait 900
   assert_contains "$OUT" "quiet-checks=1/1" "the check line"
+  assert_not_contains "$OUT" "next check" "a quiet verdict has no next check"
   assert_contains "$OUT" "QUIET" "and the verdict"
 }
 
@@ -272,6 +273,8 @@ t_quiet_wait_ends_at_its_ceiling_when_the_pc_never_gets_quiet() {
   end="$(date +%s.%N)"
   if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a >= 0.85 && b - a < 3) }'; then assert_eq ok ok "it took the ceiling (0.9 s), not more"; else assert_eq "0.85..3 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "it took the ceiling"; fi
   assert_contains "$OUT" "quiet-checks=0/1" "the checks were made and counted as 0"
+  assert_contains "$(sed -n 1p <<< "$OUT")" "quiet-checks=0/1 next check in 300 s" "the check line says when the next check is (production seconds, whatever the scale)"
+  assert_not_contains "$(tail -n 1 <<< "$OUT")" "next check" "the last check, at the ceiling, has no next one"
   assert_not_contains "$OUT" "QUIET" "no quiet verdict"
 }
 

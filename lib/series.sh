@@ -35,6 +35,12 @@ _SERIES_SPEC_PY="import urllib.request;print(urllib.request.urlopen('http://127.
 # ONE line: a newline inside an argument is not kept by every tool that records a call (the stub's call log writes it as <LF>).
 _SERIES_PROBE_SH='find "$1" -type f -printf "%P %s\n" 2> /dev/null | LC_ALL=C sort; echo ---; cd "$2" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum | awk '"'"'{ h = $1; sub(/^[0-9a-f]+  (\.\/)?/, ""); print $0 " " h }'"'"
 
+# The modules a unit runs, in ONE place (A24): the shell libraries the worker sources (series.sh itself is the worker and is always hashed) and the Python
+# programs it calls. The worker's source loop and the fingerprint's `tools` component both read these two lists, so a module a unit uses can never be
+# left out of the identity.
+_SERIES_UNIT_SH="config run_guarded adapter serve wait_ready bench disk_gate guard_quiet"
+_SERIES_UNIT_PY="fingerprint verdict harness"
+
 series_arms_conf() { printf '%s\n' "${R9700_ARMS_CONF:-$_SERIES_LIB/../config/arms.conf}"; }
 
 _series_stamp() { date -u +%Y%m%dT%H%M%SZ 9>&-; }
@@ -110,6 +116,15 @@ _series_probe() {
   printf '%s\n' "$genconfig" > "$inputs/genconfig"
 }
 
+# _series_write_tools <file>: `<module>_sh|_py <sha256>` for every module of the two lists above and series.sh itself
+_series_write_tools() {
+  local mod
+  {
+    for mod in $_SERIES_UNIT_SH series; do printf '%s_sh %s\n' "$mod" "$(_series_hash_path "$_SERIES_LIB/$mod.sh")"; done
+    for mod in $_SERIES_UNIT_PY; do printf '%s_py %s\n' "$mod" "$(_series_hash_path "$_SERIES_LIB/$mod.py")"; done
+  } > "$1"
+}
+
 # _series_write_inputs <inputs dir> <rounds> <probe yes|no> <arm>...: one file per component group (lib/fingerprint.py reads them; no JSON is built
 # here). `no` leaves out the throwaway container (the model listing and the generation config): the worker's re-check takes those from the stored file.
 _series_write_inputs() {
@@ -121,8 +136,7 @@ _series_write_inputs() {
     arm_args "$arm" > "$inputs/arms/$arm.args" && arm_env "$arm" > "$inputs/arms/$arm.env" && arm_mounts "$arm" > "$inputs/arms/$arm.mounts" || return 2
   done
   _series_write_patches "$inputs/patches" "$@" || return 2
-  printf 'harness_py %s\nbench_sh %s\nseries_sh %s\nserve_sh %s\n' "$(_series_hash_path "$_SERIES_LIB/harness.py")" "$(_series_hash_path "$_SERIES_LIB/bench.sh")" \
-    "$(_series_hash_path "$_SERIES_LIB/series.sh")" "$(_series_hash_path "$_SERIES_LIB/serve.sh")" > "$inputs/tools"
+  _series_write_tools "$inputs/tools"
   printf 'base=%s\nrounds=%s\nprefill_lens=%s\n' "$1" "$rounds" "$R9700_PREFILL_LENS" > "$inputs/series"
   [ "$probe" = no ] || _series_probe "$inputs"
 }
@@ -135,13 +149,13 @@ series_fingerprint() {
   local outdir="$1" rounds="$2" mode="$3" inputs rc=0 out stored
   shift 3
   stored="$outdir/fingerprint.json"
+  if [ ! -f "$stored" ] && { [ -d "$outdir/rounds" ] || [ -d "$outdir/rejected" ]; }; then # a dry run is refused too: it says what the real run would do
+    echo "series: $outdir has rounds/ or rejected/ but no fingerprint.json: the identity of those records is lost, so this series cannot be resumed; use a new --out name (or put the fingerprint.json back from a copy)" >&2
+    return 2
+  fi
   if [ "$mode" = dry ]; then
     inputs="${RUN_DIR:?}/fingerprint-inputs"
   else
-    if [ ! -f "$stored" ] && { [ -d "$outdir/rounds" ] || [ -d "$outdir/rejected" ]; }; then
-      echo "series: $outdir has rounds/ or rejected/ but no fingerprint.json: the identity of those records is lost, so this series cannot be resumed; use a new --out name (or put the fingerprint.json back from a copy)" >&2
-      return 2
-    fi
     mkdir -p "$outdir" || { echo "series: the outdir $outdir cannot be made" >&2; return 2; }
     find "$outdir" -maxdepth 1 -type d -name '.fingerprint-inputs.part-*' -exec rm -rf {} + 2> /dev/null # what a killed earlier run left; ours, temporary
     inputs="$outdir/.fingerprint-inputs.part-${RUN_ID:-$$}"
@@ -259,14 +273,20 @@ series_sweep_parts() {
   done
 }
 
-# _series_gate <arm> <round>: before every arm-round. 0 go on; 1 the disk gate stopped (the outcome says so); 3 not quiet; 4 it no longer fits
-_series_gate() {
-  local arm="$1" round="$2" line allow
+# _series_disk_gate: the disk gate; a stop is the typed outcome KIND=disk_gate (the supervisor's exit 9) and the gate's line on stdout. 1 on a stop.
+_series_disk_gate() {
+  local line
   if ! line="$(disk_gate_check "${R9700_RUN_DIR:?}/disk_gate.state")"; then
     outcome_write "${R9700_OUTCOME_FILE:?}" KIND=disk_gate RC=1 "DETAIL=$line"
     echo "$line"
     return 1
   fi
+}
+
+# _series_gate <arm> <round>: before every arm-round. 0 go on; 1 the disk gate stopped (the outcome says so); 3 not quiet; 4 it no longer fits
+_series_gate() {
+  local arm="$1" round="$2" line allow
+  _series_disk_gate || return 1
   if ! line="$(quiet_check)"; then echo "NOT QUIET: $arm round $round ($line)"; return 3; fi
   allow="$(t_scale "${R9700_ARM_SECONDS:-1500}")" || return 2
   if ! awk -v now="$(date +%s.%N 9>&-)" -v a="$allow" -v stop="${R9700_T_STOP:-}" 'BEGIN { exit !(stop == "" || now + a <= stop + 0) }' 9>&-; then
@@ -331,7 +351,7 @@ _series_start_server() {
 
 # _series_measure <name> <tag> <series> <arm> <round> <part>: the measurements; the problems found go to _SERIES_PROBLEMS (one line each)
 _series_measure() {
-  local name="$1" tag="$2" series="$3" arm="$4" round="$5" part="$6" len rc sub target
+  local name="$1" tag="$2" series="$3" arm="$4" round="$5" part="$6" len sub target
   local -a words=()
   grep -E "$_SERIES_SERVER_CONFIG_RE" "$part/server.log" | cut -c1-240 | sort -u > "$part/server_config.txt"
   bench_run "$name" "$tag" > "$part/bench.txt" || _SERIES_PROBLEMS+=("bench: the bench run failed (code $?)")
@@ -444,7 +464,7 @@ series_unit() {
 
 # series_main <outdir> <rounds> <arm>...: the worker
 series_main() {
-  local line rc round arm
+  local rc round arm
   _SERIES_OUT="$1" _SERIES_ROUNDS="$2"
   shift 2
   _SERIES_ARMS=("$@")
@@ -458,11 +478,7 @@ series_main() {
       [ "$rc" -eq 0 ] || exit "$rc"
     done
   done
-  if ! line="$(disk_gate_check "$R9700_RUN_DIR/disk_gate.state")"; then
-    outcome_write "$R9700_OUTCOME_FILE" KIND=disk_gate RC=1 "DETAIL=$line"
-    echo "$line"
-    exit 1
-  fi
+  _series_disk_gate || exit 1
   echo "series: every arm-round of this invocation is recorded"
 }
 
@@ -471,8 +487,8 @@ _series_fp() { python3 "$_SERIES_LIB/fingerprint.py" show "$1/fingerprint.json" 
 
 # series_verdict <outdir> [--base <arm>] [--no-quality] [--json <file>]
 series_verdict() {
-  local outdir="" base="" quality=yes json="" fp rounds lens sha arm round stamp file rc
-  local -a fp_arms=() judged=() bench=() unsupported=() cmd=()
+  local outdir="" base="" quality=yes json="" fp rounds lens sha arm round stamp file
+  local -a fp_arms=() judged=() bench=() cmd=()
   while [ "$#" -gt 0 ]; do
     case $1 in
       --base) [ "$#" -ge 2 ] || { echo "r9700: verdict: --base needs a value" >&2; return 2; }; base="$2"; shift 2 ;;
@@ -497,7 +513,6 @@ series_verdict() {
       file="$(ls "$outdir"/unsupported/"$arm"-*.txt | LC_ALL=C sort | tail -n 1)"
       stamp="${file##*/$arm-}"
       echo "verdict $arm: UNSUPPORTED (did not start twice, ${stamp%.txt})"
-      unsupported+=("$arm")
       [ "$arm" = "$base" ] && { echo "r9700: verdict: base arm $base is unsupported" >&2; return 2; }
     elif [ "$arm" != "$base" ]; then
       judged+=("$arm")
@@ -518,7 +533,7 @@ series_verdict() {
 # run as the worker only when executed, not when sourced
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -u
-  for _series_lib in config run_guarded adapter serve wait_ready bench disk_gate guard_quiet; do
+  for _series_lib in $_SERIES_UNIT_SH; do
     # shellcheck source=/dev/null
     source "$_SERIES_LIB/$_series_lib.sh" || exit 2
   done

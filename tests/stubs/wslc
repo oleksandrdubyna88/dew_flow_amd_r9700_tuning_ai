@@ -37,8 +37,20 @@ run_container() {
   printf 'stub-line-1%s\nstub-line-2%s\nstub-line-3 %s%s\n' "$CRLF" "$CRLF" "$name" "$CRLF"
 }
 
+# <stub dir>/fail-list: "<count>" or "<skip> <count>": after <skip> good `list` calls (default 0) the next <count> calls fail (a transient fault of wslc)
 list_containers() {
-  local file
+  local file skip=0 count=0
+  if [ -f "$R9700_STUB_DIR/fail-list" ]; then
+    read -r skip count < "$R9700_STUB_DIR/fail-list"
+    if [ -z "$count" ]; then count="$skip"; skip=0; fi
+    if [ "${skip:-0}" -gt 0 ]; then
+      printf '%s %s\n' "$((skip - 1))" "$count" > "$R9700_STUB_DIR/fail-list"
+    elif [ "${count:-0}" -gt 0 ]; then
+      printf '0 %s\n' "$((count - 1))" > "$R9700_STUB_DIR/fail-list"
+      echo "stub: wslc list failed (scripted)" >&2
+      exit 1
+    fi
+  fi
   printf 'CONTAINER ID  NAME%s\n' "$CRLF"
   for file in "$R9700_STUB_DIR"/containers/*.pid; do
     [ -e "$file" ] || continue

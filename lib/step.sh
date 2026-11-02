@@ -92,7 +92,7 @@ _step_admit() {
   shift
   _step_disk_gate || return 9
   if [ $((_RG_STOPS + 1)) -gt "$R9700_MAX_SERVER_STOPS" ]; then
-    rg_err "r9700: server stopped $_RG_STOPS times, limit MAX_SERVER_STOPS=$R9700_MAX_SERVER_STOPS"
+    rg_err "r9700: admitted $_RG_STOPS times (each admission stops the operator's server), limit MAX_SERVER_STOPS=$R9700_MAX_SERVER_STOPS"
     return 8
   fi
   if ! _rg_run listing wslc_list; then _RG_FAIL="the container list failed (${listing%%$'\n'*})"; return 1; fi
@@ -140,7 +140,7 @@ _step_admit() {
 _step_wait_worker() {
   local rc pid sid="$WORKER_PID" outcome="$_RG_OUTCOME" ticks="$WORKER_TICKS" tick grace now
   tick="$(t_scale 5)"
-  grace="$(awk -v g="$(t_scale 60)" 'BEGIN { n = int(g); print (g > n ? n + 1 : n) }' 9>&-)"
+  grace="$(ceil_seconds "$(t_scale 60)")"
   # The wait has a ceiling of its own: the deadline watcher stops the worker at T_STOP, and when the watcher is gone (killed, crashed) the
   # supervisor does it a minute later. A zombie is not alive (guard_alive); `wait` then only collects the code.
   while guard_alive "$sid" "$ticks"; do

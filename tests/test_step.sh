@@ -254,10 +254,10 @@ t_l12_after_an_exit_3_the_server_is_restored_while_the_wait_goes_on_until_the_st
 
 t_l12_the_stops_per_invocation_are_bounded_by_max_server_stops() {
   step_setup "$FUNCNAME"
-  step_cfg MAX_SERVER_STOPS=1
+  step_cfg MAX_SERVER_STOPS=1 MAX_FAILED_TRIES=1
   prod_running
   assert_exit 8 "worker exit3 with MAX_SERVER_STOPS=1, the PC quiet throughout" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" exit3
-  assert_eq "r9700: server stopped 1 times, limit MAX_SERVER_STOPS=1" "$ERR" "the stderr line"
+  assert_eq "r9700: admitted 1 times (each admission stops the operator's server), limit MAX_SERVER_STOPS=1" "$ERR" "the stderr line says what an admission is"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "pwsh.exe once (the cleanup)"
   assert_eq "1" "$(count_calls wslc stop)" "and one stop"
   assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
@@ -287,6 +287,17 @@ t_a_worker_that_wrote_the_typed_outcome_refused_ends_the_step_with_exit_2_and_no
   assert_eq "1" "$(ls "$(run_dir_of)/steps" | grep -c '\.outcome$')" "one outcome: no retry"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "pwsh.exe once"
   assert_eq "1" "$(stop_lines)" "one stop"
+  kill_recorded_pids "$CASE"
+}
+
+# A21: exit 5 is the worker gate's own timeout (its gate file never appeared): a failed try, never the deadline of exit 4
+t_a_worker_that_exits_5_is_a_failed_try_and_not_the_deadline() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=2
+  prod_running
+  assert_exit 7 "a command that exits 5, MAX_FAILED_TRIES=2" -- r9700 step --model "$MODEL_35B" t -- bash -c 'exit 5'
+  assert_eq "r9700: step failed 2 times, last: worker 5" "$ERR" "retried once, then exit 7"
+  assert_eq "2" "$(ls "$(run_dir_of)/steps" | grep -c '\.outcome$')" "two outcome files"
   kill_recorded_pids "$CASE"
 }
 
@@ -542,9 +553,9 @@ t_failed_admissions_that_never_stopped_the_server_do_not_use_up_max_server_stops
   step_setup "$FUNCNAME"
   prod_running
   sed -i 's|^WSLC=.*|WSLC=/nonexistent/wslc|' "$CASE/machine.env"
-  assert_exit 7 "six failed container lists (MAX_FAILED_TRIES 6) with MAX_SERVER_STOPS 3" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
-  assert_contains "$ERR" "r9700: step failed 6 times, last: admit " "the tries ran out, not the stops"
-  assert_not_contains "$ERR" "server stopped" "no stop budget line"
+  assert_exit 7 "three failed container lists (MAX_FAILED_TRIES 3) with MAX_SERVER_STOPS 3" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_contains "$ERR" "r9700: step failed 3 times, last: admit " "the tries ran out, not the stops"
+  assert_not_contains "$ERR" "admitted" "no stop budget line"
 }
 
 # ---- item 3: the signals are shut out BEFORE the once-flag is set --------------------------------------------------------------------------------

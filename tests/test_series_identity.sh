@@ -277,6 +277,10 @@ t_a_deleted_fingerprint_json_refuses_the_start_when_records_exist_and_names_the_
   assert_eq "0" "$(calls_since "$n" | grep -c ' wslc stop \| wslc run -d ')" "before any stop"
   mkdir "$CASE/results/r" "$CASE/results/r/rejected"
   assert_exit 2 "a folder with only rejected/ is refused too" -- sr fbase --out r --rounds 1
+  mkdir "$CASE/results/r2" "$CASE/results/r2/rounds"
+  assert_exit 2 "a DRY run is refused the same way" -- sr fbase --out r2 --rounds 1 --dry-run
+  assert_contains "$ERR" "has rounds/ or rejected/ but no fingerprint.json" "with the same line"
+  assert_missing "$CASE/results/r2/fingerprint.json" "and writes nothing"
   mkdir "$CASE/results/e"
   assert_exit 0 "an empty folder is a new series" -- sr fbase --out e --rounds 1
 }
@@ -303,6 +307,52 @@ t_a_term_during_a_hanging_throwaway_container_ends_the_supervisor_within_seconds
   for i in $(seq 1 20); do ls "$STUB"/hung/containers/*.pid > /dev/null 2>&1 && break; sleep 0.1; done
   read -r pid _ < "$(ls "$STUB"/hung/containers/*.pid | head -n 1)"
   assert_exit 0 "the hung call's process is gone" -- gone "$pid"
+}
+
+# ---- A23: resume by name ------------------------------------------------------------------------------------------------------------------------
+
+t_the_default_out_is_the_model_name_without_a_date_the_outdir_is_the_first_line_and_the_same_command_resumes() {
+  series_setup "$FUNCNAME"
+  local out="$R9700_RESULTS_DIR/$SERIES_MODEL" first
+  assert_exit 0 "a series with no --out" -- r9700 series "$SERIES_MODEL" fbase --rounds 1
+  first="$(sed -n 1p <<< "$OUT")"
+  assert_eq "series: outdir $out" "$first" "the first line of stdout names the outdir"
+  assert_exit 0 "fbase-1 is recorded under the model's name" -- test -f "$out/rounds/fbase-1/record.env"
+  assert_exit 0 "the same command again (the name has no date, so it is the same on any day)" -- r9700 series "$SERIES_MODEL" fbase --rounds 1
+  assert_contains "$OUT" "nothing to do" "it resumes the same outdir"
+  assert_eq "1" "$(ls "$R9700_RESULTS_DIR" | grep -vc '^runs$')" "one results folder, no second one with a date"
+  mkdir -p "$CASE/m"
+  cp "$MODEL_35B" "$CASE/m/mymodel.env"
+  assert_exit 0 "a model FILE: the name is the file's name without .env" -- srm "$CASE/m/mymodel.env" fbase --rounds 1 --dry-run
+  assert_eq "series: outdir $R9700_RESULTS_DIR/mymodel" "$(sed -n 1p <<< "$OUT")" "also for a dry run"
+}
+
+# ---- A24: the fingerprint's tools are every module a unit runs ----------------------------------------------------------------------------------
+
+t_the_tools_component_hashes_every_module_a_unit_sources_or_calls() {
+  series_setup "$FUNCNAME"
+  local out keys mod
+  out="$(outdir)"
+  assert_exit 0 "a stub series" -- sr fbase --out s --rounds 1
+  keys="$(json_get "$out/fingerprint.json" '" ".join(sorted(d["components"]["tools"]))')"
+  for mod in adapter_sh bench_sh config_sh disk_gate_sh guard_quiet_sh run_guarded_sh serve_sh series_sh wait_ready_sh fingerprint_py harness_py verdict_py; do
+    assert_contains " $keys " " $mod " "tools.$mod is hashed"
+  done
+  assert_eq "$(sha256sum < "$REPO/lib/wait_ready.sh" | cut -c1-64)" "$(json_get "$out/fingerprint.json" 'd["components"]["tools"]["wait_ready_sh"]')" "and its value is the sha256 of the file"
+}
+
+t_a_module_changed_between_two_arm_rounds_makes_the_second_refuse() {
+  series_setup "$FUNCNAME"
+  mkdir -p "$CASE/repo"
+  cp -r "$REPO/bin" "$REPO/lib" "$REPO/config" "$REPO/models" "$CASE/repo/" # a copy of the toolkit: the test edits ITS lib, never the repository's
+  REPO="$CASE/repo"
+  printf 'printf "# edited\\n" >> "%s/repo/lib/wait_ready.sh"\n' "$CASE" > "$STUB/on-stop-r9700tune-sp-fbase-1"
+  local out
+  out="$(outdir)"
+  assert_exit 2 "lib/wait_ready.sh is edited while the first arm-round runs" -- sr fbase fcombo --out s --rounds 1
+  assert_contains "$ERR" "fingerprint differs: tools.wait_ready_sh: " "the line names the module"
+  assert_exit 0 "fbase-1 is recorded" -- test -f "$out/rounds/fbase-1/record.env"
+  assert_missing "$out/rounds/fcombo-1" "fcombo-1 is not"
 }
 
 run_all_tests

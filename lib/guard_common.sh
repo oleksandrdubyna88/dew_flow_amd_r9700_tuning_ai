@@ -13,12 +13,10 @@
 
 guard_log() { printf '%s %s\n' "$(date -u +%FT%TZ 9>&-)" "$2" >> "$1"; }
 
+# guard_alive <pid> <start ticks>: 0 while the process is running (not a zombie) with those start ticks
 guard_alive() {
-  local stat
-  { IFS= read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 1
-  stat="${stat##*) }"
-  set -- "$2" $stat
-  [ "${2:-Z}" != Z ] && [ "${21:-}" = "$1" ]
+  proc_stat_fields "$1" || return 1
+  [ "${PROC_STAT[0]:-Z}" != Z ] && [ "${PROC_STAT[19]:-}" = "$2" ]
 }
 
 guard_fire() {

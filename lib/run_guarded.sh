@@ -6,6 +6,7 @@
 # (part (c); the step itself is lib/step.sh, the guards are lib/guard_*.sh).
 #
 #   t_scale <seconds>     <seconds> / R9700_TIME_SCALE, two decimals: every sleep in lib/
+#   ceil_seconds <number> the number rounded up to a whole second
 #   t_ceiling <seconds>   <seconds> / R9700_CEILING_SCALE (default: R9700_TIME_SCALE), two decimals: every ceiling of the adapter
 #                         both: 1 when the scale is not a positive integer, 2 on bad seconds
 #   state_dir             the state directory: R9700_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/r9700
@@ -59,6 +60,9 @@ t_ceiling() {
   fi
 }
 
+# ceil_seconds <number>: the number rounded UP to a whole second (a whole number stays); the one rounding of every window and grace in lib/
+ceil_seconds() { awk -v t="${1:-}" 'BEGIN { n = int(t); print (t > n ? n + 1 : n) }' 9>&-; }
+
 # ---------- the state directory and the lock (decision 2, amendment A1) ----------
 _RG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -97,28 +101,33 @@ lock_take() {
 lock_release() { exec 9>&-; unset _RG_LOCK_OWNER; }
 
 # ---------- processes and sessions (decision 1, amendment A8) ----------
-# proc_ticks <pid>: field 22 of /proc/<pid>/stat, read after the LAST ")" (the command name may hold one); empty when the pid is gone
+# proc_stat_fields <pid>: the ONE parse of /proc/<pid>/stat. Sets the array PROC_STAT to the fields AFTER the command name (which may hold spaces and
+# a ")": it is cut at the LAST ")"), so PROC_STAT[0] is the state (field 3), [1] the parent (4), [2] the process group (5), [3] the session (6)
+# and [19] the start time in clock ticks (22). No fork, so a scan of /proc is cheap. 1, and an empty array, when the process is gone.
+proc_stat_fields() {
+  local _ps_line
+  PROC_STAT=()
+  { IFS= read -r _ps_line < "/proc/$1/stat"; } 2> /dev/null || return 1
+  read -r -a PROC_STAT <<< "${_ps_line##*) }"
+}
+
+# proc_ticks <pid>: field 22 of /proc/<pid>/stat (proc_stat_fields); empty when the pid is gone
 proc_ticks() {
-  local stat
-  stat="$(cat "/proc/$1/stat" 2> /dev/null)" || return 0
-  stat="${stat##*) }"
-  set -- $stat
-  echo "${20:-}"
+  proc_stat_fields "$1" || return 0
+  echo "${PROC_STAT[19]:-}"
 }
 
 # session_pids <sid>: every live pid (a zombie is not live) whose session id (field 6 of /proc/<pid>/stat) is <sid>; 2 when <sid> is not a
 # number
 session_pids() {
-  local stat dir sid="${1:-}"
+  local dir sid="${1:-}"
   if ! [[ $sid =~ ^[0-9]+$ ]]; then
     echo "session_pids: \"$sid\" is not a session id" >&2
     return 2
   fi
   for dir in /proc/[0-9]*; do
-    { IFS= read -r stat < "$dir/stat"; } 2> /dev/null || continue
-    stat="${stat##*) }"
-    set -- $stat
-    [ "${1:-Z}" != Z ] && [ "${4:-}" = "$sid" ] && echo "${dir#/proc/}"
+    proc_stat_fields "${dir#/proc/}" || continue
+    [ "${PROC_STAT[0]:-Z}" != Z ] && [ "${PROC_STAT[3]:-}" = "$sid" ] && echo "${dir#/proc/}"
   done
   return 0
 }
@@ -168,16 +177,10 @@ worker_start() {
 # fork of the shell has to reach its setsid call first, so this polls (at most about 1 s) until the session id is the pid, and gives up at
 # once when the process is gone (the parent of a forking setsid exits at once).
 _worker_check_session() {
-  local pid="$1" stat sid="" i
+  local pid="$1" sid="" i
   for ((i = 0; i < 100; i++)); do
     sid=""
-    if { IFS= read -r stat < "/proc/$pid/stat"; } 2> /dev/null; then
-      stat="${stat##*) }"
-      set -- $stat
-      sid="${4:-}"
-    else
-      break
-    fi
+    if proc_stat_fields "$pid"; then sid="${PROC_STAT[3]:-}"; else break; fi
     [ "$sid" = "$pid" ] && return 0
     sleep 0.01 9>&-
   done
@@ -362,22 +365,18 @@ _rg_run() {
 # sleeper dies. The fork itself gets KILL: bash holds a trapped signal until a foreground command of the fork ends, and a guard that sits in
 # a hung adapter call would answer TERM only at the call's ceiling. A fork has nothing to clean up that the supervisor's cleanup does not do.
 _rg_tree_kill() {
-  local root="$1" dir stat pid next
+  local root="$1" dir pid next
   local -A kids=() pgrp=() sess=()
   local -a queue=("$root") all=()
   local mysid
-  { IFS= read -r stat < "/proc/$BASHPID/stat"; } 2> /dev/null
-  stat="${stat##*) }"
-  set -- $stat
-  mysid="${4:-}"
+  proc_stat_fields "$BASHPID"
+  mysid="${PROC_STAT[3]:-}"
   for dir in /proc/[0-9]*; do
-    { IFS= read -r stat < "$dir/stat"; } 2> /dev/null || continue
-    stat="${stat##*) }"
-    set -- $stat
     pid="${dir#/proc/}"
-    kids[${2:-0}]+="$pid "
-    pgrp[$pid]="${3:-}"
-    sess[$pid]="${4:-}"
+    proc_stat_fields "$pid" || continue
+    kids[${PROC_STAT[1]:-0}]+="$pid "
+    pgrp[$pid]="${PROC_STAT[2]:-}"
+    sess[$pid]="${PROC_STAT[3]:-}"
   done
   while [ "${#queue[@]}" -gt 0 ]; do
     pid="${queue[0]}"

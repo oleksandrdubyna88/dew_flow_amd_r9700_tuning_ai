@@ -63,7 +63,7 @@ t_the_s2_lifecycle_fields_take_their_defaults() {
   local root; root="$(case_root "$FUNCNAME")"; machine "$root"
   assert_exit 0 "load" -- config_load "$root/machine.env" "$MODEL_35B"
   assert_eq "1200" "$R9700_READY_TIMEOUT_S" "READY_TIMEOUT_S default"
-  assert_eq "6" "$R9700_MAX_FAILED_TRIES" "MAX_FAILED_TRIES default"
+  assert_eq "3" "$R9700_MAX_FAILED_TRIES" "MAX_FAILED_TRIES default (A20: never above MAX_SERVER_STOPS)"
   assert_eq "3" "$R9700_MAX_SERVER_STOPS" "MAX_SERVER_STOPS default"
   assert_eq "720" "$R9700_MAX_RUN_MINUTES" "MAX_RUN_MINUTES default"
   assert_eq "on" "$R9700_DISK_GATE" "DISK_GATE default"
@@ -263,6 +263,19 @@ t_a_cleanup_budget_that_cannot_hold_the_restore_is_refused() {
   assert_contains "$ERR" "READY_TIMEOUT_S 3300 + 300" "names the readiness value"
   printf '%s\n' "CLEANUP_BUDGET_S=3600" >> "$root/machine.env"
   assert_exit 0 "READY_TIMEOUT_S 3300 with the largest budget 3600 = 3300 + 300 passes" -- config_load "$root/machine.env" "$MODEL_35B"
+}
+
+t_a_try_limit_above_the_stop_limit_is_refused_because_every_try_stops_the_server() {
+  local root; root="$(case_root "$FUNCNAME")"
+  machine "$root" MAX_FAILED_TRIES "MAX_FAILED_TRIES=4"
+  assert_exit 2 "4 tries with the default 3 stops" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "MAX_FAILED_TRIES: 4 is more than MAX_SERVER_STOPS 3" "names both fields"
+  assert_contains "$ERR" "each try stops the operator's server" "and says why"
+  machine "$root" MAX_FAILED_TRIES "MAX_FAILED_TRIES=3"
+  assert_exit 0 "3 = 3 passes" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" MAX_SERVER_STOPS "MAX_SERVER_STOPS=5"
+  printf '%s\n' "MAX_FAILED_TRIES=5" >> "$root/machine.env"
+  assert_exit 0 "both raised together pass" -- config_load "$root/machine.env" "$MODEL_35B"
 }
 
 t_the_readiness_timeout_tops_out_where_the_largest_budget_can_still_hold_it() {

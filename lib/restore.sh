@@ -86,7 +86,7 @@ _marker_fail() {
 }
 
 marker_read() {
-  local file="$1" line n=0 key k missing=0 workers=0
+  local file="$1" line n=0 key k workers=0
   MARKER=()
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then _marker_fail "$file" "" "cannot read (it is missing or not a readable file)"; return 2; fi
   while IFS= read -r line || [ -n "$line" ]; do
@@ -108,7 +108,7 @@ marker_read() {
     _marker_fail "$file" "" "${_MARKER_WORKER[*]} come together or not at all"
     return 2
   fi
-  return "$missing"
+  return 0
 }
 
 marker_write_base() {
@@ -181,7 +181,7 @@ ready_wait() {
   start="$(date +%s.%N)"
   # The window ends at start + READY_TIMEOUT_S, rounded up to a whole second: every list and probe below is cut by it (amendment A9, A13), and
   # a call refused after it counts as "not ready". The overrun is one grace, not a full sleep, list and probe.
-  R9700_T_STOP="$(awk -v a="$start" -v l="$limit" 'BEGIN { t = a + l; n = int(t); print (t > n ? n + 1 : n) }')"
+  R9700_T_STOP="$(ceil_seconds "$(awk -v a="$start" -v l="$limit" 'BEGIN { printf "%.3f\n", a + l }')")"
   while :; do
     if out="$(wslc_list 2>&1)" && grep -Fxq -- "$prod" <<< "$out"; then miss=0; else miss=$((miss + 1)); fi
     if [ "$miss" -ge 3 ]; then last="$prod not listed 3 times in a row"; break; fi
@@ -230,13 +230,35 @@ worker_stop_recorded() {
   echo "restore: stopped worker session $sid"
 }
 
-# _restore_server <prod>: start the operator's server unless it is listed, then wait until it is ready; 5 with the one line otherwise
+_RESTORE_LISTING=""
+
+# _restore_elapsed <start epoch.ns>: the seconds since <start> in production seconds (the scale is undone), rounded
+_restore_elapsed() {
+  awk -v a="$1" -v b="$(date +%s.%N)" -v k="${R9700_TIME_SCALE:-1}" 'BEGIN { printf "%d", (b - a) * k + 0.5 }'
+}
+
+# _restore_prepare <prod> <run dir>: stops every prefixed container (log tails first), and answers the list the server start needs, with up to 3
+# tries, t_scale 10 s apart (A22): a transient fault of wslc must not leave the operator's server down. Only after the third failure the contract
+# line `r9700: restore: <prod> not ready after <n> s (<reason>)` and 5. The listing of the last answer is in _RESTORE_LISTING.
+_restore_prepare() {
+  local prod="$1" run="$2" start err rc i
+  start="$(date +%s.%N)"
+  for i in 1 2 3; do
+    err="$(container_stop_all "$run" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ] && _RESTORE_LISTING="$(wslc_list 2>&1)"; then return 0; fi
+    if [ "$rc" -eq 0 ]; then err="r9700: restore: the container list failed (${_RESTORE_LISTING%%$'\n'*})"; fi
+    [ "$i" -lt 3 ] && sleep "$(t_scale 10)" 9>&-
+  done
+  err="${err%%$'\n'*}"
+  echo "r9700: restore: $prod not ready after $(_restore_elapsed "$start") s (${err#r9700: restore: })" >&2
+  return 5
+}
+
+# _restore_server <prod>: start the operator's server unless it is listed (in _RESTORE_LISTING, the answer of _restore_prepare), then wait until it
+# is ready; 5 with the one line otherwise
 _restore_server() {
-  local prod="$1" out
-  if ! out="$(wslc_list 2>&1)"; then
-    echo "r9700: restore: $prod not ready after 0 s (the container list failed: ${out%%$'\n'*})" >&2
-    return 5
-  fi
+  local prod="$1" out="$_RESTORE_LISTING"
   if grep -Fxq -- "$prod" <<< "$out"; then
     echo "restore: $prod already running"
   else
@@ -258,7 +280,7 @@ restore_from_marker() {
   local R9700_RESTORE_ARGS="${MARKER[RESTORE_ARGS]}" R9700_CONTAINER_PREFIX="${MARKER[CONTAINER_PREFIX]}" R9700_T_STOP=""
   local R9700_READY_TIMEOUT_S="${MARKER[READY_TIMEOUT_S]}" prod="${MARKER[PROD_CONTAINER]}" was="${MARKER[PROD_WAS_RUNNING]}"
   worker_stop_recorded
-  container_stop_all "$run" || return 5
+  _restore_prepare "$prod" "$run" || return 5
   if [ "$was" = yes ]; then _restore_server "$prod" || return 5; fi
   marker_remove "$marker"
 }
