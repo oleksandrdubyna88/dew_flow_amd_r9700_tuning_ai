@@ -16,6 +16,7 @@ there is no second one.
 | `tests/test_assert.sh` | `tests/lib/assert.sh` itself: a test function that dies early, exits early or asserts nothing fails its file; the pid killer |
 | `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match |
 | `tests/test_adapter.sh` | the adapter seam (`lib/adapter.sh`) and `t_scale`, `t_ceiling` (`lib/run_guarded.sh`): argv, CR removal, the ceilings that kill the child, the `R9700_T_STOP` cut, the refusals (E1.S2 part (a): scenarios A2-A5, A7) |
+| `tests/test_adapter_signals.sh` | the adapter's signal and process rules, split from the file above (it was over the 800-line limit): `--kill-after` and the grandchild, the interrupt chain as the supervisor meets it (the caller's traps are back after a call, a handler that makes a nested call, a signal the caller ignores), the group kill, descriptor 9 (the supervisor's lock). The trap tests compare `trap -p` before and after a call and never spell a listing out: whether an ignored-at-entry signal is listed depends on how the shell was started |
 | `tests/test_serve_bench.sh` | `serve_start` (also `--print`), `container_name` (`lib/serve.sh`), `bench_run` and `prefill_run` (`lib/bench.sh`): the measured commands (scenario A8; E1.S3 adds the prefill runs, the container name and the dry-run text) |
 | `tests/test_restore.sh` | the lock, the recovery marker (write, read, refusals), the worker gate and `worker_start`, the session stop, `container_stop_all`, `restore_from_marker` and `ready_wait` (E1.S2 part (b)) |
 | `tests/test_lifecycle.sh` | `bin/r9700` for part (b): `commands`, `init`, `verdict` as the restore-first shell (the verdict itself is `tests/test_series_verdict.sh`); scenarios L1, L4–L10, L15–L18, L20, L21 in their restore-first or `init` forms |
@@ -52,6 +53,7 @@ node tests/run.mjs tests/test_verdict.py             # one file (a name that mat
 bash tests/check_static.sh                           # static checks (also run inside tests/test_static.sh)
 node .agents/conventions/tools/leftovers-check.mjs --repo . --token r9700 --identity "the R9700 vLLM tuning toolkit" --profile node
 node .agents/conventions/tools/plan-lifecycle.mjs
+node .agents/conventions/tools/post-deploy-check.mjs   # POST_DEPLOY.md: shape only (the items are run on the R9700 PC after an install)
 ```
 
 The runner lowers its own priority first (`tests/lib/lower-priority.mjs`), so every child inherits it; it runs one file at a
@@ -101,6 +103,7 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `<stub dir>/answers/bench` | the `wslc` stub | two forms. Legacy: lines without a group, three per block, the block of a call chosen by concurrency and seed, the last block repeated for a call past the end. Tagged (the first line starts `c=<n> r=<n> ` or `prefill<n> r=<n> `): the lines of the asked group and seed with the group cut off; a line that is not there stays missing (S6) |
 | `<stub dir>/answers/find`, `genconfig`, `metrics`, `prompts_n` | the `wslc` stub | the answer of the throwaway container (`run --rm` without `-d`: `find`, a `---` line, `genconfig`), the `/metrics` page, and how many prompt results the stub harness writes (default 20) |
 | `<stub dir>/hang-foreground-run` | the `wslc` stub | when the file exists, a foreground `run --rm` (the fingerprint's throwaway container) hangs like `mode` would, but no other call does (a `TERM` during the probe) |
+| `<stub dir>/fail-list` | the `wslc` stub | `<count>` or `<skip> <count>`: after `<skip>` good `list` calls (default 0) the next `<count>` calls fail with exit 1 (a transient fault of `wslc`; the restore's retries) |
 | `<stub dir>/on-stop-<name>` | the `wslc` stub | a script run once the named container is stopped: the way a test changes the world at the end of an arm-round (S12 turns the load busy) |
 | `<stub dir>/stop-delay-<name>` | the `wslc` stub | seconds `wslc stop <name>` sleeps before it stops the container (a slow stop that a test interrupts) |
 | `<stub dir>/mode` | the stubs | the file holds `hang` (every call sleeps; the sleeper is recorded in `hung/containers`), `hang-ignore-term` (the stub and its sleeper ignore `TERM`: only the kill-after ends the stub) or `eat-stdin` (every call reads its standard input) |

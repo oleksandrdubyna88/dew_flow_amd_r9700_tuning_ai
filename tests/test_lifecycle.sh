@@ -424,4 +424,20 @@ t_l21_a_worker_whose_supervisor_died_before_the_gate_exits_4_by_itself_and_touch
   kill_recorded_pids "$CASE"
 }
 
+# ---- the exit codes are listed in three places and the three agree ----------------------------------------------------------------------------------
+
+t_the_exit_codes_are_listed_in_the_readme_the_entry_point_header_and_the_architecture_table_and_all_agree() {
+  lc_setup "$FUNCNAME"
+  local codes="0 1 2 4 5 6 7 8 9 10 11 129 130 143" code header readme table
+  header="$(sed -n '/^# Exit codes/,/^set -u/p' "$REPO/bin/r9700" | grep -E '^#   [0-9]+ ' | sed -E 's/^#   ([0-9]+) .*/\1/' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+  readme="$(sed -n '/^Exit codes/,/^Tests:/p' "$REPO/README.md" | grep -E '^- `[0-9]+` ' | sed -E 's/^- `([0-9]+)` .*/\1/' | sort -n | tr '\n' ' ' | sed 's/ $//')"
+  table="$(sed -n '/^\*\*Exit codes of `bin\/r9700`\*\*/,/^\*\*Growth/p' "$REPO/research/architecture.md" | grep -E '^\| [0-9]' | sed -E 's/^\| ([^|]*) \|.*/\1/' | grep -oE '[0-9]+' | sort -un | tr '\n' ' ' | sed 's/ $//')"
+  assert_eq "$(printf '%s\n' $codes | sort -n | tr '\n' ' ' | sed 's/ $//')" "$header" "the header of bin/r9700 lists every code, one per line"
+  assert_eq "$header" "$readme" "the README's exit list has the same codes"
+  assert_eq "$header" "$table" "and the architecture table too"
+  for code in 1 5 7 8 11 129; do
+    assert_contains " $header " " $code " "code $code is in the header"
+  done
+}
+
 run_all_tests

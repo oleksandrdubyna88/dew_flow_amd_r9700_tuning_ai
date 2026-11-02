@@ -42,3 +42,6 @@ jobs:
         run: node .agents/conventions/tools/leftovers-check.mjs --repo . --token r9700 --identity "the R9700 vLLM tuning toolkit" --profile node
       - name: Plan lifecycle
         run: node .agents/conventions/tools/plan-lifecycle.mjs
+      # POST_DEPLOY.md: shape only here (nothing is run); the items are run by the operator against the toolkit on the R9700 PC.
+      - name: Post-deploy checklist shape
+        run: node .agents/conventions/tools/post-deploy-check.mjs
