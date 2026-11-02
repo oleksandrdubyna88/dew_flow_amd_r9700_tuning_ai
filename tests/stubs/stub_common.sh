@@ -11,6 +11,7 @@
 #   mode           `hang` makes every call sleep (to prove the adapter's ceilings); the sleeper is recorded in hung/containers.
 #                  `hang-ignore-term` the same, but the stub and its sleeper ignore TERM (to prove --kill-after).
 #                  `eat-stdin` makes every call read its standard input to the end (to prove the adapter never hands its caller's input on)
+#   stop-delay-<name>  seconds `wslc stop <name>` sleeps before it stops the container (a slow stop, for a test that interrupts one)
 #   counters/<x>   the call counters
 
 STUB_HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -150,6 +151,10 @@ stub_container_stop() {
   fi
   read -r pid _ticks < "$file"
   kill -TERM "$pid" 2> /dev/null
+  for i in $(seq 1 30); do stub_alive "$file" || break; sleep 0.1; done
+  # A container started during a cleanup phase (the restore) inherits the ignored TERM of the supervisor's cleanup, as any child of a shell
+  # that ran `trap '' TERM` does: stopping it takes the KILL, as `wslc stop` ends a container that does not leave in time.
+  stub_alive "$file" && kill -KILL "$pid" 2> /dev/null
   for i in $(seq 1 30); do stub_alive "$file" || break; sleep 0.1; done
   rm -f "$file"
 }

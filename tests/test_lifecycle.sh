@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# bin/r9700 as a user runs it, for the verbs of E1.S2 part (b): commands, init, and verdict as the restore-first shell. The scenarios L1-L22
-# of the story are marked in each test name; the ones that need part (c)'s `step` (L1-L3, L11-L14, L19, L22, the bad-label half of L20 and
-# the TERM half of L8) are not here. Every test body is a function t_<guarantee>; each runs in its own subshell and writes only below
-# $R9700_TEST_ROOT. Nothing under tests/stubs is started except through the stubs on PATH and tests/lib/fake_supervisor.sh.
+# bin/r9700 as a user runs it, for the verbs commands, init, and verdict as the restore-first shell (E1.S2 part (b)). The scenarios L1-L22
+# of the story are marked in each test name; the ones that drive the `step` verb (L1-L3, L11-L14, L19, L22, the bad-label half of L20, the
+# TERM half of L8, the real L21) are tests/test_step.sh. Every test body is a function t_<guarantee>; each runs in its own subshell and writes
+# only below $R9700_TEST_ROOT. Nothing under tests/stubs is started except through the stubs on PATH and tests/lib/fake_supervisor.sh.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$HERE")"
@@ -12,12 +12,11 @@ source "$HERE/lib/assert.sh"
 source "$HERE/lib/stubcase.sh"
 # shellcheck source=tests/lib/lifecycle.sh
 source "$HERE/lib/lifecycle.sh"
+# shellcheck source=tests/lib/stepcase.sh
+source "$HERE/lib/stepcase.sh"
 
 wait_file() { local i; for i in $(seq 1 100); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
 boot_id() { cat /proc/sys/kernel/random/boot_id; }
-# prod_running: the operator's server runs (a stub container named vllm)
-prod_running() { wslc run -d --rm --name vllm img > /dev/null; }
-stop_lines() { grep -c ' wslc stop ' "$STUB/calls.log" 2> /dev/null || true; }
 
 # ---- L1 (init form): a refused config stops nothing ---------------------------------------------------------------------------------------
 
@@ -387,7 +386,8 @@ t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
   assert_eq "$expected" "$OUT" "exactly the verb_* functions, sorted, one per line"
   catalogue="$(grep -oE '^\| `bin/r9700 [a-z]+`' "$REPO/research/module_tests.md" | sed -E 's/^\| `bin\/r9700 ([a-z]+)`/\1/' | sort)"
   assert_eq "$expected" "$catalogue" "every verb is a row of the flow catalogue in research/module_tests.md, and every verb row is a verb"
-  assert_not_contains "$(printf '%s\n' "$expected")" "step" "(step and series come with their parts)"
+  assert_contains "$(printf '%s\n' "$expected")" "step" "step is a verb since part (c) (series comes with E1.S3)"
+  assert_not_contains "$(printf '%s\n' "$expected")" "series" "series is not here yet"
 }
 
 # ---- L20: an unknown verb is refused ----------------------------------------------------------------------------------------------------------------
@@ -395,9 +395,9 @@ t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
 t_l20_an_unknown_verb_is_refused_naming_the_legal_ones() {
   lc_setup "$FUNCNAME"
   assert_exit 2 "an unknown verb" -- r9700 nosuch
-  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init verdict' "$ERR" "the line"
+  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init step verdict' "$ERR" "the line"
   assert_exit 2 "no verb" -- r9700
-  assert_contains "$ERR" "legal: commands init verdict" "the same list"
+  assert_contains "$ERR" "legal: commands init step verdict" "the same list"
   assert_exit 2 "a verb that only looks like one" -- r9700 'verb_init'
   assert_missing "$STUB/calls.log" "nothing was called"
 }

@@ -18,6 +18,10 @@ add their test files to the same runner; there is no second one.
 | `tests/test_serve_bench.sh` | `serve_start` (`lib/serve.sh`) and `bench_run` (`lib/bench.sh`): the measured commands (scenario A8) |
 | `tests/test_restore.sh` | the lock, the recovery marker (write, read, refusals), the worker gate and `worker_start`, the session stop, `container_stop_all`, `restore_from_marker` and `ready_wait` (E1.S2 part (b)) |
 | `tests/test_lifecycle.sh` | `bin/r9700` for part (b): `commands`, `init`, `verdict` as the restore-first shell; scenarios L1, L4–L10, L15–L18, L20, L21 in their restore-first or `init` forms |
+| `tests/test_step.sh` | `bin/r9700 step` (part (c)): scenarios L1–L3 (L3: the marker copy holds the worker keys and the pre-stop time), L4/L19, L6, L8, L10–L14, L20 (the label), L21 (the real hook), L22; the `INT`, `TERM` and `HUP` rules, a second signal during the cleanup, a `TERM` during a quiet wait and during a hung adapter call, the lock descriptor in every child, the one cleanup |
+| `tests/test_guards.sh` | the guards through `step`: G1–G12 (the RAM stop leaves no process of the session, also with the worker in a hung adapter call; containers and log tails; unreadable telemetry; the limit; the deadline and its budget; the quiet check; the disk gate) and G14 (`wait_ready` through the `serve` worker). G13 is `tests/test_adapter.sh` and the `init` test of `tests/test_lifecycle.sh` |
+| `tests/test_steps.sh` | the pieces of the step engine as functions: the outcome file (first writer wins), the deadline arithmetic, the supervisor log and the run folder, `quiet_check` and `quiet_wait`, the disk gate, `guard_ram`, `deadline_watch`, `wait_ready` and its probe program |
+| `tests/lib/stepcase.sh` | the helpers of part (c): `step_setup`, `step_bg`/`step_end`, `session_fixture`, `append_answer`; it sources the part (c) libraries |
 | `tests/lib/lifecycle.sh`, `tests/lib/fake_supervisor.sh` | helpers: a marker written by hand, `bin/r9700` as a user runs it, and a TEST DOUBLE of part (c)'s `step` (lock, marker, stop, worker behind the gate, kill) used to kill a supervisor |
 | `tests/test_stubs.sh` | the stubs: A1, the call log, the scripted answers, containers that refuse what the real `wslc` refuses, the stub worker, a stub never makes its directory |
 | `tests/stubs/wslc`, `powershell.exe`, `pwsh.exe`, `worker.sh`, `stub_common.sh` | the CI stand-ins for `wslc.exe`, Windows PowerShell and the restore shell, and the stub worker. Scripted by files below `$R9700_STUB_DIR`; an append-only call log; a "container" is a real `setsid sleep` recorded with its start ticks |
@@ -80,6 +84,11 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `R9700_STUB_DIR` | the stubs | the only place a stub reads or writes; unset or empty: the stub exits 99 at once, so it can never run against a real machine |
 | `R9700_STUB_PROD` | `pwsh.exe` stub | the name of the operator's server container the restore creates (default `vllm`) |
 | `R9700_STUB_OK_HOLD` | `worker.sh ok` | seconds the stub worker holds before it exits 0 (default 0.3, so a guard gets reads) |
+| `R9700_QUIET_CHECKS` | `quiet_wait` in `lib/guard_quiet.sh` | the number of quiet checks in a row, 1..10 (default 3); the lifecycle and guard tests set it to 1, and the test of the check count sets 3 (amendment A3). Never in `machine.env` |
+| `R9700_LOADAVG_FILE` | `quiet_check` in `lib/guard_quiet.sh` | the file the 1-minute load is read from (default `/proc/loadavg`); every part (c) test points it at its own file, so the PC's real load never decides a test |
+| `R9700_TEST_KILL_BEFORE_GATE` | `step_run` in `lib/step.sh` | `1` makes the supervisor `kill -KILL` itself right after the worker start, before the gate file exists (scenario L21) |
+| `R9700_STUB_SERVE_HOLD` | `worker.sh serve` | seconds the serve worker holds after the server is ready (default 1000: it stays up until it is stopped) |
+| `<stub dir>/stop-delay-<name>` | the `wslc` stub | seconds `wslc stop <name>` sleeps before it stops the container (a slow stop that a test interrupts) |
 | `<stub dir>/mode` | the stubs | the file holds `hang` (every call sleeps; the sleeper is recorded in `hung/containers`), `hang-ignore-term` (the stub and its sleeper ignore `TERM`: only the kill-after ends the stub) or `eat-stdin` (every call reads its standard input) |
 
 ## Flow catalogue
@@ -100,20 +109,22 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | the arm table (`arms_load`, `arm_args`, `arm_env`, `arm_mounts`, `arms_check`) | covered | `tests/test_config.sh` |
 | the static checks (`tests/check_static.sh`) | covered | `tests/test_static.sh` |
 | `bin/r9700 commands` — the verb list, derived from the `verb_*` functions | covered | `tests/test_lifecycle.sh` (L18, L20) |
-| `bin/r9700 init` — lock, restore first, config, the checks, the leftover containers | covered; the step-driven scenarios wait for E1.S2 part (c) | `tests/test_lifecycle.sh` (L1, L4–L10, L15–L17, L21) |
+| `bin/r9700 init` — lock, restore first, config, the checks, the leftover containers | covered | `tests/test_lifecycle.sh` (L1, L4–L10, L15–L17, L21) |
+| `bin/r9700 step` — one guarded step: the quiet wait, the disk gate, admission (marker, stop), the worker behind its gate, the guards, the typed outcome, retries, the one cleanup | covered | `tests/test_step.sh` (L1–L3, L6, L8, L10–L14, L19–L22), `tests/test_guards.sh` (G1–G12) |
 | `bin/r9700 verdict` — only the restore-first shell until E1.S3 | covered | `tests/test_lifecycle.sh` (L6, L9) |
 | the lock, the recovery marker, the worker gate, the session stop, the restore and its readiness wait (`lib/run_guarded.sh`, `lib/restore.sh`, `lib/worker_gate.sh`) | covered | `tests/test_restore.sh` |
 | the adapter functions (`wslc_run`, `wslc_exec`, `wslc_list`, `wslc_stop`, `wslc_logs`, `win_ram_mb`, `win_disk_newest`, `restore_start`, `restore_probe`): argv, CR removal, ceilings that kill the child, refusals | covered | `tests/test_adapter.sh` |
 | the adapter seam: only `lib/adapter.sh` expands the executable variables or runs the executables (`tests/check_static.sh --seam`) | covered | `tests/test_static.sh` |
-| `serve_start` (the measured container command) and `bench_run` (the six measured runs) | covered, with a `wait_ready` double until E1.S2 part (b) adds the real one | `tests/test_serve_bench.sh` |
+| `serve_start` (the measured container command) and `bench_run` (the six measured runs) | covered; `serve_start` runs against a `wait_ready` double here, and against the real one in G14 | `tests/test_serve_bench.sh`, `tests/test_guards.sh` (G14) |
+| the supervisor engine: `supervise`, `step_run`, `cleanup_once`, the outcome file, the deadline, the run folder (`lib/run_guarded.sh`, `lib/step.sh`) | covered | `tests/test_steps.sh`, `tests/test_step.sh`, `tests/test_guards.sh` |
+| the guards: `guard_ram`, `deadline_watch`, `quiet_check`/`quiet_wait`, the disk gate, `wait_ready` | covered | `tests/test_steps.sh`, `tests/test_guards.sh` |
 | the stubs and the stub worker (`tests/stubs/`) | covered | `tests/test_stubs.sh` |
 | the runner ends the test file's whole session (not only its process group) at a signal and at a ceiling | covered | `tests/test_runner.sh` |
 | the runner (`tests/run.mjs`): signals end the run cleanly, recorded pids are killed by start ticks | covered | `tests/test_runner.sh` |
 | the runner: one owned folder, removed after a run, swept after a `kill -9` | covered by hand, below | — |
 | the assertion file (`tests/lib/assert.sh`) | covered | `tests/test_assert.sh` |
 
-Not built yet, so not in the catalogue: the lock, the recovery marker, the restore, the readiness wait, the guards, the supervisor and `bin/r9700`
-(E1.S2 parts (b) and (c)) and the series (E1.S3).
+Not built yet, so not in the catalogue: the series (E1.S3).
 
 ## The runner check, by hand (scenario 46)
 
@@ -128,9 +139,9 @@ Checked once on 2026-11-01 with Node 26 on Linux, by hand, because a test file c
 3. The stub-pid killing and the signal handling are no longer by hand: `tests/test_runner.sh` covers them (the first two steps above stay by hand,
    because they need a runner that is killed without a handler).
 
-## Lifecycle scenarios not covered until part (c)
+## Lifecycle scenarios
 
-L1 (the `step` form: `init` has the same ordering and is tested), L2, L3, L11, L12, L13, L14, L19, L22, the bad-label half of L20 and the `TERM` half of L8 need the supervisor's `step` (admission, the retry loop, `step_run`, `supervise`, the cleanup path), the guards and the deadline watcher, which are E1.S2 part (c). L4, L5, L6, L7, L9, L10 and L21 are covered through the restore-first path (`bin/r9700 init`, `bin/r9700 verdict`) with a marker written by hand or by `tests/lib/fake_supervisor.sh`. The supervisor's own `SIGKILL` window (L21) is a double that kills itself after the worker start, not the real `step`.
+Every scenario L1–L22 and G1–G14 of the story is covered. L1, L4 and L5 have an `init` form (part (b)) and a `step` form (part (c)); L21 has the real hook (`R9700_TEST_KILL_BEFORE_GATE`) beside part (b)'s double; L8 has its `TERM` half. Where a scenario fixed a number the machine's load could break (the sixth read of G3, the timing of G9), the test keeps the scenario and takes the number from a time scale chosen for that test; the guards' faults are triggered after the worker is up (`steps/<n>.ready`, or a line appended to `answers/ram` while the worker runs), never after a fixed time.
 
 ## What it does not prove
 
@@ -142,6 +153,16 @@ L1 (the `step` form: `init` has the same ordering and is tested), L2, L3, L11, L
 - **The readiness program runs against a fake `urlopen`.** `tests/test_adapter.sh` runs the adapter's Python program under `python3` with
   `urllib.request.urlopen` replaced, so its logic and its output are tested (both checks, the status, the exception class), but no HTTP
   request is made; the first run on the R9700 closes that gap.
+- **The worker's readiness program (`wait_ready_probe_program`) runs against a fake `urlopen` too**, in `tests/test_steps.sh`: its 200 and non-200
+  paths and the route and the 5 s timeout it asks for are tested; whether the real server's `/v1/models` answers 200 on loopback port 8000 inside
+  its container is found only on the machine.
+- **The signal rules are proven for the supervisor's own waits, the admission calls and the worker, not for every call.** A `TERM` ends a quiet
+  wait and an admission call at once; the restore inside a run and the readiness sleep are foreground commands, so a signal there waits for the
+  current call (at most its ceiling) before the handler runs. A terminal's `Ctrl-C` goes to the whole foreground group and ends them at once; a
+  `kill -TERM <pid>` of the supervisor alone is the case that waits. The tests send `TERM`, `HUP` and, through a python launcher that resets the
+  ignored `SIGINT` of a background job, `INT`.
+- **The time scale shortens sleeps and deadlines, not the kernel.** The tests run ten minutes as six seconds; the arithmetic is proven, the
+  behaviour of a ten-hour night is not.
 - **The adapter's ceilings are proven on a hung stub**, not on a hung `wslc.exe`: `timeout` ends the stub and its children with `TERM`, and the stub itself with `KILL` after the grace (GNU `timeout` sends the second signal to the child only: a grandchild that ignores `TERM` survives. Whether `wslc.exe` has such children is an UNVERIFIED ASSUMPTION: nobody has observed it either way). The calls the supervisor makes itself are stopped by session (amendment A8) in E1.S2 part (b), which covers a hung adapter call under a guard stop. A Windows process started through WSL interop may need more than a signal to end.
 - **The stubs refuse what we know the real `wslc` refuses** (exec and logs on a container that is not running, a second run of a name in use); the exact error texts of the real one are not known.
 - **No Windows.** The static checks and the runner are exercised on Linux only. The path and priority code of the runner is

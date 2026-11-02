@@ -1,39 +1,21 @@
 #!/usr/bin/env bash
-# bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. E1.S2 part (b) has the verbs commands, init and
-# verdict (as the restore-first shell: the real verdict comes with E1.S3); step and series come later.
+# bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. E1.S2 has the verbs commands, init, step and verdict
+# (verdict as the restore-first shell: the real verdict comes with E1.S3); series comes with E1.S3.
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
 # exists, to restore first, and releases it before it reads. Exit codes: 0 ok, 2 config or arguments refused, 4 another run holds the lock,
-# 5 the restore did not become ready, 10 init found a problem, 11 the recovery marker cannot be read (the table is in
-# research/architecture.md).
+# 5 the restore did not become ready, 6 the deadline stopped the step, 7 the step failed MAX_FAILED_TRIES times, 8 not quiet before the
+# deadline or the server-stop budget is used, 9 the disk gate stopped the run, 10 init found a problem, 11 the recovery marker cannot be read,
+# 130 and 143 interrupted by INT and TERM, cleanup done (the table is in research/architecture.md).
 set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
-
-# restore_first: when a recovery marker exists, restore from it before anything else (the previous run was killed). Needs no config.
-# A marker that cannot be read is exit 11 with its remedy: nothing can say what to restore, and a person must look at the server.
-restore_first() {
-  local marker rc
-  marker="$(marker_path)"
-  [ -f "$marker" ] || return 0
-  if ! marker_read "$marker"; then marker_unreadable "$marker"; fi
-  echo "r9700: recovery marker found (run ${MARKER[RUN_ID]}), restoring first"
-  restore_from_marker "$marker" "$(marker_run_dir)"
-  rc=$?
-  [ "$rc" -ne 2 ] || marker_unreadable "$marker"
-  [ "$rc" -eq 0 ] || exit "$rc"
-}
-
-marker_unreadable() {
-  echo "r9700: recovery marker $1 is unreadable: check the operator's server by hand, then remove $1" >&2
-  exit 11
-}
 
 # model_resolve [<file, or name of models/<name>.env>]: prints the model file; 2 with one line when it is none
 model_resolve() {
@@ -171,6 +153,52 @@ verb_verdict() {
   fi
   echo "r9700: verdict: not implemented in S2" >&2
   exit 2
+}
+
+# prepare_run: what `supervise` calls after the restore-first: resolves the model named in _R9700_MODEL_ARG and loads the config (2 and its
+# `config:` lines when refused)
+prepare_run() {
+  local model
+  model="$(model_resolve "$_R9700_MODEL_ARG")" || return 2
+  config_load "${R9700_MACHINE_ENV:-./machine.env}" "$model"
+}
+
+_STEP_USAGE="r9700: step: usage: step [--show-deadline] [--model <file or name>] <label> -- <command...>"
+
+# verb_step [--show-deadline] [--model <file or name>] <label> -- <command...>: ONE guarded step (lib/step.sh) under `supervise`. The arguments
+# are checked before the lock and the restore. --show-deadline prints T_END and T_STOP (epoch seconds) and `START=ok` or `START=refused (<why>)`
+# and stops: it reads, it takes no lock, and it exits 0 whenever the config loads.
+verb_step() {
+  local show=0 label
+  _R9700_MODEL_ARG=""
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --show-deadline) show=1; shift ;;
+      --model)
+        if [ "$#" -lt 2 ]; then echo "r9700: step: --model needs a value" >&2; exit 2; fi
+        _R9700_MODEL_ARG="$2"
+        shift 2
+        ;;
+      -*) echo "r9700: step: unknown option \"$1\"; legal: --show-deadline, --model" >&2; exit 2 ;;
+      *) break ;;
+    esac
+  done
+  label="${1:-}"
+  if [ -z "$label" ]; then echo "$_STEP_USAGE" >&2; exit 2; fi
+  if ! [[ $label =~ $_STEP_LABEL_RE ]]; then echo "r9700: step: the label \"$label\" is not $_STEP_LABEL_RE" >&2; exit 2; fi
+  shift
+  if [ "$show" -eq 1 ]; then
+    prepare_run || exit 2
+    deadline_compute --quiet
+    if [ -z "$T_END" ]; then echo "r9700: step: the deadline cannot be computed (see the line above)" >&2; exit 2; fi
+    printf 'T_END=%s\nT_STOP=%s\n' "$T_END" "$T_STOP"
+    if [ -z "$DEADLINE_WHY" ]; then echo "START=ok"; else echo "START=refused ($DEADLINE_WHY)"; fi
+    exit 0
+  fi
+  if [ "${1:-}" != -- ] || [ "$#" -lt 2 ]; then echo "$_STEP_USAGE" >&2; exit 2; fi
+  shift
+  supervise step prepare_run step_run "$label" -- "$@"
+  exit $?
 }
 
 main() {

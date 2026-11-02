@@ -134,7 +134,7 @@ t_the_stub_worker_modes_exit_with_their_codes_and_count_their_calls() {
   assert_exit 1 "fail" -- "$STUBS/worker.sh" fail
   assert_eq "ok exit3 exit4 fail" "$(tr '\n' ' ' < "$STUB/worker.calls" | sed 's/ $//')" "worker.calls holds one line per call, the mode"
   assert_exit 2 "an unknown mode" -- "$STUBS/worker.sh" nosuch
-  assert_contains "$ERR" 'worker.sh: unknown mode "nosuch"; legal: ok child exit3-then-ok exit3 exit4 fail' "names the legal modes"
+  assert_contains "$ERR" 'worker.sh: unknown mode "nosuch"; legal: ok child exit3-then-ok exit3 exit4 fail serve adapter-hang container-bound' "names the legal modes"
   assert_exit 2 "no mode" -- "$STUBS/worker.sh"
 }
 

@@ -13,6 +13,8 @@
 #   ready_wait <container> <timeout s>            decision 5; 0 ready, 5 not ready (one stderr line)
 #   restore_from_marker <marker file> <run dir>   0 restored, 2 marker unreadable, 5 not restored (the marker stays)
 #   restore_now                                   restore_from_marker "$MARKER_FILE" "$RUN_DIR" (the supervisor's own path, worker already stopped)
+#   restore_first                                 when a marker exists: restore from it before anything else (exits 11 when it cannot be read, or the
+#                                                 code of a restore that did not become ready); supervise and the verbs init and verdict call it
 #
 # The marker is a KEY=VALUE file in the config grammar (no $, no backtick). Keys: MARKER_VERSION RUN_ID WRITTEN_AT PROD_CONTAINER
 # PROD_WAS_RUNNING WSLC RESTORE_SHELL RESTORE_SCRIPT_WIN RESTORE_ARGS CONTAINER_PREFIX READY_TIMEOUT_S, then RUN_DIR (optional: where the
@@ -283,4 +285,23 @@ restore_dirs_prune() {
 restore_now() {
   if [ -z "${RUN_DIR:-}" ]; then echo "restore_now: RUN_DIR is not set" >&2; return 2; fi
   restore_from_marker "${MARKER_FILE:-$(marker_path)}" "$RUN_DIR"
+}
+
+# restore_first: when a recovery marker exists, restore from it before anything else (the previous run was killed). Needs no config.
+# A marker that cannot be read is exit 11 with its remedy: nothing can say what to restore, and a person must look at the server.
+restore_first() {
+  local marker rc
+  marker="$(marker_path)"
+  [ -f "$marker" ] || return 0
+  if ! marker_read "$marker"; then marker_unreadable "$marker"; fi
+  echo "r9700: recovery marker found (run ${MARKER[RUN_ID]}), restoring first"
+  restore_from_marker "$marker" "$(marker_run_dir)"
+  rc=$?
+  [ "$rc" -ne 2 ] || marker_unreadable "$marker"
+  [ "$rc" -eq 0 ] || exit "$rc"
+}
+
+marker_unreadable() {
+  echo "r9700: recovery marker $1 is unreadable: check the operator's server by hand, then remove $1" >&2
+  exit 11
 }

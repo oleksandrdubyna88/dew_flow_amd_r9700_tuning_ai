@@ -70,7 +70,7 @@ exec_in() {
 case "${1:-}" in
   run) shift; run_container "$@" ;;
   list) list_containers ;;
-  stop) stub_container_stop "${2:-}" && printf '%s%s\n' "$2" "$CRLF" ;;
+  stop) [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"; stub_container_stop "${2:-}" && printf '%s%s\n' "$2" "$CRLF" ;;
   logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
   exec) stub_require_running "${2:-}" || exit 1; shift; exec_in "$@" ;;
   *) echo "stub: wslc: unknown subcommand \"${1:-}\"" >&2; exit 2 ;;
