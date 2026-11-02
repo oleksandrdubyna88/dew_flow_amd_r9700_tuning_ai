@@ -106,6 +106,7 @@ t_u1b_a_placed_file_that_differs_is_replaced_and_one_that_cannot_be_placed_is_re
   assert_exit 0 "a verb chunk over a stale placed file" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
   assert_exit 0 "the stale file is replaced by the vendored one" -- cmp "$REPO/vendor/benchmark_moe.py" "$WORK/benchmark_moe.py"
   assert_eq "0" "$(parts_under "$WORK")" "no .part of a placement remains"
+  if [ "$(id -u)" = 0 ]; then assert_eq ok ok "skipped: running as root (chmod a-w does not stop root)"; return; fi
   rm -rf "$WORK/benchmark_moe.py" "$WORK/coarse_candidates.json" "$OUTD"
   chmod a-w "$WORK"
   local before
@@ -241,17 +242,16 @@ t_u6_a_dry_run_prints_the_container_lines_and_starts_nothing() {
   assert_eq "$line" "$dry_clear" "the clear's dry-run line is the real call's words"
 }
 
-t_u6b_an_ab_dry_run_prints_six_container_lines_that_are_the_real_calls() {
-  mv_setup "$FUNCNAME"
-  local before line n arm rep ab_args
-  ab_args=(ab "$MOE_MODEL" --keys "1 2 3 4 6 8 12 16" --rule each --rule-keys "1 4" --layer draft --out m)
+# ab_dry_equals_real <model arg>: the six dry-run lines of an A/B equal the words of the six real calls (the folders of both arms included)
+ab_dry_equals_real() {
+  local model="$1" line n arm rep before dry_out
+  local -a dry=() ab_args=(ab "$1" --keys "1 2 3 4 6 8 12 16" --rule each --rule-keys "1 4" --layer draft --out m)
   before="$(calls_n)"
   assert_exit 0 "an A/B dry run (no activated file is needed to look)" -- mv_verb "${ab_args[@]}" --dry-run
-  local dry_out="$OUT"
+  dry_out="$OUT"
   assert_eq "6" "$(printf '%s\n' "$dry_out" | grep -c '^dry-run: wslc run --rm --name r9700tune-moe-ab-')" "six A/B lines"
   assert_eq "0" "$(since_count "$before" wslc run)" "no container was started"
   assert_missing "$OUTD/ab" "no ab folder"
-  local -a dry=()
   mapfile -t dry < <(printf '%s\n' "$dry_out" | grep '^dry-run: wslc run --rm --name r9700tune-moe-ab-')
   mkdir -p "$EX/merged"
   cp "$HERE/fixtures/moe/b1"/E=*.json "$EX/merged/"
@@ -262,10 +262,29 @@ t_u6b_an_ab_dry_run_prints_six_container_lines_that_are_the_real_calls() {
     for arm in default tuned; do
       run_argv "moe-ab-$arm-$rep"
       line="dry-run: wslc ${ARGV[*]}"
-      assert_eq "$line" "${dry[$n]}" "the dry-run line of $arm-$rep is the real call's words (the folders of both arms included)"
+      assert_eq "$line" "${dry[$n]}" "the dry-run line of $arm-$rep is the real call's words"
       n=$((n + 1))
     done
   done
+}
+
+t_u6b_an_ab_dry_run_prints_six_container_lines_that_are_the_real_calls() {
+  mv_setup "$FUNCNAME"
+  ab_dry_equals_real "$MOE_MODEL"
+  run_argv moe-ab-default-1
+  assert_contains "${ARGV[*]}" "VLLM_TUNED_CONFIG_FOLDER=/work/moe/tune/merged" "the default arm reads the model's TUNED_CONFIG_DIR"
+}
+
+t_u6c_the_dry_run_of_a_model_without_a_tuned_folder_gives_the_default_arm_no_folder_word() {
+  mv_setup "$FUNCNAME"
+  mkdir -p "$CASE/v"
+  MVM="$CASE/v/$MOE_MODEL.env"
+  { grep -v '^TUNED_CONFIG_DIR=' "$MODEL_35B" || true; } > "$MVM"
+  ab_dry_equals_real "$MVM"
+  run_argv moe-ab-default-1
+  assert_not_contains "${ARGV[*]}" "VLLM_TUNED_CONFIG_FOLDER" "the default arm reads vLLM's own config: no folder word"
+  run_argv moe-ab-tuned-1
+  assert_contains "${ARGV[*]}" "VLLM_TUNED_CONFIG_FOLDER=/work/r9700/moe/$MOE_MODEL/merged" "the tuned arm reads the activated folder"
 }
 
 # ---- U7-U10: merge ---------------------------------------------------------------------------------------------------------------------------
@@ -497,6 +516,35 @@ t_u14f_a_container_list_that_cannot_be_read_refuses_too_and_force_goes_on() {
   assert_missing "$EX/merged" "nothing was written"
   assert_exit 0 "with --force it goes on" -- mv_verb activate "$MOE_MODEL" rec1 --out m --force
   assert_eq "yes" "$(env_get "$EX/merged/activate.env" FORCED)" "FORCED=yes"
+}
+
+# activate_bg <args...>: `bin/r9700 moe-tune activate <args...>` in the background as a user runs it (SUP, then step_end)
+activate_bg() {
+  local -a drop=()
+  local key
+  while read -r key; do drop+=(-u "R9700_$key"); done < <(config_keys | awk '{ print $2 }')
+  ( exec env "${drop[@]}" "$REPO/bin/r9700" moe-tune activate "$@" ) > "$CASE/sup.out" 2> "$CASE/sup.err" &
+  SUP=$!
+  guard_pid "$SUP" "supervisor-$SUP"
+}
+
+t_u14g_a_term_during_a_hanging_container_list_ends_the_verb_at_once() {
+  mv_setup "$FUNCNAME"
+  mv_record rec1 b2
+  wslc stop vllm > /dev/null
+  printf 'hang\n' > "$STUB/mode"
+  export R9700_CEILING_SCALE=1 # the list's own ceiling is 60 s: only the signal can end it in a few seconds
+  activate_bg "$MOE_MODEL" rec1 --out m
+  assert_exit 0 "the list call is hung (a hung process is recorded, bounded wait)" -- wait_glob "$STUB/hung/containers/*.pid"
+  local t0 t1
+  t0="$(date +%s.%N)"
+  kill -TERM "$SUP"
+  step_end
+  t1="$(date +%s.%N)"
+  assert_eq "143" "$SRC" "exit 143"
+  if awk -v a="$t0" -v b="$t1" 'BEGIN { exit !(b - a < 8) }'; then assert_eq ok ok "the verb ended $(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", b - a }') s after the TERM, not after the call's 60 s ceiling"; else assert_eq "< 8 s" "$(awk -v a="$t0" -v b="$t1" 'BEGIN { print b - a }')" "the verb ended at once"; fi
+  assert_missing "$EX/merged" "nothing was written"
+  unhang_all
 }
 
 t_u15_activate_refuses_a_stamp_that_is_not_a_record() {

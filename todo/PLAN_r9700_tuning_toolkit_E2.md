@@ -1049,11 +1049,11 @@ bin/r9700 init
 bin/r9700 moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24" --coarse --out acceptance-moe
 bin/r9700 moe-tune merge qwen3.6-35b-a3b-gptq --out acceptance-moe experts-coarse-24
 bin/r9700 moe-tune activate qwen3.6-35b-a3b-gptq <the stamp the merge printed> --out acceptance-moe
-bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 16 24 32" --rule median --rule-keys "24" --out acceptance-moe
+bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 12 16 24" --rule median --rule-keys "24" --out acceptance-moe
 ```
 
-**Key 24 is the measured case; keys 8, 16 and 32 are regression coverage** (they are in the base file and in the
-merged file with the same tiles, so their changes should be noise — a change there beyond ± 3 % would say the
+**Key 24 is the measured case; keys 8, 12 and 16 are regression coverage** (they are in the base file and in the
+merged file with the same tiles; key 32 is in neither, vLLM runs it with the nearest key's tile, so their changes should be noise — a change there beyond ± 3 % would say the
 activated file broke a key it did not touch, not that key 24 is good or bad). The prediction, from § 14.1 (the
 coarse grid picked the current tile at every key, and the A/B was within ± 0.6 %): the chunk takes about 5–6 min
 (1,244 s for four keys), its key 24 is `BLOCK 16/16/64, GROUP 1, 1 warp, 2 stages, waves_per_eu 4` — the same config

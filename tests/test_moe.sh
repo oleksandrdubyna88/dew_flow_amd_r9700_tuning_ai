@@ -599,6 +599,7 @@ t_t23_a_unit_at_the_stop_time_writes_kind_deadline_not_a_false_disk_alarm() {
 
 t_t24_an_exchange_folder_that_cannot_be_cleared_refuses_the_unit() {
   moe_setup "$FUNCNAME"
+  if [ "$(id -u)" = 0 ]; then assert_eq ok ok "skipped: running as root (chmod a-w does not stop root, so the folder could be emptied)"; return; fi
   mkdir -p "$EX/tune/int4-24/sub"
   printf 'stale\n' > "$EX/tune/int4-24/sub/E=stale.json"
   chmod a-w "$EX/tune/int4-24/sub" # rm -rf cannot delete the file inside

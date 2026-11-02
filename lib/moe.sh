@@ -386,6 +386,14 @@ _moe_ab_env() {
   } > "$part/ab.env"
 }
 
+# _moe_ab_arm_envs <env array> <default|tuned> <a folder> <b folder>: the ONE place that says which tuned-config folder an arm reads (the worker and the
+# dry run of `moe-tune` both call it): the tuned arm the B folder; the default arm the A folder when one is set, else vLLM's own config (no word)
+_moe_ab_arm_envs() {
+  local -n _arm_envs="$1"
+  _arm_envs=()
+  if [ "$2" = tuned ]; then _arm_envs=(-e "VLLM_TUNED_CONFIG_FOLDER=$4"); elif [ -n "$3" ]; then _arm_envs=(-e "VLLM_TUNED_CONFIG_FOLDER=$3"); fi
+}
+
 # _moe_ab_containers <part> <model> <layer> <reps> <a folder> <b folder> <keys...>: the order of moe_kernel_ab.sh line 14: rep by rep, default then tuned;
 # the disk gate before each container; each log is a file of its own that is written once. 0 all ran, 1 the gate stopped or the stop time came.
 _moe_ab_containers() {
@@ -395,8 +403,7 @@ _moe_ab_containers() {
   for ((rep = 1; rep <= reps; rep++)); do
     for arm in default tuned; do
       _moe_disk_gate || return 1
-      extra=()
-      if [ "$arm" = tuned ]; then extra=(-e "VLLM_TUNED_CONFIG_FOLDER=$bfolder"); elif [ -n "$afolder" ]; then extra=(-e "VLLM_TUNED_CONFIG_FOLDER=$afolder"); fi
+      _moe_ab_arm_envs extra "$arm" "$afolder" "$bfolder"
       moe_argv argv extra ab "$layer" "$model" "" "$@" || return 1
       name="$(container_name "moe-ab-$arm-$rep")" || return 1
       wslc_run_once "$_MOE_AB_CEILING_S" --name "$name" "${argv[@]}" > "$part/$arm-$rep.log"

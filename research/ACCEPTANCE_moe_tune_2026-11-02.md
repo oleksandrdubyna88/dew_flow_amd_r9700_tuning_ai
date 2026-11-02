@@ -24,11 +24,11 @@ bin/r9700 init
 bin/r9700 moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24" --coarse --out acceptance-moe
 bin/r9700 moe-tune merge qwen3.6-35b-a3b-gptq --out acceptance-moe experts-coarse-24
 bin/r9700 moe-tune activate qwen3.6-35b-a3b-gptq <the stamp the merge printed> --out acceptance-moe
-bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 16 24 32" --rule median --rule-keys "24" --out acceptance-moe
+bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 12 16 24" --rule median --rule-keys "24" --out acceptance-moe
 ```
 
-**Key 24 is the measured case.** Keys 8, 16 and 32 are regression coverage: they are in the production file and in the merged file with the same tiles, so their
-change should be noise. A change there beyond ± 3 % would say the activated file broke a key it did not touch, not that key 24 is good or bad.
+**Key 24 is the measured case.** Keys 8, 12 and 16 are regression coverage: they are in the production file and in the merged file with the same tiles, so their
+change should be noise (key 32 is in neither file: vLLM would run it with the nearest key's tile, so it is not a regression key). A change there beyond ± 3 % would say the activated file broke a key it did not touch, not that key 24 is good or bad.
 
 ## Prediction, written BEFORE the run (measurement rule 4)
 
@@ -95,7 +95,7 @@ Say how the server was handled: `(stopped by hand | --force after the operator c
 (paste: grep 'Using configuration from' <RESULTS_DIR>/acceptance-moe/ab/<stamp>/tuned-*.log)
 ```
 
-Observed against predicted: `(table: key 24 change, keys 8 16 32 changes, decision, the two cache-clear lines, the two stops and restores; one row each)`.
+Observed against predicted: `(table: key 24 change, keys 8 12 16 changes, decision, the two cache-clear lines, the two stops and restores; one row each)`.
 
 ## Questions the run answers
 

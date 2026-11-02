@@ -74,9 +74,7 @@ moe_dry_run() {
       shift
       for ((rep = 1; rep <= reps; rep++)); do
         for arm in default tuned; do
-          extra=()
-          if [ "$arm" = tuned ]; then extra=(-e "VLLM_TUNED_CONFIG_FOLDER=$(moe_container_dir "$model")/merged")
-          elif [ -n "${R9700_TUNED_CONFIG_DIR:-}" ]; then extra=(-e "VLLM_TUNED_CONFIG_FOLDER=$R9700_TUNED_CONFIG_DIR"); fi
+          _moe_ab_arm_envs extra "$arm" "${R9700_TUNED_CONFIG_DIR:-}" "$(moe_container_dir "$model")/merged"
           moe_argv argv extra ab "$layer" "$model" "" "$@" || return 2
           name="$(container_name "moe-ab-$arm-$rep")" || return 2
           echo "dry-run: $(wslc_argv_text run --rm --name "$name" "${argv[@]}")"
@@ -207,7 +205,7 @@ _moe_activate_record() {
 _moe_activate_readers() {
   local listing name
   _MOE_READERS=()
-  listing="$(wslc_list)" || return 1
+  _rg_run listing wslc_list || return 1 # through _rg_run (A19): a TERM during the call ends the verb at once, not after the call's ceiling
   while read -r name; do
     [ -n "$name" ] || continue
     if [ "$name" = "$R9700_PROD_CONTAINER" ] || { [ -n "$R9700_CONTAINER_PREFIX" ] && [[ $name == "$R9700_CONTAINER_PREFIX"* ]]; }; then _MOE_READERS+=("$name"); fi

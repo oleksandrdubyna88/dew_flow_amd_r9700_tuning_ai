@@ -41,14 +41,14 @@ restore of your own server first when a marker is left, ONE stop of your server,
 bin/r9700 moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24" --coarse --out acceptance-moe
 bin/r9700 moe-tune merge qwen3.6-35b-a3b-gptq --out acceptance-moe experts-coarse-24
 bin/r9700 moe-tune activate qwen3.6-35b-a3b-gptq <the stamp the merge printed> --out acceptance-moe
-bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 16 24 32" --rule median --rule-keys "24" --out acceptance-moe
+bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 12 16 24" --rule median --rule-keys "24" --out acceptance-moe
 ```
 
 Options: `chunk` takes `--keys "<k...>"` (required), `--coarse` (the 82 candidates of `config/coarse_candidates.json`, not the full search), `--layer experts|draft`,
 `--chunk <name>` (default `<layer>-<coarse|full>-<keys joined by ->`, for example `experts-coarse-24`) and `--dry-run`. `ab` takes `--keys`, `--rule each|median`
 and `--rule-keys` (the keys the decision is about; both required), `--reps` (default 3), `--layer` and `--dry-run`. `merge` takes the chunk names,
 `--layer` (refuses a chunk of another layer), `--base auto|none|<file>`. `activate` takes the stamp and `--force`. All take `--out <name>` (default
-`moe-<model name>`). `--dry-run` prints the resolved container lines and starts nothing. The draft layer (`--layer draft`) is for an MTP draft MoE layer, the
+`moe-<model name>`). `--dry-run` prints the resolved container lines; it starts no container and does not stop your server, but it is not read-only: like `activate` it runs under the supervisor, so it takes the lock (exit 4 when another run holds it), restores your server first when a recovery marker is left, makes a run folder under `<RESULTS_DIR>/runs/`, copies the two vendored files into the work folder, and is refused (exit 2) when the deadline leaves no room. The draft layer (`--layer draft`) is for an MTP draft MoE layer, the
 35B model's case. A model with no MoE layers sets `MOE_DTYPE=none` in its model file; `moe-tune` then refuses it before it stops anything.
 
 Where things are:
