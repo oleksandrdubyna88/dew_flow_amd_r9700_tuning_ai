@@ -194,6 +194,10 @@ def read_document(path):
         fail(str(path), f"cannot be read as JSON ({getattr(error, 'strerror', None) or error})")
     if not isinstance(document, dict) or not isinstance(document.get("components"), dict):
         fail(str(path), "is not a fingerprint document (no components)")
+    if document.get("version") != VERSION:
+        fail(str(path), f"is version {document.get('version')!r}; this program reads version {VERSION}")
+    if document.get("sha256") != canonical_sha(document["components"]):
+        fail(str(path), "the stored digest does not match the digest of its components (the file was edited or damaged): it cannot be trusted as the identity of a series")
     return document
 
 

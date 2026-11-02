@@ -2,7 +2,7 @@
 
 Target: the toolkit checkout on the operator's R9700 PC (the WSL folder the operator runs `bin/r9700` from); pass its path as `--target`. "Deploy" here
 is installing the toolkit or updating it (`git pull`) on that machine. Run this file after every install or update.
-Last verified: 2026-11-02 · none (shape only: no install on the PC yet) · b636501
+Last verified: NOT YET verified on an installation (no observation exists; only the shape of this file was checked, 2026-11-02). Replace this line with the date, the target and the version observed after the first install.
 
 | # | What a person loses if this is broken | Check | Auto |
 |---|---|---|---|

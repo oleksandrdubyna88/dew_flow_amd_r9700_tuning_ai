@@ -73,10 +73,11 @@ build_fixture_outdir() {
   while read -r tag; do mkdir -p "$dir/rounds/$tag"; done < <(awk '{ print $1 }' "$BENCH_FIXTURE" | sort -u)
   awk -v dir="$dir" '{ print >> (dir "/rounds/" $1 "/bench.txt") }' "$BENCH_FIXTURE"
   python3 - "$dir/fingerprint.json" <<'EOF'
-import json, sys
+import hashlib, json, sys
 arm = {"args": [], "env": [], "mounts": []}
 components = {"base": "fbase", "rounds": 3, "arms": {"fbase": arm, "fcombo": arm, "fb1": arm}, "workload": {"prefill": {"lens": [8192, 32768]}}}
-json.dump({"version": 1, "sha256": "f" * 64, "components": components}, open(sys.argv[1], "w"))
+sha = hashlib.sha256(json.dumps(components, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()  # a document is read only with its true digest
+json.dump({"version": 1, "sha256": sha, "components": components}, open(sys.argv[1], "w"))
 EOF
   cp "$HERE/fixtures/ship_test/quality/gsm8k_fbase.json" "$HERE/fixtures/ship_test/quality/gsm8k_fcombo.json" "$HERE/fixtures/ship_test/quality/gsm8k_fb1.json" "$dir/quality/"
 }

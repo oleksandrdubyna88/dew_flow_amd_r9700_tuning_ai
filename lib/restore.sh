@@ -200,7 +200,8 @@ ready_wait() {
     now="$(date +%s.%N)"
     elapsed="$(awk -v a="$start" -v b="$now" 'BEGIN { print b - a }')"
     awk -v e="$elapsed" -v l="$limit" 'BEGIN { exit !(e >= l) }' && break
-    sleep "$interval" 9>&-
+    # the sleep never runs past the window, and the window's end is the end of the wait (A13)
+    sleep_in_window "$(awk -v a="$start" -v l="$limit" 'BEGIN { printf "%.3f\n", a + l }')" "$interval" || break
   done
   now="$(date +%s.%N)"
   n="$(awk -v a="$start" -v b="$now" -v k="${R9700_TIME_SCALE:-1}" 'BEGIN { printf "%d", (b - a) * k + 0.5 }')"

@@ -39,7 +39,8 @@ wait_ready() {
     now="$(date +%s.%N 9>&-)"
     elapsed="$(awk -v a="$start" -v b="$now" 'BEGIN { print b - a }' 9>&-)"
     if awk -v e="$elapsed" -v l="$limit" -v s="$stop_at" -v n="$now" 'BEGIN { exit !(e >= l || n >= s) }' 9>&-; then verdict=late; break; fi
-    sleep "$interval" 9>&-
+    # the sleep never runs past the window or the stop time, and their end is the end of the wait (A13)
+    if ! sleep_in_window "$(awk -v a="$start" -v l="$limit" -v s="$stop_at" 'BEGIN { e = a + l; if (s + 0 < e) e = s + 0; printf "%.3f\n", e }' 9>&-)" "$interval"; then verdict=late; break; fi
   done
   now="$(date +%s.%N 9>&-)"
   n="$(awk -v a="$start" -v b="$now" -v k="${R9700_TIME_SCALE:-1}" 'BEGIN { printf "%d", (b - a) * k + 0.5 }' 9>&-)"

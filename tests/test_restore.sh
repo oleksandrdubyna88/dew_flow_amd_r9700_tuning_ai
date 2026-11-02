@@ -152,6 +152,21 @@ t_a_probe_that_hangs_at_the_limit_ends_the_wait_within_one_grace() {
   kill_recorded_pids "$CASE"
 }
 
+t_a_failed_probe_with_less_window_left_than_the_interval_does_not_sleep_a_full_interval() {
+  lc_setup "$FUNCNAME"
+  wslc_run vllm img > /dev/null
+  printf 'fail\n' > "$STUB/answers/ready"
+  export R9700_TIME_SCALE=1 # a real 10 s interval against a 2 s window: the sleep must be cut to what the window has left
+  local started ended
+  started="$(date +%s.%N)"
+  assert_exit 5 "ready_wait over a server that answers nothing good" -- ready_wait vllm 2
+  ended="$(date +%s.%N)"
+  assert_contains "$ERR" "r9700: restore: vllm not ready after " "the contract line"
+  assert_exit 0 "it returned within the window (2 s) and one grace (0.5 s) and a margin, not after the 10 s interval" -- awk -v a="$started" -v b="$ended" 'BEGIN { exit !(b - a < 4.5) }'
+  assert_exit 0 "and not before the window ended" -- awk -v a="$started" -v b="$ended" 'BEGIN { exit !(b - a >= 1.9) }'
+  kill_recorded_pids "$CASE"
+}
+
 t_ready_wait_leaves_the_callers_stop_time_as_it_was() {
   lc_setup "$FUNCNAME"
   wslc_run vllm img > /dev/null

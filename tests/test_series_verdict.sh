@@ -61,7 +61,7 @@ t_s16_the_stopped_and_fragment_blocks_are_ignored_and_the_records_reproduce_the_
   assert_contains "$OUT" "median 84.47 vs 76.08" "the c=1 numbers of the S1 table"
   assert_contains "$OUT" "base spread 9.84" "the base spread"
   assert_contains "$OUT" "202.44 vs 178.39" "the c=4 numbers"
-  assert_eq "series $out: base fbase, 3 rounds, fingerprint ffffffffffff" "$(sed -n 1p <<< "$OUT")" "the header line"
+  assert_eq "series $out: base fbase, 3 rounds, fingerprint $(json_get "$out/fingerprint.json" 'd["sha256"][:12]')" "$(sed -n 1p <<< "$OUT")" "the header line"
   assert_not_contains "$OUT" "note: 1 round" "no one-round note for three rounds"
   assert_exit 1 "the companion: check-block on a record that holds two blocks" -- python3 "$REPO/lib/verdict.py" check-block --tag fcombo-2 --prefill-lens "8192 32768" "$out/rounds/fcombo-2/bench.txt"
   assert_contains "$OUT" "expected 36 lines, found 66" "it says why the toolkit's own records never hold two blocks"

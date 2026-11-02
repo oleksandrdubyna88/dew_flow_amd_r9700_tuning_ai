@@ -355,4 +355,21 @@ t_a_module_changed_between_two_arm_rounds_makes_the_second_refuse() {
   assert_missing "$out/rounds/fcombo-1" "fcombo-1 is not"
 }
 
+# ---- a fingerprint.json whose digest was edited is refused before anything is stopped -------------------------------------------------------------
+
+t_a_fingerprint_json_with_an_edited_sha256_is_refused_before_admission() {
+  series_setup "$FUNCNAME"
+  local out n
+  out="$(outdir)"
+  sr fbase --out s --rounds 1 > /dev/null 2>&1
+  python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["sha256"] = "0" * 64; json.dump(d, open(sys.argv[1], "w"))' "$out/fingerprint.json"
+  n="$(wc -l < "$STUB/calls.log")"
+  assert_exit 2 "a series over a document with another digest" -- sr fbase fcombo --out s --rounds 1
+  assert_contains "$ERR" "fingerprint.json" "names the file"
+  assert_contains "$ERR" "stored digest does not match" "and says why"
+  assert_eq "0" "$(calls_since "$n" | grep -c ' wslc stop \| wslc run -d ')" "before any stop"
+  assert_exit 2 "verdict reads the same document" -- r9700 verdict "$out"
+  assert_contains "$ERR" "stored digest does not match" "and refuses it too"
+}
+
 run_all_tests

@@ -624,6 +624,23 @@ t_wait_ready_ends_at_the_ready_timeout_with_a_line_and_the_log() {
   if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 5) }'; then assert_eq ok ok "it ended by its own limit"; else assert_eq "< 5 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "it ended by its own limit"; fi
 }
 
+t_wait_ready_with_less_window_left_than_the_interval_does_not_sleep_a_full_interval() {
+  step_setup "$FUNCNAME"
+  stub_container r9700tune-w
+  printf 'fail\n' > "$STUB/answers/ready"
+  export R9700_TIME_SCALE=1 # a real 10 s interval against a 2 s window
+  R9700_READY_TIMEOUT_S=2
+  R9700_T_STOP=""
+  local start end
+  start="$(date +%s.%N)"
+  assert_exit 1 "a server that never answers" -- wait_ready r9700tune-w "$CASE/server.log"
+  end="$(date +%s.%N)"
+  assert_contains "$OUT" "SERVER NOT READY after " "the line"
+  assert_exit 0 "it returned within the window and a margin, not after the 10 s interval" -- awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 4.5) }'
+  assert_exit 0 "and not before the window ended" -- awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a >= 1.9) }'
+  kill_recorded_pids "$CASE"
+}
+
 t_wait_ready_is_cut_at_the_stop_time_and_a_hung_probe_does_not_hold_it() {
   step_setup "$FUNCNAME"
   stub_container r9700tune-w

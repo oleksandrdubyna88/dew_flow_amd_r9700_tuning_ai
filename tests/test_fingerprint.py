@@ -379,6 +379,42 @@ def test_build_probe_from_a_missing_stored_document_is_named(tmp_path, built):
     assert code == 2 and "nosuch.json" in stderr
 
 
+# ---- a stored document is trusted only when its digest is the digest of its components -------------------------------------------
+
+def edited(tmp_path, name, mutate):
+    """A copy of the built document with a change made to the raw JSON (the digest is NOT recomputed)."""
+    doc = json.loads((tmp_path / "fp.json").read_text())
+    mutate(doc)
+    path = tmp_path / name
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def test_a_document_whose_sha256_was_edited_is_refused_by_compare_show_and_probe_from(tmp_path, built):
+    bad = edited(tmp_path, "bad.json", lambda d: d.update({"sha256": "0" * 64}))
+    for args in (["compare", bad, tmp_path / "fp.json"], ["compare", tmp_path / "fp.json", bad], ["show", bad, "base"],
+                 ["build", built[0], "--out", tmp_path / "x.json", "--probe-from", bad]):
+        code, _, stderr = run(args)
+        assert code == 2, args
+        assert "bad.json" in stderr and "stored digest does not match" in stderr, (args, stderr)
+
+
+def test_a_document_whose_components_were_edited_without_the_digest_is_refused(tmp_path, built):
+    bad = edited(tmp_path, "bad.json", lambda d: d["components"]["model"].update({"max_num_seqs": 8}))
+    code, _, stderr = run(["compare", tmp_path / "fp.json", bad])
+    assert code == 2 and "stored digest does not match" in stderr
+
+
+def test_a_document_of_an_unsupported_version_is_refused(tmp_path, built):
+    bad = edited(tmp_path, "bad.json", lambda d: d.update({"version": 2}))
+    code, _, stderr = run(["show", bad, "base"])
+    assert code == 2 and "bad.json" in stderr and "version" in stderr
+
+
+def test_a_good_document_is_still_read(tmp_path, built):
+    assert run(["show", tmp_path / "fp.json", "base"])[0] == 0
+
+
 # ---- the catalogue ------------------------------------------------------------------------------------------------
 
 def test_every_command_has_a_covered_row_in_the_flow_catalogue():

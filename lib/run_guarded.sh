@@ -6,6 +6,7 @@
 # (part (c); the step itself is lib/step.sh, the guards are lib/guard_*.sh).
 #
 #   t_scale <seconds>     <seconds> / R9700_TIME_SCALE, two decimals: every sleep in lib/
+#   sleep_in_window <end> <s>   a sleep cut at the end of a window; 1 when the window is over
 #   ceil_seconds <number> the number rounded up to a whole second
 #   t_ceiling <seconds>   <seconds> / R9700_CEILING_SCALE (default: R9700_TIME_SCALE), two decimals: every ceiling of the adapter
 #                         both: 1 when the scale is not a positive integer, 2 on bad seconds
@@ -62,6 +63,15 @@ t_ceiling() {
 
 # ceil_seconds <number>: the number rounded UP to a whole second (a whole number stays); the one rounding of every window and grace in lib/
 ceil_seconds() { awk -v t="${1:-}" 'BEGIN { n = int(t); print (t > n ? n + 1 : n) }' 9>&-; }
+
+# sleep_in_window <end epoch.ns> <interval s>: sleeps the interval, or what is left until <end> when that is less, and returns 1 when <end> has been
+# reached (the caller's window is over: no more probes), else 0. A sleep that ignored the end would overrun a window by a whole interval (A13).
+sleep_in_window() {
+  local left
+  left="$(awk -v e="$1" -v n="$(date +%s.%N 9>&-)" -v i="$2" 'BEGIN { l = e - n; if (l > i) l = i; if (l < 0.01) l = 0.01; printf "%.2f\n", l }' 9>&-)"
+  sleep "$left" 9>&-
+  awk -v e="$1" -v n="$(date +%s.%N 9>&-)" 'BEGIN { exit !(n < e) }' 9>&-
+}
 
 # ---------- the state directory and the lock (decision 2, amendment A1) ----------
 _RG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
