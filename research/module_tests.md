@@ -1,8 +1,9 @@
 # Module — tests
 
 The test harness of the R9700 vLLM tuning toolkit, as built by E1.S1: the runner, the assertion file, the fixtures, the
-static checks and the CI workflow. E1.S2 part (a) adds the adapter's test file and the stub executables. Later parts and stories
-add their test files to the same runner; there is no second one.
+static checks and the CI workflow. E1.S2 added the adapter's test file, the stub executables and the supervisor's tests; E1.S3 added the
+tests of the series, of the run identity and of the verdict read back from the records. Later stories add their test files to the same runner;
+there is no second one.
 
 ## Where it is
 
@@ -15,12 +16,17 @@ add their test files to the same runner; there is no second one.
 | `tests/test_assert.sh` | `tests/lib/assert.sh` itself: a test function that dies early, exits early or asserts nothing fails its file; the pid killer |
 | `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match |
 | `tests/test_adapter.sh` | the adapter seam (`lib/adapter.sh`) and `t_scale`, `t_ceiling` (`lib/run_guarded.sh`): argv, CR removal, the ceilings that kill the child, the `R9700_T_STOP` cut, the refusals (E1.S2 part (a): scenarios A2-A5, A7) |
-| `tests/test_serve_bench.sh` | `serve_start` (`lib/serve.sh`) and `bench_run` (`lib/bench.sh`): the measured commands (scenario A8) |
+| `tests/test_serve_bench.sh` | `serve_start` (also `--print`), `container_name` (`lib/serve.sh`), `bench_run` and `prefill_run` (`lib/bench.sh`): the measured commands (scenario A8; E1.S3 adds the prefill runs, the container name and the dry-run text) |
 | `tests/test_restore.sh` | the lock, the recovery marker (write, read, refusals), the worker gate and `worker_start`, the session stop, `container_stop_all`, `restore_from_marker` and `ready_wait` (E1.S2 part (b)) |
-| `tests/test_lifecycle.sh` | `bin/r9700` for part (b): `commands`, `init`, `verdict` as the restore-first shell; scenarios L1, L4–L10, L15–L18, L20, L21 in their restore-first or `init` forms |
+| `tests/test_lifecycle.sh` | `bin/r9700` for part (b): `commands`, `init`, `verdict` as the restore-first shell (the verdict itself is `tests/test_series_verdict.sh`); scenarios L1, L4–L10, L15–L18, L20, L21 in their restore-first or `init` forms |
 | `tests/test_step.sh` | `bin/r9700 step` (part (c)): scenarios L1–L3 (L3: the marker copy holds the worker keys and the pre-stop time), L4/L19, L6, L8, L10–L14, L20 (the label), L21 (the real hook), L22; the `INT`, `TERM` and `HUP` rules, a second signal during the cleanup, a `TERM` during a quiet wait and during a hung adapter call, the lock descriptor in every child, the one cleanup |
 | `tests/test_guards.sh` | the guards through `step`: G1–G12 (the RAM stop leaves no process of the session, also with the worker in a hung adapter call; containers and log tails; unreadable telemetry; the limit; the deadline and its budget; the quiet check; the disk gate) and G14 (`wait_ready` through the `serve` worker). G13 is `tests/test_adapter.sh` and the `init` test of `tests/test_lifecycle.sh` |
 | `tests/test_steps.sh` | the pieces of the step engine as functions: the outcome file (first writer wins), the deadline arithmetic, the supervisor log and the run folder, `quiet_check` and `quiet_wait`, the disk gate, `guard_ram`, `deadline_watch`, `wait_ready` and its probe program |
+| `tests/test_series.sh` | `bin/r9700 series` (E1.S3): the records. S1-S4 (two final records, alternating arms, `check-block` over every record, `record.env`), S5 and S6 (a server lost mid-bench, missing bench lines: no final record and a rejected attempt with its reason), S11 (a container that never becomes ready: one retry, then `unsupported/`, the series goes on), S12 (the quiet check before every arm-round, exit 3, one stop in total), S13 (the fit check), S14 (the disk gate between arm-rounds and once at the end); the identity re-check in the worker (a patch file or the arm table edited between two arm-rounds, also between two worker starts, makes the next arm-round refuse: exit 2, no record, no server); a short quality file is rejected; a stale part directory is moved to `rejected/`; a `TERM` leaves no final record; the quality copy is restored from the record |
+| `tests/test_series_identity.sh` | `bin/r9700 series` (E1.S3): the run identity. S7 (a resume skips exactly the recorded arm-rounds, a finished series admits nothing), S8-S10 (a changed model field, patch file, listing, generation config or base is refused naming what differs BEFORE anything is stopped; a new arm and more rounds are extensions), F7 and F8 (the throwaway container's program is run for real on a tree with nested and hidden files, and receives the model path as ONE argument), S19 (`--dry-run`, which writes nothing: byte-identical `fingerprint.json` after a dry run with more rounds and another arm), a deleted `fingerprint.json` over records is refused, a `TERM` during a hanging throwaway container ends the supervisor with 143 within seconds and nothing stopped, S20 (`harness.py` placed with its hash checked, the GSM8K data checked before round 1), the refusals of the arguments, the lock |
+| `tests/test_series_verdict.sh` | `bin/r9700 verdict` (E1.S3): S15 (a base with no final record is refused; an in-flight or rejected attempt never reaches the verdict; a missing round is INCOMPLETE), S16 (the recorded verdict of 2026-10-31 reproduced from records built out of the fixture), S17 (an unsupported arm is reported and left out; an unsupported base is refused), S18 (a one-round series names its condition), the options |
+| `tests/test_fingerprint.py` | `lib/fingerprint.py` (E1.S3): F1-F6, `show`, `check-quality`, the extensions (a new arm, more rounds) and the catalogue rows of its commands |
+| `tests/lib/seriescase.sh` | the helpers of the three series files: `series_setup` (the stub answers of a stub series), `sr`, `series_bg`, `starts`, `build_fixture_outdir`, `lose_server_after` |
 | `tests/lib/stepcase.sh` | the helpers of part (c): `step_setup`, `step_bg`/`step_end`, `session_fixture`, `append_answer`; it sources the part (c) libraries |
 | `tests/lib/lifecycle.sh`, `tests/lib/fake_supervisor.sh` | helpers: a marker written by hand, `bin/r9700` as a user runs it, and a TEST DOUBLE of part (c)'s `step` (lock, marker, stop, worker behind the gate, kill) used to kill a supervisor |
 | `tests/test_stubs.sh` | the stubs: A1, the call log, the scripted answers, containers that refuse what the real `wslc` refuses, the stub worker, a stub never makes its directory |
@@ -88,6 +94,14 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `R9700_LOADAVG_FILE` | `quiet_check` in `lib/guard_quiet.sh` | the file the 1-minute load is read from (default `/proc/loadavg`); every part (c) test points it at its own file, so the PC's real load never decides a test |
 | `R9700_TEST_KILL_BEFORE_GATE` | `step_run` in `lib/step.sh` | `1` makes the supervisor `kill -KILL` itself right after the worker start, before the gate file exists (scenario L21) |
 | `R9700_STUB_SERVE_HOLD` | `worker.sh serve` | seconds the serve worker holds after the server is ready (default 1000: it stays up until it is stopped) |
+| `R9700_ARM_SECONDS` | `series_main` in `lib/series.sh` | the time one arm-round is allowed to need for the fit check (default 1500, the figure of the old `night5.sh`); it goes through `t_scale`. Scenario S13 sets it |
+| `R9700_ARMS_CONF` | `series_arms_conf` in `lib/series.sh` | another arm table than `config/arms.conf` (the test of a container label that is too long) |
+| `R9700_STUB_DELAY_S` | the `wslc` stub | every `vllm bench serve` call sleeps that many seconds first: a measurement that takes time (S5 loses the server in the middle of one, S13 needs an arm-round that lasts) |
+| `<stub dir>/answers/ready.<name>` | the `wslc` stub | the readiness answer of ONE container; the container without such a file takes `answers/ready` (S11 and S17: an arm that never starts) |
+| `<stub dir>/answers/bench` | the `wslc` stub | two forms. Legacy: lines without a group, three per block, the block of a call chosen by concurrency and seed, the last block repeated for a call past the end. Tagged (the first line starts `c=<n> r=<n> ` or `prefill<n> r=<n> `): the lines of the asked group and seed with the group cut off; a line that is not there stays missing (S6) |
+| `<stub dir>/answers/find`, `genconfig`, `metrics`, `prompts_n` | the `wslc` stub | the answer of the throwaway container (`run --rm` without `-d`: `find`, a `---` line, `genconfig`), the `/metrics` page, and how many prompt results the stub harness writes (default 20) |
+| `<stub dir>/hang-foreground-run` | the `wslc` stub | when the file exists, a foreground `run --rm` (the fingerprint's throwaway container) hangs like `mode` would, but no other call does (a `TERM` during the probe) |
+| `<stub dir>/on-stop-<name>` | the `wslc` stub | a script run once the named container is stopped: the way a test changes the world at the end of an arm-round (S12 turns the load busy) |
 | `<stub dir>/stop-delay-<name>` | the `wslc` stub | seconds `wslc stop <name>` sleeps before it stops the container (a slow stop that a test interrupts) |
 | `<stub dir>/mode` | the stubs | the file holds `hang` (every call sleeps; the sleeper is recorded in `hung/containers`), `hang-ignore-term` (the stub and its sleeper ignore `TERM`: only the kill-after ends the stub) or `eat-stdin` (every call reads its standard input) |
 
@@ -105,17 +119,23 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | `lib/harness.py gsm8k` — GSM8K scoring from a server | covered | `tests/test_harness.py` |
 | `lib/harness.py gsm8k-compare` — the quality check of the ship test | covered | `tests/test_harness.py` |
 | `lib/harness.py --selftest` — the original offline checks | covered | `tests/test_harness.py` |
+| `lib/fingerprint.py build` — the run identity of a series: components, canonical form, hash, atomic write, refusals that name file and line | covered | `tests/test_fingerprint.py` (F1, F5, F6) |
+| `lib/fingerprint.py compare` — every differing leaf with its path, a new arm is an extension, `--merge` | covered | `tests/test_fingerprint.py` (F2-F4) |
+| `lib/fingerprint.py show` — one leaf of a document | covered | `tests/test_fingerprint.py` |
+| `lib/fingerprint.py check-quality` — the round-1 quality files of a record | covered | `tests/test_fingerprint.py` |
 | the config loader (`config_load`, `config_keys`, `config_resolved`) | covered | `tests/test_config.sh` |
 | the arm table (`arms_load`, `arm_args`, `arm_env`, `arm_mounts`, `arms_check`) | covered | `tests/test_config.sh` |
 | the static checks (`tests/check_static.sh`) | covered | `tests/test_static.sh` |
 | `bin/r9700 commands` — the verb list, derived from the `verb_*` functions | covered | `tests/test_lifecycle.sh` (L18, L20) |
 | `bin/r9700 init` — lock, restore first, config, the checks, the leftover containers | covered | `tests/test_lifecycle.sh` (L1, L4–L10, L15–L17, L21) |
 | `bin/r9700 step` — one guarded step: the quiet wait, the disk gate, admission (marker, stop), the worker behind its gate, the guards, the typed outcome, retries, the one cleanup | covered | `tests/test_step.sh` (L1–L3, L6, L8, L10–L14, L19–L22), `tests/test_guards.sh` (G1–G12) |
-| `bin/r9700 verdict` — only the restore-first shell until E1.S3 | covered | `tests/test_lifecycle.sh` (L6, L9) |
+| `bin/r9700 series` — an arm-round recorded only when complete, atomically; alternating arms; resume; the fingerprint and its refusals; unsupported arms; the fit check; the dry run | covered | `tests/test_series.sh` (S1-S6, S11-S14), `tests/test_series_identity.sh` (S7-S10, S19, S20, F7, F8) |
+| `bin/r9700 verdict` — the restore-first half, then the ship test over the final records | covered | `tests/test_lifecycle.sh` (L6, L9), `tests/test_series_verdict.sh` (S15-S18) |
+| the acceptance run of `series` on the R9700 (`base` against `ta3`, one round; the 27B file as a dry run) | not covered by CI: run by the operator's session before a release; the record is `research/ACCEPTANCE_series_2026-11-02.md` | — |
 | the lock, the recovery marker, the worker gate, the session stop, the restore and its readiness wait (`lib/run_guarded.sh`, `lib/restore.sh`, `lib/worker_gate.sh`) | covered | `tests/test_restore.sh` |
-| the adapter functions (`wslc_run`, `wslc_exec`, `wslc_list`, `wslc_stop`, `wslc_logs`, `win_ram_mb`, `win_disk_newest`, `restore_start`, `restore_probe`): argv, CR removal, ceilings that kill the child, refusals | covered | `tests/test_adapter.sh` |
+| the adapter functions (`wslc_run`, `wslc_run_once`, `wslc_exec`, `wslc_argv_text`, `wslc_list`, `wslc_stop`, `wslc_logs`, `win_ram_mb`, `win_disk_newest`, `restore_start`, `restore_probe`): argv, CR removal, ceilings that kill the child, refusals | covered | `tests/test_adapter.sh` |
 | the adapter seam: only `lib/adapter.sh` expands the executable variables or runs the executables (`tests/check_static.sh --seam`) | covered | `tests/test_static.sh` |
-| `serve_start` (the measured container command) and `bench_run` (the six measured runs) | covered; `serve_start` runs against a `wait_ready` double here, and against the real one in G14 | `tests/test_serve_bench.sh`, `tests/test_guards.sh` (G14) |
+| `serve_start` (the measured container command), `container_name`, `bench_run` (the six measured runs) and `prefill_run` (the three prefill runs of one length) | covered; `serve_start` runs against a `wait_ready` double here, and against the real one in G14 and in the series tests | `tests/test_serve_bench.sh`, `tests/test_guards.sh` (G14), `tests/test_series.sh` |
 | the supervisor engine: `supervise`, `step_run`, `cleanup_once`, the outcome file, the deadline, the run folder (`lib/run_guarded.sh`, `lib/step.sh`) | covered | `tests/test_steps.sh`, `tests/test_step.sh`, `tests/test_guards.sh` |
 | the guards: `guard_ram`, `deadline_watch`, `quiet_check`/`quiet_wait`, the disk gate, `wait_ready` | covered | `tests/test_steps.sh`, `tests/test_guards.sh` |
 | the stubs and the stub worker (`tests/stubs/`) | covered | `tests/test_stubs.sh` |
@@ -124,7 +144,7 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | the runner: one owned folder, removed after a run, swept after a `kill -9` | covered by hand, below | — |
 | the assertion file (`tests/lib/assert.sh`) | covered | `tests/test_assert.sh` |
 
-Not built yet, so not in the catalogue: the series (E1.S3).
+Everything E1 builds is in the catalogue.
 
 ## The runner check, by hand (scenario 46)
 
@@ -144,6 +164,18 @@ Checked once on 2026-11-01 with Node 26 on Linux, by hand, because a test file c
 Every scenario L1–L22 and G1–G14 of the story is covered. L1, L4 and L5 have an `init` form (part (b)) and a `step` form (part (c)); L21 has the real hook (`R9700_TEST_KILL_BEFORE_GATE`) beside part (b)'s double; L8 has its `TERM` half. Where a scenario fixed a number the machine's load could break (the sixth read of G3, the timing of G9), the test keeps the scenario and takes the number from a time scale chosen for that test; the guards' faults are triggered after the worker is up (`steps/<n>.ready`, or a line appended to `answers/ram` while the worker runs), never after a fixed time.
 
 ## What it does not prove
+
+- **The stub writes the quality files the container would.** In the series tests the `harness.py` calls (`collect`, `gsm8k`) are answered by the
+  `wslc` stub, which writes a 20-result file and a GSM8K summary of n 200 under the work directory; the real `lib/harness.py` runs against a
+  real server only in the acceptance run. The same holds for `vllm bench serve`: the stub prints the recorded fixture lines.
+- **The model listing and the generation-config hashes are stub answers.** The program the throwaway container runs is run for real in F7 and F8
+  (nested and hidden files, a path with `;` and `#`), but not inside the real image: whether `find -printf`, `xargs -r` and `sha256sum` exist
+  there, and whether the image runs `sh -c` without an entrypoint that eats it, is found on the machine. The fingerprint hashes names and sizes of
+  the model's files, not the weights: a same-size edit of a weight file is not seen (decision 1).
+- **The 27B model file runs as a dry run in the acceptance**, not as a measurement: the dry run proves the resolved commands, not that the model
+  serves at those settings.
+- **The time scale shapes the S12 and S13 numbers.** Their margins are measured against a deadline that is whole seconds; a machine slower than
+  the one they were tuned on can move an arm-round across one of them.
 
 - **No GPU, no real `wslc`, no real vLLM server.** `lib/harness.py` is tested against a Python `http.server` stub on
   `127.0.0.1` that answers the two routes with fixed bodies; the real server's logprobs and chat template are not exercised.

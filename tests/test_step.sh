@@ -264,6 +264,32 @@ t_l12_the_stops_per_invocation_are_bounded_by_max_server_stops() {
   kill_recorded_pids "$CASE"
 }
 
+# a step command that exits 2 for a passing error (argparse, grep, curl) is a failed try like any other code: the series worker's refusal is the
+# typed outcome KIND=refused, never the bare exit code
+t_a_step_command_that_exits_2_is_a_failed_try_and_is_retried() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=2
+  prod_running
+  assert_exit 7 "a command that exits 2, MAX_FAILED_TRIES=2" -- r9700 step --model "$MODEL_35B" t -- bash -c 'exit 2'
+  assert_eq "r9700: step failed 2 times, last: worker 2" "$ERR" "two tries, then the failed-step line"
+  assert_contains "$OUT" "failed try 1 of 2: worker 2" "the first exit 2 was a failed try"
+  assert_eq "2" "$(ls "$(run_dir_of)/steps" | grep -c '\.outcome$')" "two outcome files: it was retried"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "pwsh.exe once"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_worker_that_wrote_the_typed_outcome_refused_ends_the_step_with_exit_2_and_no_retry() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=3
+  prod_running
+  assert_exit 2 "a worker that writes KIND=refused" -- r9700 step --model "$MODEL_35B" t -- bash -c 'source "$1/lib/run_guarded.sh"; outcome_write "$R9700_OUTCOME_FILE" KIND=refused RC=2 "DETAIL=it is not the same experiment"; exit 2' x "$REPO"
+  assert_eq "r9700: the worker refused to go on: it is not the same experiment" "$ERR" "the stderr line, once"
+  assert_eq "1" "$(ls "$(run_dir_of)/steps" | grep -c '\.outcome$')" "one outcome: no retry"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "pwsh.exe once"
+  assert_eq "1" "$(stop_lines)" "one stop"
+  kill_recorded_pids "$CASE"
+}
+
 # L13: a failing worker is retried up to MAX_FAILED_TRIES, then exit 7
 t_l13_a_failing_worker_is_retried_up_to_max_failed_tries_then_exit_7() {
   step_setup "$FUNCNAME"

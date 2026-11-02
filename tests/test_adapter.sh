@@ -793,4 +793,58 @@ t_restore_start_matches_detach_in_any_case() {
   kill_recorded_pids "$CASE"
 }
 
+# ---- E1.S3: wslc_run_once and wslc_argv_text -------------------------------------------------------------------------------------------------------
+
+t_wslc_run_once_runs_in_the_foreground_with_rm_and_hands_every_word_on_as_one_argument() {
+  setup_case "$FUNCNAME"
+  printf 'a 1\n' > "$STUB/answers/find"
+  printf 'g %s\n' "$(printf 'a%.0s' $(seq 1 64))" > "$STUB/answers/genconfig"
+  assert_exit 0 "wslc_run_once" -- wslc_run_once 120 --name r9700tune-fp-1 -v 'hf-cache:/root/.cache/huggingface' img sh -c 'echo "$1"; id' sh '/m; touch /tmp/x; #'
+  argv_of wslc
+  assert_eq 'run|--rm|--name|r9700tune-fp-1|-v|hf-cache:/root/.cache/huggingface|img|sh|-c|echo "$1"; id|sh|/m; touch /tmp/x; #' "$(IFS='|'; echo "${ARGV[*]}")" "run --rm, then the words: the path with its ; and # is ONE element, apart from the program"
+  assert_not_contains "$(log_args wslc)" " -d " "not detached"
+  assert_not_contains "$OUT" "$CR" "no carriage return in the answer"
+  assert_eq "0" "$(wslc_list | wc -l | tr -d ' ')" "no container was started (the stub treats run --rm as a foreground run)"
+}
+
+t_wslc_run_once_refuses_a_ceiling_that_is_not_a_positive_integer_and_a_call_without_words() {
+  setup_case "$FUNCNAME"
+  assert_exit 2 "a ceiling that is not a number" -- wslc_run_once abc img
+  assert_contains "$ERR" "wslc_run_once" "names the function"
+  assert_exit 2 "a zero ceiling" -- wslc_run_once 0 img
+  assert_exit 2 "no ceiling" -- wslc_run_once
+  assert_exit 2 "a ceiling and no word" -- wslc_run_once 5
+  assert_missing "$STUB/calls.log" "no stub was called"
+}
+
+t_wslc_run_once_is_killed_at_its_ceiling_and_leaves_no_process() {
+  setup_case "$FUNCNAME"
+  printf 'hang\n' > "$STUB/mode"
+  R9700_CEILING_SCALE=100
+  wslc_run_once 120 img > /dev/null 2>&1
+  local rc=$?
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then assert_eq ok ok "the ceiling ended it (rc $rc)"; else assert_eq "124 or 137" "$rc" "the ceiling ended it"; fi
+  local pid
+  read -r pid _ < "$STUB/hung/containers/1.pid"
+  assert_exit 0 "the hung stub's sleep is gone" -- gone "$pid"
+}
+
+t_wslc_run_once_is_cut_at_T_STOP_like_every_other_call_and_asks_for_its_ceiling_in_seconds() {
+  setup_case "$FUNCNAME"
+  t_ceiling() { echo "$1" >> "$CASE/ceilings"; echo 1; }
+  wslc_run_once 120 img > /dev/null
+  assert_eq "5 120" "$(tr '\n' ' ' < "$CASE/ceilings" | sed 's/ $//')" "the grace, then the ceiling the caller gave"
+  unset -f t_ceiling
+  source "$REPO/lib/run_guarded.sh"
+  R9700_T_STOP=$(( $(date +%s) - 5 ))
+  assert_exit 10 "a call after T_STOP is refused" -- wslc_run_once 120 img
+  assert_contains "$ERR" "adapter:" "by the adapter's own line"
+}
+
+t_wslc_argv_text_prints_the_wslc_command_line_a_call_would_run_for_the_dry_run() {
+  setup_case "$FUNCNAME"
+  assert_eq "wslc run -d --rm --name n img --a b" "$(wslc_argv_text run -d --rm --name n img --a b)" "the program name, then the words joined by single spaces"
+  assert_missing "$STUB/calls.log" "nothing was called"
+}
+
 run_all_tests

@@ -188,7 +188,7 @@ _worker_check_session() {
 gate_open() { : > "$1"; }
 
 # ---------- the outcome file (decision 6) ----------
-_RG_KINDS="worker ram_guard disk_gate deadline interrupted"
+_RG_KINDS="worker ram_guard disk_gate deadline interrupted refused"
 
 # outcome_write <file> KIND=<kind> [RC=<number>] [DETAIL=<text>] [ENDED_AT=<UTC>]: the typed outcome of one step, the lines KIND, RC, DETAIL and
 # ENDED_AT (now, UTC, when not given). An exclusive create: the whole file is written to a part file and linked to its name, so the first

@@ -10,7 +10,11 @@
 # the served name, the fixed port, the context, the GPU fraction, the sequences, `--generation-config /genconfig` (for every arm), the
 # model's EXTRA_SERVE_ARGS split on spaces, then the given serve arguments. It starts the container (wslc_run) and returns the code of
 # `wait_ready <name> <log>` (lib/wait_ready.sh). When wslc cannot start the container it says so and returns that code, without waiting.
-# The named container must be a name wslc_run accepts.
+# The named container must be a name wslc_run accepts. With `--print` first, nothing is started and nothing is waited for: the line the real
+# start would run is printed (wslc_argv_text), for a dry run.
+#
+#   container_name <label>       prints <CONTAINER_PREFIX><label>; the label is ^[a-z0-9][a-z0-9-]{0,39}$ (2 and one line otherwise), so the
+#                                name is at most 56 characters and every guard that lists by prefix finds it
 
 # _serve_mount_arg <rel>:<dst>[:ro]: prints the -v value with the source as a Windows path under PATCH_DIR_WIN; 2 when it is not a mount
 _serve_mount_arg() {
@@ -82,17 +86,31 @@ _serve_argv() {
   )
 }
 
+_SERVE_LABEL_RE='^[a-z0-9][a-z0-9-]{0,39}$'
+
+container_name() {
+  local label="${1:-}"
+  if ! [[ $label =~ $_SERVE_LABEL_RE ]]; then
+    echo "container_name: the label \"$label\" is not $_SERVE_LABEL_RE" >&2
+    return 2
+  fi
+  printf '%s%s\n' "$R9700_CONTAINER_PREFIX" "$label"
+}
+
 serve_start() {
-  local name="${1:-}" log="${2:-}" rc
+  local name log rc print=no
   local -a envs=() mounts=() serve_args=() argv=()
+  if [ "${1:-}" = --print ]; then print=yes; shift; fi
+  name="${1:-}" log="${2:-}"
   if [ "$#" -lt 2 ]; then
-    echo "serve_start: usage: serve_start <name> <log> [-e KEY=VALUE]... [-v <rel>:<dst>[:ro]]... -- <serve args...>" >&2
+    echo "serve_start: usage: serve_start [--print] <name> <log> [-e KEY=VALUE]... [-v <rel>:<dst>[:ro]]... -- <serve args...>" >&2
     return 2
   fi
   _adapter_name_ok serve_start "$name" || return 2
   shift 2
   _serve_options envs mounts serve_args "$@" || return 2
   _serve_argv argv envs mounts serve_args || return 2
+  if [ "$print" = yes ]; then wslc_argv_text run -d --rm --name "$name" "${argv[@]}"; return 0; fi
   wslc_run "$name" "${argv[@]}"
   rc=$?
   if [ "$rc" -ne 0 ]; then

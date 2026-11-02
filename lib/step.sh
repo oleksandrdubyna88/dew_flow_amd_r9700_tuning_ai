@@ -179,6 +179,7 @@ _step_settle() {
   case "$O_KIND:$O_RC" in
     worker:0) _RG_UNITS_DONE=$((_RG_UNITS_DONE + 1)); return 0 ;;
     worker:3) rg_log "not quiet at a unit start, waiting"; return 10 ;;
+    refused:*) rg_err "r9700: the worker refused to go on: $O_DETAIL"; return 2 ;; # the worker's own typed word, never a bare exit code: a retry would be refused again
     worker:4) ;;
     deadline:*) ;;
     disk_gate:*) rg_err "r9700: disk gate: $O_DETAIL"; return 9 ;;

@@ -6,6 +6,9 @@
 #
 #   wslc_run <name> <args...>               run -d --rm --name <name> <args...>; prints the last 2 lines                       120 s
 #   wslc_exec <ceiling-s> <name> <cmd...>   exec <name> <cmd...>; stdout and stderr merged                                     the argument
+#   wslc_run_once <ceiling-s> <args...>     run --rm <args...> in the FOREGROUND (a throwaway container whose answer is read); the
+#                                           stdout and stderr merged                                                           the argument
+#   wslc_argv_text <args...>                prints `wslc <args...>`, one line, for a dry run; calls nothing
 #   wslc_list                               the names of the listed containers (list --no-trunc), one per line                 60 s
 #   wslc_stop <name>                        stop <name>; the child's output is discarded                                       60 s
 #   wslc_logs <name>                        logs <name>, stderr merged                                                         60 s
@@ -274,6 +277,32 @@ wslc_exec() {
   shift 2
   _adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" exec "$_adapter_name" "$@" | tr -d '\r' 9>&-
   return "${PIPESTATUS[0]}"
+}
+
+# wslc_run_once <ceiling-s> <args...>: a foreground `run --rm`: the container lives for the length of the call and its output is the answer.
+# Every word is one argv element, so a value that holds `;` or `#` stays one value (the caller passes data as arguments, never inside a program).
+wslc_run_once() {
+  _adapter_drop_lock
+  local _adapter_ceiling="${1:-}"
+  if ! [[ $_adapter_ceiling =~ ^[1-9][0-9]*$ ]]; then
+    echo "wslc_run_once: the ceiling \"$_adapter_ceiling\" is not a positive integer (seconds)" >&2
+    return 2
+  fi
+  if [ "$#" -lt 2 ]; then
+    echo "wslc_run_once: no word to run" >&2
+    return 2
+  fi
+  shift
+  _adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" run --rm "$@" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_argv_text <args...>: the command line a call of wslc with these words would run, for the output of a dry run. Nothing is called; the
+# program's name is printed as `wslc` whatever the configured executable is (the line is for a person).
+wslc_argv_text() {
+  printf 'wslc'
+  printf ' %s' "$@"
+  printf '\n'
 }
 
 # The container names: the last column of `list --no-trunc` (plain `list` cuts long names), without the header line.

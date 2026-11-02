@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/r9700 as a user runs it, for the verbs commands, init, and verdict as the restore-first shell (E1.S2 part (b)). The scenarios L1-L22
+# bin/r9700 as a user runs it, for the verbs commands, init, and verdict as the restore-first shell (E1.S2 part (b); the verdict itself is E1.S3's). The scenarios L1-L22
 # of the story are marked in each test name; the ones that drive the `step` verb (L1-L3, L11-L14, L19, L22, the bad-label half of L20, the
 # TERM half of L8, the real L21) are tests/test_step.sh. Every test body is a function t_<guarantee>; each runs in its own subshell and writes
 # only below $R9700_TEST_ROOT. Nothing under tests/stubs is started except through the stubs on PATH and tests/lib/fake_supervisor.sh.
@@ -238,8 +238,8 @@ t_l9_verdict_takes_the_lock_only_to_restore() {
   mkdir "$CASE/empty"
   assert_exit 2 "(b) no marker and the lock held: verdict reaches its own argument check" -- r9700 verdict "$CASE/nodir"
   assert_contains "$ERR" "$CASE/nodir" "the line names the folder"
-  assert_exit 2 "(b) an existing folder: the S2 shell stops with its own line" -- r9700 verdict "$CASE/empty"
-  assert_contains "$ERR" "verdict: not implemented in S2" "named"
+  assert_exit 2 "(b) an existing folder that is no series outdir: the verdict stops with its own line" -- r9700 verdict "$CASE/empty"
+  assert_contains "$ERR" "fingerprint.json not found" "naming the missing file"
   kill -KILL "$holder"
 }
 
@@ -386,8 +386,8 @@ t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
   assert_eq "$expected" "$OUT" "exactly the verb_* functions, sorted, one per line"
   catalogue="$(grep -oE '^\| `bin/r9700 [a-z]+`' "$REPO/research/module_tests.md" | sed -E 's/^\| `bin\/r9700 ([a-z]+)`/\1/' | sort)"
   assert_eq "$expected" "$catalogue" "every verb is a row of the flow catalogue in research/module_tests.md, and every verb row is a verb"
-  assert_contains "$(printf '%s\n' "$expected")" "step" "step is a verb since part (c) (series comes with E1.S3)"
-  assert_not_contains "$(printf '%s\n' "$expected")" "series" "series is not here yet"
+  assert_contains "$(printf '%s\n' "$expected")" "step" "step is a verb since part (c)"
+  assert_contains "$(printf '%s\n' "$expected")" "series" "series is a verb since E1.S3"
 }
 
 # ---- L20: an unknown verb is refused ----------------------------------------------------------------------------------------------------------------
@@ -395,9 +395,9 @@ t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
 t_l20_an_unknown_verb_is_refused_naming_the_legal_ones() {
   lc_setup "$FUNCNAME"
   assert_exit 2 "an unknown verb" -- r9700 nosuch
-  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init step verdict' "$ERR" "the line"
+  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init series step verdict' "$ERR" "the line"
   assert_exit 2 "no verb" -- r9700
-  assert_contains "$ERR" "legal: commands init step verdict" "the same list"
+  assert_contains "$ERR" "legal: commands init series step verdict" "the same list"
   assert_exit 2 "a verb that only looks like one" -- r9700 'verb_init'
   assert_missing "$STUB/calls.log" "nothing was called"
 }

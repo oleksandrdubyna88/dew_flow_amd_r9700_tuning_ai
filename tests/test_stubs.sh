@@ -262,4 +262,104 @@ t_a_stub_whose_directory_vanishes_mid_run_does_not_bring_it_back() {
   kill_recorded_pids "$CASE"
 }
 
+# ---- E1.S3: what the series scenarios need of the stubs ------------------------------------------------------------------------------------------
+
+t_a_foreground_run_prints_the_find_answer_a_separator_and_the_genconfig_answer_and_starts_no_container() {
+  setup_case "$FUNCNAME"
+  printf 'a.safetensors 100\nconfig.json 10\n' > "$STUB/answers/find"
+  printf 'generation_config.json %s\n' "$(printf 'f%.0s' $(seq 1 64))" > "$STUB/answers/genconfig"
+  assert_exit 0 "wslc_run_once" -- wslc_run_once 60 -v hf-cache:/root/.cache/huggingface img sh -c prog sh /model
+  assert_eq "a.safetensors 100|config.json 10|---|generation_config.json $(printf 'f%.0s' $(seq 1 64))" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "find, a --- line, genconfig"
+  assert_not_contains "$OUT" "$CR" "no CR after the adapter"
+  assert_eq "" "$(wslc_list)" "no container was started"
+  assert_eq "0" "$(log_count wslc -d)" "no detached run"
+}
+
+t_the_ready_answer_of_one_container_wins_over_the_default() {
+  setup_case "$FUNCNAME"
+  local program="import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/v1/models',timeout=5)"
+  printf 'ok\n' > "$STUB/answers/ready"
+  printf 'fail\n' > "$STUB/answers/ready.r9700tune-b"
+  wslc_run r9700tune-a img > /dev/null
+  wslc_run r9700tune-b img > /dev/null
+  assert_exit 0 "the container with no file of its own takes answers/ready" -- wslc_exec 60 r9700tune-a python3 -c "$program"
+  assert_exit 1 "the container with answers/ready.<name> takes it" -- wslc_exec 60 r9700tune-b python3 -c "$program"
+  assert_eq "1" "$(cat "$STUB/counters/answer-ready")" "the default file counted only its own call"
+  kill_recorded_pids "$CASE"
+}
+
+t_the_metrics_probe_answers_from_answers_metrics_and_not_from_the_ready_answer() {
+  setup_case "$FUNCNAME"
+  local program="import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode())"
+  printf 'vllm:spec_decode_num_drafts_total{engine="0"} 12.0\nvllm:other 1\n' > "$STUB/answers/metrics"
+  printf 'fail\n' > "$STUB/answers/ready"
+  wslc_run r9700tune-a img > /dev/null
+  assert_exit 0 "the metrics program" -- wslc_exec 60 r9700tune-a python3 -c "$program"
+  assert_eq 'vllm:spec_decode_num_drafts_total{engine="0"} 12.0|vllm:other 1' "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "answers/metrics, whole"
+  assert_missing "$STUB/counters/answer-ready" "the ready answer was not read"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_tagged_bench_answer_prints_only_the_lines_of_the_asked_group_and_a_missing_line_stays_missing() {
+  setup_case "$FUNCNAME"
+  printf 'c=1 r=1 Output token throughput (tok/s):  1.5\nc=1 r=1 Mean TTFT (ms):  2.5\nc=1 r=2 Output token throughput (tok/s):  3.5\nprefill8192 r=1 Output token throughput (tok/s):  4.5\nprefill8192 r=1 Median TTFT (ms):  5.5\n' > "$STUB/answers/bench"
+  wslc_run r9700tune-a img > /dev/null
+  assert_exit 0 "c=1 seed 1" -- wslc_exec 60 r9700tune-a vllm bench serve --max-concurrency 1 --seed 1 --random-input-len 1024
+  assert_eq "Output token throughput (tok/s):  1.5|Mean TTFT (ms):  2.5" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "the c=1 r=1 lines, untagged"
+  assert_exit 0 "c=4 seed 1: no such line" -- wslc_exec 60 r9700tune-a vllm bench serve --max-concurrency 4 --seed 1 --random-input-len 1024
+  assert_eq "" "$OUT" "nothing is printed for a group with no line: no clamping to a last block"
+  assert_exit 0 "prefill 8192 seed 1" -- wslc_exec 60 r9700tune-a vllm bench serve --max-concurrency 1 --seed 1 --random-input-len 8192 --random-output-len 128
+  assert_eq "Output token throughput (tok/s):  4.5|Median TTFT (ms):  5.5" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "the prefill group is chosen by the input length"
+  kill_recorded_pids "$CASE"
+}
+
+t_the_harness_calls_write_the_quality_files_the_container_would_under_the_work_directory() {
+  setup_case "$FUNCNAME"
+  mkdir -p "$R9700_WORK_DIR/r9700/s"
+  wslc_run r9700tune-a img > /dev/null
+  assert_exit 0 "collect" -- wslc_exec 60 r9700tune-a python3 /work/r9700/harness.py collect --url http://127.0.0.1:8000 --model m --out /work/r9700/s/prompts_a.json
+  assert_exit 0 "gsm8k" -- wslc_exec 60 r9700tune-a python3 /work/r9700/harness.py gsm8k --url http://127.0.0.1:8000 --model m --data /work/gsm8k/test.jsonl --n 200 --out /work/r9700/s/gsm8k_a.json
+  assert_exit 0 "both files pass the record check" -- python3 "$REPO/lib/fingerprint.py" check-quality "$R9700_WORK_DIR/r9700/s/prompts_a.json" "$R9700_WORK_DIR/r9700/s/gsm8k_a.json"
+  assert_eq "0" "$(ls "$R9700_WORK_DIR/r9700/s" | grep -c "\.part$")" "no part file is left"
+  kill_recorded_pids "$CASE"
+}
+
+t_R9700_STUB_DELAY_S_makes_every_bench_serve_call_wait_that_long() {
+  setup_case "$FUNCNAME"
+  wslc_run r9700tune-a img > /dev/null
+  local a b
+  a="$(date +%s.%N)"
+  R9700_STUB_DELAY_S=0.4 wslc_exec 60 r9700tune-a vllm bench serve --max-concurrency 1 --seed 1 > /dev/null
+  b="$(date +%s.%N)"
+  assert_exit 0 "the call took at least 0.4 s" -- awk -v a="$a" -v b="$b" 'BEGIN { exit !(b - a >= 0.4) }'
+  a="$(date +%s.%N)"
+  wslc_exec 60 r9700tune-a vllm bench serve --max-concurrency 1 --seed 1 > /dev/null
+  b="$(date +%s.%N)"
+  assert_exit 0 "without the knob it does not" -- awk -v a="$a" -v b="$b" 'BEGIN { exit !(b - a < 0.4) }'
+  kill_recorded_pids "$CASE"
+}
+
+t_the_on_stop_hook_of_a_container_runs_once_the_container_is_stopped() {
+  setup_case "$FUNCNAME"
+  printf 'touch "%s/hooked"\n' "$CASE" > "$STUB/on-stop-r9700tune-a"
+  wslc_run r9700tune-a img > /dev/null
+  wslc_run r9700tune-b img > /dev/null
+  wslc_stop r9700tune-b
+  assert_missing "$CASE/hooked" "another container's stop does not run it"
+  wslc_stop r9700tune-a
+  assert_exit 0 "its own stop does" -- test -f "$CASE/hooked"
+  kill_recorded_pids "$CASE"
+}
+
+t_the_stub_harness_writes_as_many_prompt_results_as_answers_prompts_n_says() {
+  setup_case "$FUNCNAME"
+  mkdir -p "$R9700_WORK_DIR/r9700/s"
+  printf '19\n' > "$STUB/answers/prompts_n"
+  wslc_run r9700tune-a img > /dev/null
+  wslc_exec 60 r9700tune-a python3 /work/r9700/harness.py collect --url http://127.0.0.1:8000 --model m --out /work/r9700/s/prompts_a.json > /dev/null
+  assert_eq "19" "$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["results"]))' "$R9700_WORK_DIR/r9700/s/prompts_a.json")" "19 results"
+  assert_exit 1 "a call whose folder does not exist fails as the real harness would" -- wslc_exec 60 r9700tune-a python3 /work/r9700/harness.py collect --url u --model m --out /work/r9700/nosuch/p.json
+  kill_recorded_pids "$CASE"
+}
+
 run_all_tests

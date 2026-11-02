@@ -9,13 +9,22 @@ stub_mode_if_asked
 
 CRLF=$'\r'
 
-# run -d --rm --name X ...: a detached container; prints three lines
+# run -d --rm --name X ...: a detached container; prints three lines. `run --rm ...` WITHOUT -d is a foreground run (E1.S3: the throwaway
+# container of the fingerprint): it starts nothing and prints answers/find, a `---` line and answers/genconfig (a missing file prints nothing).
 run_container() {
-  local name="" prev=""
+  local name="" prev="" detached=no
   for arg in "$@"; do
     [ "$prev" = --name ] && name="$arg"
+    [ "$arg" = -d ] && detached=yes
     prev="$arg"
   done
+  if [ "$detached" = no ]; then
+    [ -f "$R9700_STUB_DIR/hang-foreground-run" ] && stub_hang # a throwaway container that never answers (the caller's ceiling ends it)
+    [ -f "$R9700_STUB_DIR/answers/find" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/find"
+    printf -- '---%s\n' "$CRLF"
+    [ -f "$R9700_STUB_DIR/answers/genconfig" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/genconfig"
+    return 0
+  fi
   if [ -z "$name" ]; then
     echo "stub: run without --name" >&2
     exit 2
@@ -38,22 +47,76 @@ list_containers() {
   done
 }
 
-# exec <name> <cmd...>: vllm bench serve prints its three metric lines for the (c, seed) block of answers/bench; a python urlopen
-# program answers from answers/ready; anything else succeeds silently
+# exec <name> <cmd...>: vllm bench serve prints its metric lines of the answers/bench file; a python urlopen program answers from
+# answers/ready (answers/ready.<name> first, E1.S3: one container can be made to fail) or, for /metrics, from answers/metrics; the harness
+# of the quality step writes its result file; anything else succeeds silently.
+#   answers/bench, legacy form: lines WITHOUT a group, three per block; the block of the call is (c == 1 ? 0 : 3) + seed - 1, and a block that
+#       is not there repeats the last one. A prefill call (--random-output-len 128) takes block 6 + 3 * <position of its length in
+#       R9700_PREFILL_LENS> + seed - 1.
+#   answers/bench, tagged form (the first line starts `c=<n> r=<n> ` or `prefill<n> r=<n> `): the lines of the asked group and seed with the
+#       group cut off; a line that is not there stays missing (a measurement the server did not print). Decode: group c=<c>; prefill: group
+#       prefill<--random-input-len>.
+#   R9700_STUB_DELAY_S: every `bench serve` call sleeps that long first (a measurement that takes time).
+bench_lines() {
+  local c="$1" seed="$2" len="$3" outlen="$4" file="$R9700_STUB_DIR/answers/bench" first group idx pos=0 n word
+  [ -f "$file" ] || return 0
+  first="$(head -n 1 "$file")"
+  if [ "$outlen" = 128 ]; then group="prefill$len"; else group="c=$c"; fi
+  if [[ $first =~ ^(c=[0-9]+|prefill[0-9]+)\ r=[0-9]+\  ]]; then
+    awk -v g="$group r=$seed " -v crlf="$CRLF" 'index($0, g) == 1 { printf "%s%s\n", substr($0, length(g) + 1), crlf }' "$file"
+    return 0
+  fi
+  if [ "$outlen" = 128 ]; then
+    for word in ${R9700_PREFILL_LENS:-}; do [ "$word" = "$len" ] && break; pos=$((pos + 1)); done
+    idx=$((6 + 3 * pos + seed - 1))
+  else
+    idx=$(((c == 1 ? 0 : 3) + seed - 1))
+  fi
+  awk -v idx="$idx" -v crlf="$CRLF" '{ line[NR] = $0 } END { b = idx; if (3 * b + 3 > NR) b = int((NR - 1) / 3); for (i = 3 * b + 1; i <= 3 * b + 3 && i <= NR; i++) printf "%s%s\n", line[i], crlf }' "$file"
+}
+
+# harness_call <script> <sub command> <argv...>: what the container's lib/harness.py would do, minus the server: the file of --out (a path under
+# /work, which is $R9700_WORK_DIR here) is written with the shape the record check reads (collect: answers/prompts_n results, default 20; gsm8k:
+# n 200 with the stderr the verdict recomputes). The real one does not make the folder either.
+harness_call() {
+  local sub="$2" out="" prev="" arg real
+  shift 2
+  for arg in "$@"; do
+    [ "$prev" = --out ] && out="$arg"
+    prev="$arg"
+  done
+  [ -n "$out" ] || { echo "stub: harness call without --out" >&2; return 2; }
+  real="${R9700_WORK_DIR:?R9700_WORK_DIR is not set}/${out#/work/}"
+  [ -d "$(dirname "$real")" ] || { echo "FileNotFoundError: $(dirname "$out")" >&2; return 1; }
+  case $sub in
+    collect) python3 -c 'import json, sys; json.dump({"results": [{"prompt": str(i)} for i in range(int(sys.argv[2]))]}, open(sys.argv[1] + ".part", "w"))' "$real" "$(cat "$R9700_STUB_DIR/answers/prompts_n" 2> /dev/null || echo 20)" ;;
+    gsm8k) python3 -c 'import json, math, sys; p = 0.85; json.dump({"summary": {"n": 200, "correct": 170, "accuracy": p, "stderr": math.sqrt(p * (1 - p) / 200)}, "items": []}, open(sys.argv[1] + ".part", "w"))' "$real" ;;
+    *) echo "stub: harness: unknown sub command $sub" >&2; return 2 ;;
+  esac
+  mv "$real.part" "$real"
+  echo "wrote $out"
+}
+
 exec_in() {
-  local name="$1" arg prev="" c="" seed="" idx word
+  local name="$1" arg prev="" c="" seed="" len="" outlen="" word
   shift
   if [ "${1:-}" = vllm ] && [ "${2:-}" = bench ] && [ "${3:-}" = serve ]; then
     for arg in "$@"; do
       [ "$prev" = --max-concurrency ] && c="$arg"
       [ "$prev" = --seed ] && seed="$arg"
+      [ "$prev" = --random-input-len ] && len="$arg"
+      [ "$prev" = --random-output-len ] && outlen="$arg"
       prev="$arg"
     done
-    [ -f "$R9700_STUB_DIR/answers/bench" ] || return 0
-    idx=$(((c == 1 ? 0 : 3) + seed - 1))
-    awk -v idx="$idx" -v crlf="$CRLF" '{ line[NR] = $0 } END { b = idx; if (3 * b + 3 > NR) b = int((NR - 1) / 3); for (i = 3 * b + 1; i <= 3 * b + 3 && i <= NR; i++) printf "%s%s\n", line[i], crlf }' "$R9700_STUB_DIR/answers/bench"
+    [ -n "${R9700_STUB_DELAY_S:-}" ] && sleep "$R9700_STUB_DELAY_S"
+    bench_lines "$c" "$seed" "$len" "$outlen"
+  elif [ "${1:-}" = python3 ] && [[ ${2:-} == */harness.py ]]; then
+    harness_call "$2" "${3:-}" "${@:4}"
+  elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *urlopen*/metrics* ]]; then
+    [ -f "$R9700_STUB_DIR/answers/metrics" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/metrics"
+    return 0
   elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *urlopen* ]]; then
-    word="$(stub_answer ready)"
+    if [ -f "$R9700_STUB_DIR/answers/ready.$name" ]; then word="$(stub_answer "ready.$name")"; else word="$(stub_answer ready)"; fi
     [ "$word" = hang ] && stub_hang # a probe that never answers (the caller's ceiling ends it)
     if [[ $3 == */v1/completions* ]]; then
       case $word in
@@ -70,7 +133,16 @@ exec_in() {
 case "${1:-}" in
   run) shift; run_container "$@" ;;
   list) list_containers ;;
-  stop) [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"; stub_container_stop "${2:-}" && printf '%s%s\n' "$2" "$CRLF" ;;
+  stop)
+    [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"
+    # on-stop-<name>: a script of the test (E1.S3), run once that container is stopped: the way a test changes the world at a unit's end
+    if stub_container_stop "${2:-}"; then
+      printf '%s%s\n' "$2" "$CRLF"
+      if [ -f "$R9700_STUB_DIR/on-stop-${2:-}" ]; then bash "$R9700_STUB_DIR/on-stop-${2:-}"; fi
+    else
+      exit 1
+    fi
+    ;;
   logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
   exec) stub_require_running "${2:-}" || exit 1; shift; exec_in "$@" ;;
   *) echo "stub: wslc: unknown subcommand \"${1:-}\"" >&2; exit 2 ;;

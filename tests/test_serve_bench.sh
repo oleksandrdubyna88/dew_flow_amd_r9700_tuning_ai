@@ -146,4 +146,77 @@ t_bench_run_stops_at_the_first_failed_exec_and_says_so() {
   assert_eq "1" "$(grep -c 'adapter:' <<< "$ERR")" "the adapter's line once: the loop did not go on"
 }
 
+# ---- E1.S3: container_name and serve_start --print -----------------------------------------------------------------------------------------------
+
+t_container_name_is_the_prefix_and_a_label_and_refuses_what_is_not_a_label() {
+  setup_case "$FUNCNAME"
+  assert_exit 0 "a label" -- container_name sp-fbase-1
+  assert_eq "r9700tune-sp-fbase-1" "$OUT" "prefix and label"
+  assert_exit 0 "the longest label (40 characters)" -- container_name "a$(printf 'b%.0s' $(seq 1 39))"
+  assert_exit 2 "41 characters" -- container_name "a$(printf 'b%.0s' $(seq 1 40))"
+  assert_contains "$ERR" "container_name:" "the line names the function"
+  assert_exit 2 "a capital" -- container_name Sp-a
+  assert_exit 2 "a leading dash" -- container_name -a
+  assert_exit 2 "a slash" -- container_name a/b
+  assert_exit 2 "an empty label" -- container_name ""
+  assert_exit 2 "no label" -- container_name
+  assert_missing "$STUB/calls.log" "no stub was called"
+}
+
+t_serve_start_print_shows_the_run_line_and_starts_nothing() {
+  setup_case "$FUNCNAME"
+  model_without_mounts
+  config_load "$CASE/machine.env" "$CASE/model.env" || exit 2
+  local want
+  want="wslc run -d --rm --name r9700tune-t-1 $SERVE_FIXED -e A=1 -v hf-cache:/root/.cache/huggingface -v vllm-cache:/root/.cache/vllm -v C:\\r9700\\work:/work -v C:\\r9700\\genconfig:/genconfig:ro -v C:\\r9700\\patches\\C\\auto_gptq.py:/opt/x.py:ro $SERVE_IMAGE $SERVE_ARGS --speculative-config.method mtp"
+  assert_exit 0 "serve_start --print" -- serve_start --print r9700tune-t-1 "$CASE/server.log" -e A=1 -v C/auto_gptq.py:/opt/x.py:ro -- --speculative-config.method mtp
+  assert_eq "$want" "$OUT" "the same argv as the real start, as one line"
+  assert_missing "$STUB/calls.log" "no wslc call"
+  assert_missing "$CASE/wait_ready.calls" "wait_ready was not called"
+  assert_exit 2 "--print still refuses a bad option" -- serve_start --print r9700tune-t-1 "$CASE/server.log" --rm --
+}
+
+t_bench_argv_text_is_what_bench_run_sends_for_one_measurement() {
+  setup_case "$FUNCNAME"
+  assert_exit 0 "bench_argv_text" -- bench_argv_text r9700tune-t-1 4 2
+  assert_eq "wslc exec r9700tune-t-1 vllm bench serve --backend vllm --base-url http://127.0.0.1:8000 --model qwen3.6-35b-a3b --tokenizer /root/.cache/huggingface/local/Qwen3.6-35B-A3B-GPTQ --dataset-name random --random-input-len 1024 --random-output-len 512 --ignore-eos --num-prompts 12 --max-concurrency 4 --seed 2" "$OUT" "the c=4 seed 2 command"
+  assert_missing "$STUB/calls.log" "no call"
+}
+
+t_prefill_run_prints_the_recorded_prefill_lines_and_runs_three_prompts_at_one_concurrency() {
+  setup_case "$FUNCNAME"
+  local want
+  # the 9 lines of the recorded fcombo-2 prefill8192 groups, without their tag: what vllm bench serve prints, with the group the stub selects by
+  sed -n 175,210p "$BENCH_FIXTURE" | sed -E 's/^fcombo-2 //' > "$STUB/answers/bench"
+  want="$(sed -n 193,201p "$BENCH_FIXTURE")"
+  wslc_run r9700tune-t-1 img > /dev/null
+  assert_exit 0 "prefill_run" -- prefill_run r9700tune-t-1 fcombo-2 8192
+  assert_eq "$want" "$OUT" "the output equals the recorded 9 lines of prefill8192, tag, group and r= included"
+  assert_eq "3" "$(grep -c ' wslc exec ' "$STUB/calls.log")" "three exec calls"
+  local expected="" r
+  for r in 1 2 3; do
+    expected+="exec r9700tune-t-1 vllm bench serve --backend vllm --base-url http://127.0.0.1:8000 --model qwen3.6-35b-a3b --tokenizer /root/.cache/huggingface/local/Qwen3.6-35B-A3B-GPTQ --dataset-name random --random-input-len 8192 --random-output-len 128 --ignore-eos --num-prompts 3 --max-concurrency 1 --seed $r"$'\n'
+  done
+  assert_eq "${expected%$'\n'}" "$(awk '$3 == "wslc" && $4 == "exec" { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' "$STUB/calls.log")" "the three commands: input 8192, output 128, 3 prompts, concurrency 1, seeds 1-3"
+}
+
+t_prefill_run_refuses_a_bad_length_or_tag_and_stops_at_the_first_failed_exec() {
+  setup_case "$FUNCNAME"
+  assert_exit 2 "a length that is not a number" -- prefill_run r9700tune-t-1 tag abc
+  assert_exit 2 "a zero length" -- prefill_run r9700tune-t-1 tag 0
+  assert_exit 2 "a bad tag" -- prefill_run r9700tune-t-1 'a b' 8192
+  assert_exit 2 "no argument" -- prefill_run
+  assert_missing "$STUB/calls.log" "a refused call made no stub call"
+  R9700_WSLC=nonesuch-wslc
+  assert_exit 10 "the adapter's code is returned" -- prefill_run r9700tune-t-1 tag 8192
+  assert_contains "$ERR" "prefill: " "a prefill: line says where"
+  assert_contains "$ERR" "8192 r=1" "and at which measurement"
+}
+
+t_prefill_argv_text_is_what_prefill_run_sends_for_one_measurement() {
+  setup_case "$FUNCNAME"
+  assert_exit 0 "prefill_argv_text" -- prefill_argv_text r9700tune-t-1 32768 3
+  assert_eq "wslc exec r9700tune-t-1 vllm bench serve --backend vllm --base-url http://127.0.0.1:8000 --model qwen3.6-35b-a3b --tokenizer /root/.cache/huggingface/local/Qwen3.6-35B-A3B-GPTQ --dataset-name random --random-input-len 32768 --random-output-len 128 --ignore-eos --num-prompts 3 --max-concurrency 1 --seed 3" "$OUT" "the 32768 seed 3 command"
+}
+
 run_all_tests

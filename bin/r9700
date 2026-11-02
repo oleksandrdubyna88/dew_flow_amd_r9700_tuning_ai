@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. E1.S2 has the verbs commands, init, step and verdict
-# (verdict as the restore-first shell: the real verdict comes with E1.S3); series comes with E1.S3.
+# bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
+# verdict (E1.S3: the arm-round records of a series and the ship test read back from them).
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
@@ -12,7 +12,7 @@ set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
@@ -139,20 +139,16 @@ verb_init() {
   [ "$rc" -eq 0 ] || exit 10
 }
 
-# verdict: the restore-first half only (E1.S3 replaces the rest). Takes the lock only when a marker exists, to restore, and releases it.
+# verdict <outdir> [--base <arm>] [--no-quality] [--json <file>]: the ship test over the final records of a series (lib/series.sh). It takes the
+# lock only when a marker exists, to restore first, and releases it before it reads; its arguments are checked after that restore.
 verb_verdict() {
-  local outdir="${1:-}"
   if [ -f "$(marker_path)" ]; then
     lock_take verdict || exit $?
     restore_first
     lock_release
   fi
-  if [ ! -d "$outdir" ]; then
-    echo "r9700: verdict: \"$outdir\" is not an outdir (a directory of series results)" >&2
-    exit 2
-  fi
-  echo "r9700: verdict: not implemented in S2" >&2
-  exit 2
+  series_verdict "$@"
+  exit $?
 }
 
 # prepare_run: what `supervise` calls after the restore-first: resolves the model named in _R9700_MODEL_ARG and loads the config (2 and its
@@ -198,6 +194,88 @@ verb_step() {
   if [ "${1:-}" != -- ] || [ "$#" -lt 2 ]; then echo "$_STEP_USAGE" >&2; exit 2; fi
   shift
   supervise step prepare_run step_run "$label" -- "$@"
+  exit $?
+}
+
+_SERIES_USAGE="r9700: series: usage: series <model file or name> <arm>... [--out <name>] [--rounds <1..20>] [--dry-run]"
+_SERIES_OUT_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+# series_args <args...>: checks the SYNTAX of a `series` command line (before the lock and the restore) and sets _R9700_MODEL_ARG, _SERIES_ARMS,
+# _SERIES_OUT, _SERIES_ROUNDS and _SERIES_DRY; 2 with one `r9700: series:` line. Whether an arm is in the arm table is checked later, with the config.
+series_args() {
+  local base arm
+  _R9700_MODEL_ARG="" _SERIES_ARMS=() _SERIES_OUT="" _SERIES_ROUNDS=3 _SERIES_DRY=no
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --out)
+        [ "$#" -ge 2 ] || { echo "r9700: series: --out needs a value" >&2; return 2; }
+        _SERIES_OUT="$2"
+        shift 2
+        ;;
+      --rounds)
+        [ "$#" -ge 2 ] || { echo "r9700: series: --rounds needs a value" >&2; return 2; }
+        _SERIES_ROUNDS="$2"
+        shift 2
+        ;;
+      --dry-run) _SERIES_DRY=yes; shift ;;
+      -*) echo "r9700: series: unknown option \"$1\"; legal: --out <name>, --rounds <1..20>, --dry-run" >&2; return 2 ;;
+      *)
+        if [ -z "$_R9700_MODEL_ARG" ]; then _R9700_MODEL_ARG="$1"; else _SERIES_ARMS+=("$1"); fi
+        shift
+        ;;
+    esac
+  done
+  if [ -z "$_R9700_MODEL_ARG" ]; then echo "$_SERIES_USAGE" >&2; return 2; fi
+  if [ "${#_SERIES_ARMS[@]}" -eq 0 ]; then echo "r9700: series: at least one arm is needed ($_SERIES_USAGE)" >&2; return 2; fi
+  [[ $_SERIES_ROUNDS =~ ^([1-9]|1[0-9]|20)$ ]] || { echo "r9700: series: --rounds \"$_SERIES_ROUNDS\" is not a whole number from 1 to 20" >&2; return 2; }
+  for arm in "${_SERIES_ARMS[@]}"; do
+    [[ $arm =~ $_RE_ARM ]] || { echo "r9700: series: \"$arm\" is not an arm name (lower-case letters and digits only)" >&2; return 2; }
+    [ "$(printf '%s\n' "${_SERIES_ARMS[@]}" | grep -cxF -- "$arm")" -eq 1 ] || { echo "r9700: series: the arm \"$arm\" is given twice" >&2; return 2; }
+  done
+  if [ -z "$_SERIES_OUT" ]; then
+    base="${_R9700_MODEL_ARG##*/}"
+    _SERIES_OUT="${base%.env}-$(date -u +%Y%m%d)"
+  fi
+  [[ $_SERIES_OUT =~ $_SERIES_OUT_RE ]] || { echo "r9700: series: --out \"$_SERIES_OUT\" is not a name (letters, digits, . _ -; starting with a letter or digit; at most 64)" >&2; return 2; }
+}
+
+# series_prepare: what `supervise` calls after the restore-first: the model and the machine config, the arm table, the arms of the command line
+# (in the table, mounts present, a container name that fits for the longest label: <arm>-<round>-r2)
+series_prepare() {
+  local arm
+  prepare_run || return 2
+  arms_load "$(series_arms_conf)" || return 2
+  arms_check "${_SERIES_ARMS[@]}" || return 2
+  for arm in "${_SERIES_ARMS[@]}"; do container_name "sp-$arm-$_SERIES_ROUNDS-r2" > /dev/null || return 2; done
+}
+
+# series_body: the body of `supervise`: the fingerprint (a refused resume stops here, before anything is stopped), the dry run, the resume count,
+# the checks of round 1, then the series as ONE step of the supervisor
+series_body() {
+  local outdir="$R9700_RESULTS_DIR/$_SERIES_OUT" left recorded
+  if [ "$_SERIES_DRY" = yes ]; then
+    series_fingerprint "$outdir" "$_SERIES_ROUNDS" dry "${_SERIES_ARMS[@]}" || return 2
+    series_dry_run "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}"
+    return $?
+  fi
+  series_fingerprint "$outdir" "$_SERIES_ROUNDS" real "${_SERIES_ARMS[@]}" || return 2
+  series_quality_sync "$outdir"
+  left="$(series_left "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}")"
+  if [ "$left" -eq 0 ]; then
+    recorded="$(series_recorded "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}")"
+    echo "series: $recorded of $((_SERIES_ROUNDS * ${#_SERIES_ARMS[@]})) arm-rounds recorded, nothing to do"
+    return 0
+  fi
+  series_preflight "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}" || return 2
+  step_run series -- bash "$R9700_ROOT/lib/series.sh" "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}"
+}
+
+# verb_series <model> <arm>... [--out <name>] [--rounds <n>] [--dry-run]: the arms alternate inside each round, every arm-round is recorded only
+# when it is complete (lib/series.sh), and the same command again resumes. One supervisor, one step: the operator's server is stopped once and
+# restored once.
+verb_series() {
+  series_args "$@" || exit 2
+  supervise series series_prepare series_body
   exit $?
 }
 

@@ -1513,6 +1513,31 @@ name `container_name "sp-<arm>-<round>"` (line 56); `serve_start` with `arm_env`
 decision 3; `sleep 10` after a record (line 92). `series.sh` sets no trap (line 20 goes) and never stops the
 operator's server (line 44 goes).
 
+**Amendments from the Opus review of the S3 code, 2026-11-02** (decision 7 is kept as written above; A15
+replaces its first sentence):
+
+- **A15 — more rounds extend a series; fewer are refused.** Scenario S7 needs `--rounds 2` after `--rounds 1` to
+  add records, which decision 7's "another count is refused" forbids. A larger count is an extension, like a new
+  arm: the fingerprint is merged and prints `fingerprint: rounds extended <old> -> <new>`. A smaller count is
+  refused like any other difference. The verdict uses the stored count.
+- **A16 — each unit re-checks the cheap fingerprint components.** The fingerprint is built once, before admission,
+  but every worker start re-reads `arms.conf`, re-sources `lib/`, and mounts the patch files live, and one
+  `step_run` can restart the worker hours later. At the start of every unit, the worker rebuilds the components
+  that cost nothing (config, arms, patches, tools; not the container probe) and compares them with
+  `fingerprint.json`. On a difference it writes the outcome KIND `refused` and exits 2, with the `fingerprint
+  differs` lines, and no record is made. `step` stops at once on KIND `refused` (exit 2, no retry, one restore);
+  a plain worker exit 2 without that outcome stays a failed try, as S2 decision 6 says. The check also runs before
+  each start try. Limits: an edit during a running unit is seen only by the next unit (the running container
+  loaded the file at its start), and a final record is not judged again.
+- **A17 — a dry run never changes the series identity.** `series --dry-run` compares without `--merge` and never
+  writes `fingerprint.json`, so a dry run with more rounds or another arm cannot make a finished series
+  INCOMPLETE.
+- **A18 — no new fingerprint over old records.** When `fingerprint.json` is missing but `rounds/` or `rejected/`
+  exists, the start is refused before admission, with the remedy named, because the old records were made
+  under an unknown configuration.
+- **A19 — the throwaway container probe runs through `_rg_run`**, so a TERM before admission ends the supervisor
+  at once, not after the probe's 120 s ceiling.
+
 ### Test scenarios
 
 `tests/test_series.sh` (S1–S16, bash, the S2 preamble: stubs first on `PATH`, `R9700_STATE_DIR`,
