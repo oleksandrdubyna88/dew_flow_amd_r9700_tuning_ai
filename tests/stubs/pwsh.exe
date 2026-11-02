@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# The CI stand-in for the restore shell (E1.S2 decision 12): `pwsh.exe -File <script> ...` starts the operator's server, a stub
+# container named $R9700_STUB_PROD (default vllm; the stub cannot know PROD_CONTAINER). A server that already runs is not started twice.
+# It prints seven lines, so the caller's "last five" is visible.
+set -u
+# shellcheck source=tests/stubs/stub_common.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/stub_common.sh"
+stub_log pwsh.exe "$@"
+stub_mode_if_asked
+
+name="${R9700_STUB_PROD:-vllm}"
+stub_alive "$R9700_STUB_DIR/containers/$name.pid" || stub_container_start "$name"
+for i in 1 2 3 4 5 6 7; do printf 'stub-restore-%s\r\n' "$i"; done
+exit 0

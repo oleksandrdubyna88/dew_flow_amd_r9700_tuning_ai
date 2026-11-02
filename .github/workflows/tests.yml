@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests · static · leftovers · plans
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # The shared rules' tools (the leftovers guard, the plan check) need their locked dependencies.
+      - name: Install the shared tools
+        run: npm ci --ignore-scripts --prefix .agents/conventions
+      - name: Install pytest
+        run: python -m pip install -r tests/requirements.txt
+      # One runner for every Python and bash test; one worker. No throttling here: a CI runner has nobody at it.
+      - name: Tests
+        run: node tests/run.mjs
+      - name: Static checks
+        run: bash tests/check_static.sh
+      # The token r9700 is a row of the `## Tokens` table of the shared rule at the pinned version.
+      - name: Test leftovers guard
+        run: node .agents/conventions/tools/leftovers-check.mjs --repo . --token r9700 --identity "the R9700 vLLM tuning toolkit" --profile node
+      - name: Plan lifecycle
+        run: node .agents/conventions/tools/plan-lifecycle.mjs
+      # POST_DEPLOY.md: shape only here (nothing is run); the items are run by the operator against the toolkit on the R9700 PC.
+      - name: Post-deploy checklist shape
+        run: node .agents/conventions/tools/post-deploy-check.mjs

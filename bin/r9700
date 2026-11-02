@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
+# verdict (E1.S3: the arm-round records of a series and the ship test read back from them).
+#
+# Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
+# marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
+# exists, to restore first, and releases it before it reads.
+#
+# Exit codes (the table with the stderr line of each is in research/architecture.md; README.md lists them too):
+#   0 ok
+#   1 verdict: at least one arm is INCOMPLETE (verdict.py's own code)
+#   2 config or arguments refused; a series refused to go on (the identity changed, no fingerprint over records); verdict input error
+#   4 another run holds the lock
+#   5 the restore did not become ready
+#   6 the deadline stopped the step, or the worker said nothing more fits
+#   7 the step failed MAX_FAILED_TRIES times
+#   8 not quiet before the deadline, or admitted MAX_SERVER_STOPS times (each admission stops the operator's server)
+#   9 the disk gate stopped the run
+#   10 init found a problem
+#   11 the recovery marker cannot be read
+#   129 interrupted by HUP, cleanup done
+#   130 interrupted by INT, cleanup done
+#   143 interrupted by TERM, cleanup done
+set -u
+R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=lib/config.sh
+source "$R9700_ROOT/lib/config.sh" || exit 2
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series; do
+  # shellcheck source=/dev/null
+  source "$R9700_ROOT/lib/$_lib.sh" || exit 2
+done
+
+# model_resolve [<file, or name of models/<name>.env>]: prints the model file; 2 with one line when it is none
+model_resolve() {
+  local arg="${1:-}"
+  local -a files=()
+  if [ -n "$arg" ]; then
+    if [[ $arg == */* || $arg == *.env ]]; then
+      [ -f "$arg" ] && { printf '%s\n' "$arg"; return 0; }
+      echo "r9700: model file \"$arg\" not found" >&2
+      return 2
+    fi
+    [ -f "$R9700_ROOT/models/$arg.env" ] && { printf '%s\n' "$R9700_ROOT/models/$arg.env"; return 0; }
+    echo "r9700: model \"$arg\" not found; legal: $(cd "$R9700_ROOT/models" && ls ./*.env 2> /dev/null | sed -e 's|^\./||' -e 's|\.env$||' | tr '\n' ' ' | sed 's/ $//')" >&2
+    return 2
+  fi
+  files=("$R9700_ROOT"/models/*.env)
+  if [ "${#files[@]}" -eq 1 ] && [ -f "${files[0]}" ]; then printf '%s\n' "${files[0]}"; return 0; fi
+  echo "r9700: several models in models/ (or none): name one with --model <file or name>" >&2
+  return 2
+}
+
+# model_arg <verb> <args...>: checks the SYNTAX of the arguments and prints the value of `--model <value>` (the only legal argument), or
+# nothing. The model itself is resolved later, after the lock and the restore (a refused model must not leave a marker unrestored).
+model_arg() {
+  local verb="$1" value=""
+  shift
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --model)
+        if [ "$#" -lt 2 ]; then echo "r9700: $verb: --model needs a value" >&2; return 2; fi
+        value="$2"
+        shift 2
+        ;;
+      *) echo "r9700: $verb: unknown argument \"$1\"; legal: --model <file or name>" >&2; return 2 ;;
+    esac
+  done
+  printf '%s\n' "$value"
+}
+
+verb_commands() {
+  declare -F | awk '{ print $3 }' | grep '^verb_' | sed 's/^verb_//' | LC_ALL=C sort
+}
+
+# init_line <check:> <text>: prints `init: <check>: <text>`. The label carries its own colon: a label that is a bare word of an
+# executable ("wslc") would be a command word to tests/check_static.sh --seam, which keeps those words in lib/adapter.sh. init_problem
+# prints the same line to stderr too and counts it in INIT_PROBLEMS.
+init_line() {
+  printf 'init: %s %s\n' "$1" "$2"
+}
+
+init_problem() {
+  INIT_PROBLEMS=$((INIT_PROBLEMS + 1))
+  printf 'init: %s %s\n' "$1" "$2"
+  printf 'init: %s %s\n' "$1" "$2" >&2
+}
+
+# init_adapter_problem <rc> <message>: the text of a failed adapter call; 124 and 137 say the ceiling ended it
+init_adapter_problem() {
+  local rc="$1" text="$2" ceiling
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+    ceiling="$(ceil_seconds "$(t_ceiling 60)")"
+    printf 'timeout after %s s' "$ceiling"
+  else
+    printf '%s' "${text%%$'\n'*}"
+  fi
+}
+
+init_check_dirs() {
+  if mkdir -p "$R9700_RESULTS_DIR" 2> /dev/null && [ -w "$R9700_RESULTS_DIR" ]; then init_line "results dir:" ok
+  else init_problem "results dir:" "cannot make or write $R9700_RESULTS_DIR"; fi
+  if [ -d "$(state_dir)" ] && [ -w "$(state_dir)" ]; then init_line "state dir:" ok
+  else init_problem "state dir:" "$(state_dir) is not a writable directory"; fi
+}
+
+init_check_telemetry() {
+  local out rc
+  out="$(win_ram_mb 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then init_line "ram telemetry:" "ok ($out MB)"
+  elif [[ $out == 'adapter: unreadable answer '* ]]; then init_problem "ram telemetry:" "unreadable (${out#adapter: unreadable answer })"
+  else init_problem "ram telemetry:" "$(init_adapter_problem "$rc" "$out")"; fi
+  if [ "$R9700_DISK_GATE" != on ]; then init_line "disk telemetry:" "skipped (DISK_GATE=off)"; return 0; fi
+  out="$(win_disk_newest 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then init_line "disk telemetry:" "ok (record $out)"
+  elif [[ $out == 'adapter: unreadable answer '* ]]; then init_problem "disk telemetry:" "unreadable (${out#adapter: unreadable answer })"
+  else init_problem "disk telemetry:" "$(init_adapter_problem "$rc" "$out")"; fi
+}
+
+# init_check_containers: wslc answers; the operator's server; every leftover prefixed container is stopped and named
+init_check_containers() {
+  local listing rc name
+  local -a stopped=()
+  listing="$(wslc_list 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then init_problem "wslc:" "$(init_adapter_problem "$rc" "$listing")"; return 0; fi
+  init_line "wslc:" ok
+  if grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing"; then init_line "$R9700_PROD_CONTAINER:" running; else init_line "$R9700_PROD_CONTAINER:" "not running"; fi
+  while read -r name; do
+    [[ -n $name && $name == "$R9700_CONTAINER_PREFIX"* ]] || continue
+    if wslc_stop "$name"; then stopped+=("$name"); else init_problem "leftover containers:" "$name did not stop"; fi
+  done <<< "$listing"
+  if [ "${#stopped[@]}" -gt 0 ]; then init_line "leftover containers:" "stopped ${stopped[*]}"; else init_line "leftover containers:" none; fi
+}
+
+verb_init() {
+  local arg model rc
+  INIT_PROBLEMS=0
+  arg="$(model_arg init "$@")" || exit 2
+  lock_take init || exit $?
+  restore_first
+  restore_dirs_prune 10
+  model="$(model_resolve "$arg")" || exit 2
+  config_load "${R9700_MACHINE_ENV:-./machine.env}" "$model" || exit 2
+  init_line "config:" ok
+  init_check_dirs
+  init_check_containers
+  init_check_telemetry
+  [ "$INIT_PROBLEMS" -eq 0 ]
+  rc=$?
+  [ "$rc" -eq 0 ] || exit 10
+}
+
+# verdict <outdir> [--base <arm>] [--no-quality] [--json <file>]: the ship test over the final records of a series (lib/series.sh). It takes the
+# lock only when a marker exists, to restore first, and releases it before it reads; its arguments are checked after that restore.
+verb_verdict() {
+  if [ -f "$(marker_path)" ]; then
+    lock_take verdict || exit $?
+    restore_first
+    lock_release
+  fi
+  series_verdict "$@"
+  exit $?
+}
+
+# prepare_run: what `supervise` calls after the restore-first: resolves the model named in _R9700_MODEL_ARG and loads the config (2 and its
+# `config:` lines when refused)
+prepare_run() {
+  local model
+  model="$(model_resolve "$_R9700_MODEL_ARG")" || return 2
+  config_load "${R9700_MACHINE_ENV:-./machine.env}" "$model"
+}
+
+_STEP_USAGE="r9700: step: usage: step [--show-deadline] [--model <file or name>] <label> -- <command...>"
+
+# verb_step [--show-deadline] [--model <file or name>] <label> -- <command...>: ONE guarded step (lib/step.sh) under `supervise`. The arguments
+# are checked before the lock and the restore. --show-deadline prints T_END and T_STOP (epoch seconds) and `START=ok` or `START=refused (<why>)`
+# and stops: it reads, it takes no lock, and it exits 0 whenever the config loads.
+verb_step() {
+  local show=0 label
+  _R9700_MODEL_ARG=""
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --show-deadline) show=1; shift ;;
+      --model)
+        if [ "$#" -lt 2 ]; then echo "r9700: step: --model needs a value" >&2; exit 2; fi
+        _R9700_MODEL_ARG="$2"
+        shift 2
+        ;;
+      -*) echo "r9700: step: unknown option \"$1\"; legal: --show-deadline, --model" >&2; exit 2 ;;
+      *) break ;;
+    esac
+  done
+  label="${1:-}"
+  if [ -z "$label" ]; then echo "$_STEP_USAGE" >&2; exit 2; fi
+  if ! [[ $label =~ $_STEP_LABEL_RE ]]; then echo "r9700: step: the label \"$label\" is not $_STEP_LABEL_RE" >&2; exit 2; fi
+  shift
+  if [ "$show" -eq 1 ]; then
+    prepare_run || exit 2
+    deadline_compute --quiet
+    if [ -z "$T_END" ]; then echo "r9700: step: the deadline cannot be computed (see the line above)" >&2; exit 2; fi
+    printf 'T_END=%s\nT_STOP=%s\n' "$T_END" "$T_STOP"
+    if [ -z "$DEADLINE_WHY" ]; then echo "START=ok"; else echo "START=refused ($DEADLINE_WHY)"; fi
+    exit 0
+  fi
+  if [ "${1:-}" != -- ] || [ "$#" -lt 2 ]; then echo "$_STEP_USAGE" >&2; exit 2; fi
+  shift
+  supervise step prepare_run step_run "$label" -- "$@"
+  exit $?
+}
+
+_SERIES_USAGE="r9700: series: usage: series <model file or name> <arm>... [--out <name>] [--rounds <1..20>] [--dry-run]"
+_SERIES_OUT_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+# series_args <args...>: checks the SYNTAX of a `series` command line (before the lock and the restore) and sets _R9700_MODEL_ARG, _SERIES_ARMS,
+# _SERIES_OUT, _SERIES_ROUNDS and _SERIES_DRY; 2 with one `r9700: series:` line. Whether an arm is in the arm table is checked later, with the config.
+series_args() {
+  local base arm
+  _R9700_MODEL_ARG="" _SERIES_ARMS=() _SERIES_OUT="" _SERIES_ROUNDS=3 _SERIES_DRY=no
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --out)
+        [ "$#" -ge 2 ] || { echo "r9700: series: --out needs a value" >&2; return 2; }
+        _SERIES_OUT="$2"
+        shift 2
+        ;;
+      --rounds)
+        [ "$#" -ge 2 ] || { echo "r9700: series: --rounds needs a value" >&2; return 2; }
+        _SERIES_ROUNDS="$2"
+        shift 2
+        ;;
+      --dry-run) _SERIES_DRY=yes; shift ;;
+      -*) echo "r9700: series: unknown option \"$1\"; legal: --out <name>, --rounds <1..20>, --dry-run" >&2; return 2 ;;
+      *)
+        if [ -z "$_R9700_MODEL_ARG" ]; then _R9700_MODEL_ARG="$1"; else _SERIES_ARMS+=("$1"); fi
+        shift
+        ;;
+    esac
+  done
+  if [ -z "$_R9700_MODEL_ARG" ]; then echo "$_SERIES_USAGE" >&2; return 2; fi
+  if [ "${#_SERIES_ARMS[@]}" -eq 0 ]; then echo "r9700: series: at least one arm is needed ($_SERIES_USAGE)" >&2; return 2; fi
+  [[ $_SERIES_ROUNDS =~ ^([1-9]|1[0-9]|20)$ ]] || { echo "r9700: series: --rounds \"$_SERIES_ROUNDS\" is not a whole number from 1 to 20" >&2; return 2; }
+  for arm in "${_SERIES_ARMS[@]}"; do
+    [[ $arm =~ $_RE_ARM ]] || { echo "r9700: series: \"$arm\" is not an arm name (lower-case letters and digits only)" >&2; return 2; }
+    [ "$(printf '%s\n' "${_SERIES_ARMS[@]}" | grep -cxF -- "$arm")" -eq 1 ] || { echo "r9700: series: the arm \"$arm\" is given twice" >&2; return 2; }
+  done
+  if [ -z "$_SERIES_OUT" ]; then
+    base="${_R9700_MODEL_ARG##*/}"
+    _SERIES_OUT="${base%.env}" # no date (A23): the same command resumes on another day
+  fi
+  [[ $_SERIES_OUT =~ $_SERIES_OUT_RE ]] || { echo "r9700: series: --out \"$_SERIES_OUT\" is not a name (letters, digits, . _ -; starting with a letter or digit; at most 64)" >&2; return 2; }
+}
+
+# series_prepare: what `supervise` calls after the restore-first: the model and the machine config, the arm table, the arms of the command line
+# (in the table, mounts present, a container name that fits for the longest label: <arm>-<round>-r2)
+series_prepare() {
+  local arm
+  prepare_run || return 2
+  arms_load "$(series_arms_conf)" || return 2
+  arms_check "${_SERIES_ARMS[@]}" || return 2
+  for arm in "${_SERIES_ARMS[@]}"; do container_name "sp-$arm-$_SERIES_ROUNDS-r2" > /dev/null || return 2; done
+}
+
+# series_body: the body of `supervise`: the fingerprint (a refused resume stops here, before anything is stopped), the dry run, the resume count,
+# the checks of round 1, then the series as ONE step of the supervisor
+series_body() {
+  local outdir="$R9700_RESULTS_DIR/$_SERIES_OUT" left recorded
+  echo "series: outdir $outdir"
+  if [ "$_SERIES_DRY" = yes ]; then
+    series_fingerprint "$outdir" "$_SERIES_ROUNDS" dry "${_SERIES_ARMS[@]}" || return 2
+    series_dry_run "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}"
+    return $?
+  fi
+  series_fingerprint "$outdir" "$_SERIES_ROUNDS" real "${_SERIES_ARMS[@]}" || return 2
+  series_quality_sync "$outdir"
+  left="$(series_left "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}")"
+  if [ "$left" -eq 0 ]; then
+    recorded="$(series_recorded "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}")"
+    echo "series: $recorded of $((_SERIES_ROUNDS * ${#_SERIES_ARMS[@]})) arm-rounds recorded, nothing to do"
+    return 0
+  fi
+  series_preflight "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}" || return 2
+  step_run series -- bash "$R9700_ROOT/lib/series.sh" "$outdir" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}"
+}
+
+# verb_series <model> <arm>... [--out <name>] [--rounds <n>] [--dry-run]: the arms alternate inside each round, every arm-round is recorded only
+# when it is complete (lib/series.sh), and the same command again resumes. One supervisor, one step: the operator's server is stopped once and
+# restored once.
+verb_series() {
+  series_args "$@" || exit 2
+  supervise series series_prepare series_body
+  exit $?
+}
+
+main() {
+  local verb="${1:-}"
+  if [ -z "$verb" ] || [[ ! $verb =~ ^[a-z]+$ ]] || ! declare -F "verb_$verb" > /dev/null; then
+    echo "r9700: unknown verb \"$verb\"; legal: $(verb_commands | tr '\n' ' ' | sed 's/ $//')" >&2
+    exit 2
+  fi
+  shift
+  "verb_$verb" "$@"
+}
+
+# run only when executed: tests/test_lifecycle.sh sources this file to call a verb function directly
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
