@@ -547,6 +547,49 @@ t_u14g_a_term_during_a_hanging_container_list_ends_the_verb_at_once() {
   unhang_all
 }
 
+# ---- U13c-e: an activation that fails half way leaves the machine as it found it -----------------------------------------------------------------
+
+# state_of_exchange: every file of the exchange folder with its bytes' hash (the part files included), for "nothing changed" checks
+state_of_exchange() { (cd "$EX/merged" 2> /dev/null && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum); }
+
+t_u13c_a_swap_that_fails_removes_its_parts_and_refuses_and_changes_nothing() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  two_merges || return
+  mkdir -p "$EX/merged/$NAME" # the active file's name is a folder: the rename of the part cannot succeed
+  local before
+  before="$(state_of_exchange)"
+  assert_exit 2 "activate when the swap fails" -- mv_verb activate "$MOE_MODEL" "$S1" --out m
+  assert_contains "$ERR" "moe-tune: activate: cannot move" "the refusal says which step failed"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- file remains (the config part and the activate.env part are removed)"
+  assert_missing "$EX/merged/activate.env" "activate.env was not written: it says nothing false"
+  assert_eq "$before" "$(state_of_exchange)" "the exchange folder is as it was"
+}
+
+t_u13d_an_activate_env_that_cannot_be_written_puts_the_previous_file_back_and_refuses() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  two_merges || return
+  mv_verb activate "$MOE_MODEL" "$S1" --out m > /dev/null 2>&1 || return
+  rm -f "$EX/merged/activate.env"
+  mkdir "$EX/merged/activate.env" # the rename of activate.env.part onto it cannot succeed, AFTER the config was swapped
+  assert_exit 2 "activate whose activate.env step fails" -- mv_verb activate "$MOE_MODEL" "$S2" --out m
+  assert_contains "$ERR" "activate.env" "the refusal names it"
+  assert_exit 0 "the previous file is back: the active file has the FIRST record's bytes" -- cmp "$OUTD/merged/$S1/$NAME" "$EX/merged/$NAME"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- file remains"
+  assert_eq "1" "$(ls "$EX/merged/previous" | wc -l | tr -d ' ')" "the kept copy is still there (never deleted)"
+}
+
+t_u13e_the_same_failure_with_nothing_active_before_leaves_nothing_active() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  two_merges || return
+  mkdir -p "$EX/merged/activate.env"
+  assert_exit 2 "a first activation whose activate.env step fails" -- mv_verb activate "$MOE_MODEL" "$S1" --out m
+  assert_missing "$EX/merged/$NAME" "no file is active: the swap was undone (there was no previous file)"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- file remains"
+}
+
 t_u15_activate_refuses_a_stamp_that_is_not_a_record() {
   mv_setup "$FUNCNAME"
   wslc stop vllm > /dev/null

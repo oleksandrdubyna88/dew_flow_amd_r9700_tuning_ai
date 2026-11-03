@@ -249,7 +249,7 @@ def test_a_chunk_env_that_is_not_the_grammar_is_refused_never_executed(tmp_path)
     assert code == 2
     assert f"merge: {chunk / 'chunk.env'}:1: not KEY=value" in err.splitlines()
     chunk2 = chunk_dir(tmp_path, "c2", B1, "1", env='KEYS="1 x"\n')
-    assert "is not a list of positive integers" in run(["merge", "--out", tmp_path / "m", chunk2])[2]
+    assert "is not a list of whitespace-separated batch sizes" in run(["merge", "--out", tmp_path / "m", chunk2])[2]
 
 
 def test_a_chunk_env_without_keys_is_refused_so_the_promise_cannot_be_a_no_op(tmp_path):
@@ -475,7 +475,7 @@ def test_check_refuses_a_key_list_that_is_not_batch_sizes(tmp_path):
     chunk = fixture_file(chunk_dir(tmp_path, "c", B1, "1"))
     code, out, err = run(["check", "--keys", "1 x", chunk])
     assert code == 2
-    assert '--keys "1 x" is not a list of positive integers' in err
+    assert '--keys "1 x" is not a list of whitespace-separated batch sizes, e.g. "8 16 24"' in err
 
 
 # ---- M16: the catalogue ------------------------------------------------------------------------------------------------------------------------------------
@@ -486,3 +486,30 @@ def test_every_command_has_a_covered_row_in_the_flow_catalogue():
     for command, found in rows.items():
         assert found, f"lib/merge_moe.py {command} has no row in research/module_tests.md"
         assert all("covered" in row for row in found), command
+
+
+class FakeStat:
+    """What `Path('/proc/<pid>/stat')` is in proc_ticks: an object whose read_text gives a scripted line."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def read_text(self):
+        return self.text
+
+
+def test_proc_ticks_reads_field_22_after_the_last_bracket_and_knows_nothing_from_an_unreadable_line(monkeypatch):
+    """An owner whose /proc line cannot be read is 'not known' (None), which the sweep already refuses safely: never an exception out of the sweep."""
+    module = load_module()
+    fields = ["S"] + [str(n) for n in range(1, 40)]  # after the name: field 3 is the state, field 22 is the 20th word (index 19)
+    line = "123 (a name) with) brackets) " + " ".join(fields) + "\n"
+    cases = {
+        line: fields[19],
+        "123 (a name) " + "  ".join(fields) + "\n": fields[19],  # a doubled space must not shift the fields
+        "123 (short) S 1 2\n": None,  # fewer fields than 22
+        "123 no bracket at all": None,
+        "": None,
+    }
+    for text, want in cases.items():
+        monkeypatch.setattr(module, "Path", lambda _path, text=text: FakeStat(text))
+        assert module.proc_ticks(1) == want, repr(text)

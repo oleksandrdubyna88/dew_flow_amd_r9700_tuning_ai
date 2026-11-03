@@ -30,6 +30,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lib/moekeys.py beside this file (`python3 -I` does not put the script's folder on the path)
+import moekeys  # noqa: E402
+
 # The fields every config must hold; more are allowed (`waves_per_eu`, `SPLIT_K`). Typed once: merge_moe.py line 12 of the published script.
 FIELDS = frozenset({"BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "GROUP_SIZE_M", "num_warps", "num_stages"})
 IDENTITY = ("IMAGE", "MODEL_DIR", "DTYPE", "LAYER")  # the words of chunk.env that must be equal between chunks
@@ -57,11 +60,11 @@ class Source:
 
 # ---------- reading one file ----------
 def key_list(text, what):
-    """The batch sizes of an argument, as a sorted list without repeats; anything else is a refusal."""
-    words = text.split()
-    if not words or not all(KEY.fullmatch(word) for word in words):
-        raise InputError(f'{what} "{text}" is not a list of positive integers')
-    return sorted({int(word) for word in words})
+    """The batch sizes of an argument, sorted (the grammar is lib/moekeys.py's, shared by both programs); anything else is a refusal."""
+    try:
+        return moekeys.key_list(text, what)
+    except moekeys.KeyListError as error:
+        raise InputError(str(error)) from None
 
 
 def pairs_hook(duplicates):
@@ -216,12 +219,12 @@ def merged_text(sources):
 
 # ---------- the write ----------
 def proc_ticks(pid):
-    """Field 22 of /proc/<pid>/stat (the start time), cut after the LAST `)` because the command name may hold one; None when there is no such process."""
+    """Field 22 of /proc/<pid>/stat (the start time), cut after the LAST `)` because the command name may hold one; None when there is no such process or the line cannot be read."""
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
+        return stat[stat.rindex(")") + 2:].split()[19]
+    except (OSError, IndexError, ValueError):  # gone, or a line that cannot be read: not known, which the sweep refuses safely
         return None
-    return stat[stat.rindex(")") + 2:].split(" ")[19]
 
 
 def claim_owner(claim):

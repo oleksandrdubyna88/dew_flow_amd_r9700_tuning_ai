@@ -21,10 +21,12 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # lib/moekeys.py beside this file (`python3 -I` does not put the script's folder on the path)
+import moekeys  # noqa: E402
+
 ARMS = ("default", "tuned")
 PAIR = re.compile(r"Batch size: (\d+), config: (.*)\nKernel time: ([\d.]+) us")  # moe_kernel_ab.py line 14 of the published script
 KERNEL_TIME = re.compile(r"Kernel time: [0-9]+(?:\.[0-9]+)? us")
-KEY = re.compile(r"[1-9][0-9]*")
 HEADER = "bs  default_us  tuned_us  change   (median of reps)"
 HUNDRED = Decimal(100)
 
@@ -35,11 +37,11 @@ class InputError(Exception):
 
 # ---------- reading ----------
 def key_list(text, what):
-    """The batch sizes of an argument, sorted and without repeats (merge_moe.py has the same function: the two files stand alone)."""
-    words = text.split()
-    if not words or not all(KEY.fullmatch(word) for word in words):
-        raise InputError(f'{what} "{text}" is not a list of positive integers')
-    return sorted({int(word) for word in words})
+    """The batch sizes of an argument, sorted (the grammar is lib/moekeys.py's, shared by both programs); anything else is a refusal."""
+    try:
+        return moekeys.key_list(text, what)
+    except moekeys.KeyListError as error:
+        raise InputError(str(error)) from None
 
 
 def read_log(path):

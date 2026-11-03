@@ -13,7 +13,7 @@
 //
 // A process cap (2026-11-02: a test shim that exec'd itself forked about 15,900 processes and crashed the session): every test file runs under
 // `ulimit -u <cap>`, the cap being the user's thread count at the start of the run (Linux counts THREADS of the whole user against RLIMIT_NPROC) plus
-// R9700_TEST_NPROC_HEADROOM (default 3000). The runner also watches the file's session: when its threads come within 10 % of the headroom it reports
+// R9700_TEST_NPROC_HEADROOM (default 3000). The runner also watches the file's session: when its threads reach half of the headroom (the rest of the user's processes may grow while the file runs, so the kernel limit can come first) it reports
 // `process cap reached (<cap>): a test forks without end`, ends the whole session (stopped first, then killed, round after round) and the file FAILS. Only
 // the file's own session is ever signalled.
 //
@@ -158,7 +158,7 @@ function runChild(command, args, env, ceilingMs = FILE_CEILING_MS, limits = null
       resolve({ code, signal, pid: child.pid, ticks, capHit });
     };
     const watcher = limits ? setInterval(() => {
-      if (settled || capHit || sessionThreads(child.pid) < limits.headroom * 0.9) return;
+      if (settled || capHit || sessionThreads(child.pid) < limits.headroom * 0.5) return;
       capHit = true;
       console.log(`  process cap reached (${limits.cap}): a test forks without end`);
       killSessionHard(child.pid, ticks);

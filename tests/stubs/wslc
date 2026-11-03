@@ -45,7 +45,7 @@ moe_foreground() {
   if [ "$MOE_KIND" = clear ] && [ -f "$R9700_STUB_DIR/moe_clear_mode" ]; then stub_mode_apply "$(cat "$R9700_STUB_DIR/moe_clear_mode")"; fi
   if [ "$MOE_KIND" = clear ]; then
     if [ -f "$R9700_STUB_DIR/answers/moe_cache" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_cache"; else printf '1.3G\t/root/.cache/vllm/triton-moe-tune%s\n' "$CRLF"; fi
-    return 0
+    return "$(moe_answer moe_clear_rc 0)" # answers/moe_clear_rc: the exit code of the clear container (default 0)
   fi
   moe_bench "$name" "$@"
 }

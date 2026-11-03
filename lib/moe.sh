@@ -19,6 +19,9 @@
 # own (never appended to), ab.env, summary.txt and decision.txt, final only when every log holds one kernel time per key and every tuned log shows
 # the activated file loaded. The exchange folder $R9700_WORK_DIR/r9700/moe/<model>/tune/<chunk>/ is scratch: deleted and made again before every run.
 #
+# The A/B prints `  ab rep <r>/<n>: <arm>` before each container, a chunk `  chunk <name>: running <m> min` every 5 production minutes (a heartbeat fork, ended
+# when the container call returns; the argv and chunk.log are untouched). A failed cache clear before a unit refuses it (KIND=refused); the hook's stays best-effort.
+#
 # Exit codes: 0 done (recorded, or already recorded); 1 the unit failed (a rejected record, or the disk gate: KIND=disk_gate; or the stop time came:
 # KIND=deadline, and the part stays for the next start's sweep); 2 refused (KIND=refused when the identity check or the layer refuses: the supervisor
 # stops at once; a bad argument is a plain 2 with one `moe:` line). No exit 3 or 4: the supervisor waits for quiet before every admission and a unit is
@@ -68,6 +71,14 @@ moe_cache_clear() {
     echo "cache clear failed (code $rc): ${lines[0]:-no output}; going on"
   fi
   return "$rc"
+}
+
+# _moe_clear_before_unit: the cache clear before a unit. A failed clear refuses the unit (KIND=refused, 2): a stale cache would be measured. The exit-path hook
+# (moe_cache_clear called by the supervisor) stays best-effort.
+_moe_clear_before_unit() {
+  moe_cache_clear && return 0
+  _moe_refuse "the Triton cache could not be cleared before the unit (see the line above): a stale cache would be measured"
+  return 2
 }
 
 # ---------- the identity of the placed files (decision 8) ----------
@@ -122,11 +133,12 @@ moe_asset_hashes() {
 # _moe_assets_unchanged: 0 when every placed asset still has the hash taken right after the identity check (_MOE_HASHES), which is what the record
 # names; else 1 and _MOE_REASON names the asset. An edit during a long unit would otherwise give a record with hashes the container did not run with.
 _moe_assets_unchanged() {
-  local name source need key before after
+  local name source need key before after now
+  now="$(moe_asset_hashes)" # ONE pass over the files, not one per row
   while read -r name source need _; do
     key="$(_moe_hash_key "$name")_SHA256"
     before="$(grep -m 1 "^$key=" <<< "$_MOE_HASHES")"
-    after="$(moe_asset_hashes | grep -m 1 "^$key=")"
+    after="$(grep -m 1 "^$key=" <<< "$now")"
     [ "$before" = "$after" ] && continue
     _MOE_REASON="$name changed during the run (${before#*=} -> ${after#*=})"
     return 1
@@ -262,9 +274,24 @@ _moe_chunk_validate() {
   [ -s "$part/chunk.log" ] || { _MOE_REASON="chunk.log is empty"; return 1; }
 }
 
+# _moe_heartbeat <chunk>: a line every 5 PRODUCTION minutes (t_scale 300) while the chunk container runs, to the worker's own output: a full search is hours long
+# and the log would otherwise say nothing. It is a background fork of the worker, ended by the unit when the container call returns; it touches neither the
+# container's argv nor chunk.log. A TERM ends its sleeper with it.
+_moe_heartbeat() {
+  local minutes=0 sleeper=""
+  trap '[ -z "$sleeper" ] || kill "$sleeper" 2> /dev/null; exit 0' TERM
+  while true; do
+    sleep "$(t_scale 300)" 9>&- &
+    sleeper=$!
+    wait "$sleeper"
+    minutes=$((minutes + 5))
+    echo "  chunk $1: running $minutes min"
+  done
+}
+
 # moe_chunk_unit <outdir> <model> <chunk> <layer> <search> <keys...>
 moe_chunk_unit() {
-  local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc valid
+  local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc valid heartbeat
   local -a keys=() argv=() extra=()
   shift 5
   keys=("$@")
@@ -274,7 +301,7 @@ moe_chunk_unit() {
   moe_identity_check || return 2
   _MOE_HASHES="$(moe_asset_hashes)"
   _moe_disk_gate || return 1
-  moe_cache_clear
+  _moe_clear_before_unit || return 2
   part="$outdir/chunks/$chunk.part-$RUN_ID"
   mkdir -p "$outdir/chunks" && mkdir "$part" || { echo "moe: $part cannot be made"; return 1; }
   tune="$(moe_exchange_dir "$model")/tune/$chunk"
@@ -290,8 +317,12 @@ moe_chunk_unit() {
   name="$(container_name "moe-tune-$chunk")" || return 2
   started="$(_moe_iso)"
   t0="$(date +%s 9>&-)"
+  _moe_heartbeat "$chunk" 9>&- &
+  heartbeat=$!
   wslc_run_once "$R9700_MOE_CHUNK_MAX_S" --name "$name" "${argv[@]}" > "$part/chunk.log"
   rc=$?
+  kill "$heartbeat" 2> /dev/null
+  wait "$heartbeat" 2> /dev/null
   t1="$(date +%s 9>&-)"
   finished="$(_moe_iso)"
   if [ "$rc" -ne 0 ] && _moe_stop_came; then _moe_deadline "chunk $chunk"; return 1; fi
@@ -402,6 +433,7 @@ _moe_ab_containers() {
   shift 6
   for ((rep = 1; rep <= reps; rep++)); do
     for arm in default tuned; do
+      echo "  ab rep $rep/$reps: $arm"
       _moe_disk_gate || return 1
       _moe_ab_arm_envs extra "$arm" "$afolder" "$bfolder"
       moe_argv argv extra ab "$layer" "$model" "" "$@" || return 1
@@ -415,7 +447,7 @@ _moe_ab_containers() {
 
 # moe_ab_unit <outdir> <model> <layer> <rule> <rule keys> <reps> <keys>
 moe_ab_unit() {
-  local outdir="$1" model="$2" layer="$3" rule="$4" rule_keys="$5" reps="$6" keys="$7" stamp part dest n=1 started finished decision rc bfolder bfile bpath bsha valid
+  local outdir="$1" model="$2" layer="$3" rule="$4" rule_keys="$5" reps="$6" keys="$7" stamp part dest n=1 started finished decision rc bfolder bfile bpath bsha valid kernel_lines
   local -a keylist=()
   read -r -a keylist <<< "$keys"
   echo "=== $(_moe_iso) ab ($layer, rule $rule over $rule_keys, $reps reps, keys $keys)"
@@ -427,7 +459,7 @@ moe_ab_unit() {
   _MOE_HASHES="$(moe_asset_hashes)"
   bpath="$(moe_exchange_dir "$model")/merged/$bfile"
   bsha="$(_moe_sha "$bpath")" # the activated file as the containers will read it; checked again after the run
-  moe_cache_clear
+  _moe_clear_before_unit || return 2
   stamp="$(_moe_stamp)"
   while [ -e "$outdir/ab/$stamp" ] || [ -e "$outdir/ab/$stamp.part-$RUN_ID" ]; do n=$((n + 1)); stamp="$(_moe_stamp)-$n"; done
   part="$outdir/ab/$stamp.part-$RUN_ID"
@@ -453,9 +485,16 @@ moe_ab_unit() {
     echo "ab $stamp: rejected, ${_MOE_REJECTED#"$outdir"/}: decide: $(head -n 1 "$part/decide.err")"
     return 1
   fi
+  # the decision is the line that starts with `KERNEL:`, and there must be exactly one (not "the last line": decide may print more after it)
+  kernel_lines="$(grep -c '^KERNEL:' <<< "$decision")"
+  if [ "$kernel_lines" -ne 1 ]; then
+    moe_reject "$outdir" "ab-$stamp" "$part" "decide: expected exactly one KERNEL: line, got $kernel_lines"
+    echo "ab $stamp: rejected, ${_MOE_REJECTED#"$outdir"/}: decide: expected exactly one KERNEL: line, got $kernel_lines"
+    return 1
+  fi
   rm -f "$part/decide.err"
   printf '%s\n' "$decision" > "$part/summary.txt"
-  printf '%s\n' "${decision##*$'\n'}" > "$part/decision.txt"
+  grep '^KERNEL:' <<< "$decision" > "$part/decision.txt"
   dest="$outdir/ab/$stamp"
   mv -T "$part" "$dest" || { echo "moe: $part cannot become ab/$stamp"; return 1; }
   echo "recorded ab/$stamp"

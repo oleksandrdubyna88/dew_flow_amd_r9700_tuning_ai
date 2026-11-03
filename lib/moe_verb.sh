@@ -260,10 +260,10 @@ _moe_activate_swap() {
   mv -T -- "$part" "$2" 9>&- || { rm -f -- "$part"; echo "moe-tune: activate: cannot move $part onto $2" >&2; return 2; }
 }
 
-# _moe_activate_env <exchange merged folder> <stamp> <name> <sha256> <previous> <forced>: activate.env, written the same way
-_moe_activate_env() {
-  local env="$1/activate.env" part
-  part="$env.part-$(_moe_part_tag)"
+# _moe_activate_env_part <exchange merged folder> <stamp> <name> <sha256> <previous> <forced>: activate.env written to a PART beside it (sets _MOE_ENV_PART), BEFORE
+# the swap, so that the record of the swap is ready and only a rename is left after it. 1 when it cannot be written.
+_moe_activate_env_part() {
+  _MOE_ENV_PART="$1/activate.env.part-$(_moe_part_tag)"
   {
     _moe_env_line STAMP "$2"
     _moe_env_line NAME "$3"
@@ -271,12 +271,22 @@ _moe_activate_env() {
     _moe_env_line PREVIOUS "$5"
     _moe_env_line ACTIVATED_AT "$(_moe_iso)"
     _moe_env_line FORCED "$6"
-  } > "$part" && mv -T -- "$part" "$env"
+  } > "$_MOE_ENV_PART" 2> /dev/null || { rm -f -- "$_MOE_ENV_PART"; return 1; }
+}
+
+# _moe_activate_undo <active file>: the swap is done and the record of it cannot be put in place: the state before is restored. The previous file (kept in
+# previous/) goes back by the same part-and-rename; with no previous file the new one is removed (it is the one this call made). 0 when restored.
+_moe_activate_undo() {
+  local part
+  if [ "$_MOE_PREVIOUS" = none ]; then rm -f -- "$1"; return $?; fi
+  part="$1.part-$(_moe_part_tag)"
+  { cp -p -- "$_MOE_PREVIOUS" "$part" && mv -T -- "$part" "$1"; } 9>&- 2> /dev/null || { rm -f -- "$part"; return 1; }
 }
 
 # moe_activate_verb <outdir> <model> <stamp> <force: yes|no>: the activate mode. The record merged/<stamp>/ must hold one E=*.json; a listed server is a
-# reader and the swap is refused unless forced; stale parts are swept; the active file is kept under previous/; the new one is swapped in atomically;
-# activate.env says what is active. The stamp already active is a no-op. 0, or 2 with one line.
+# reader and the swap is refused unless forced; stale parts are swept; the active file is kept under previous/; activate.env is written to a part; the new file
+# is swapped in atomically; then activate.env is renamed into place. Recoverable: a failed swap removes the parts and changes nothing; a failed rename of
+# activate.env puts the previous file back (or removes the new one when none was active), so the state never says one thing and holds another. The stamp already active is a no-op. 0, or 2 with one line.
 moe_activate_verb() {
   local outdir="$1" model="$2" stamp="$3" force="$4" ex name active sha
   _moe_activate_record "$outdir/merged/$stamp" || return 2
@@ -292,8 +302,17 @@ moe_activate_verb() {
   moe_sweep_part_files "$ex" || return 2
   moe_sweep_part_files "$ex/previous" || return 2
   _moe_activate_keep "$ex" "$name" || { echo "moe-tune: activate: the previous file cannot be kept under $ex/previous" >&2; return 2; }
-  _moe_activate_swap "$_MOE_REC_FILE" "$active" || return 2
-  sha="$(_moe_sha "$active")"
-  _moe_activate_env "$ex" "$stamp" "$name" "$sha" "$_MOE_PREVIOUS" "$_MOE_FORCED" || { echo "moe-tune: activate: activate.env cannot be written" >&2; return 2; }
+  sha="$(_moe_sha "$_MOE_REC_FILE")"
+  _moe_activate_env_part "$ex" "$stamp" "$name" "$sha" "$_MOE_PREVIOUS" "$_MOE_FORCED" || { echo "moe-tune: activate: activate.env cannot be written in $ex" >&2; return 2; }
+  _moe_activate_swap "$_MOE_REC_FILE" "$active" || { rm -f -- "$_MOE_ENV_PART"; return 2; } # a failed swap removes its own part; nothing was changed
+  if ! mv -T -- "$_MOE_ENV_PART" "$ex/activate.env" 9>&- 2> /dev/null; then
+    rm -f -- "$_MOE_ENV_PART"
+    if _moe_activate_undo "$active"; then
+      echo "moe-tune: activate: activate.env cannot be written in $ex; the previous file was put back (${_MOE_PREVIOUS})" >&2
+    else
+      echo "moe-tune: activate: activate.env cannot be written in $ex AND the previous file could not be put back: copy ${_MOE_PREVIOUS} over $active by hand" >&2
+    fi
+    return 2
+  fi
   echo "activated: $active ($stamp, sha256 ${sha:0:12}; previous kept as $_MOE_PREVIOUS)"
 }
