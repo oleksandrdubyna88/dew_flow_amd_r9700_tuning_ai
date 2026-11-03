@@ -279,9 +279,10 @@ t_l12_the_stops_per_invocation_are_bounded_by_real_stops_and_a_refused_admission
   local script
   script="echo x >> '$CASE/busy.count'; printf '9.0 0.40 0.30 1/100 1\\n' > '$CASE/loadavg'; exit 3"
   step_bg --model "$MODEL_35B" t -- bash -c "$script"
-  local run i
+  local run i seen=no
   run="$(run_dir_of)"
-  for i in $(seq 1 200); do grep -q "restoring the operator's server while the PC is not quiet" "$run/supervisor.log" 2> /dev/null && break; sleep 0.05; done
+  for i in $(seq 1 200); do grep -q "restoring the operator's server while the PC is not quiet" "$run/supervisor.log" 2> /dev/null && { seen=yes; break; }; sleep 0.05; done
+  assert_eq "yes" "$seen" "the busy-wait restore showed in the supervisor log (the load turns quiet only after it)"
   set_load 0.5
   step_end
   assert_eq "8" "$SRC" "exit 8"
@@ -294,6 +295,38 @@ t_l12_the_stops_per_invocation_are_bounded_by_real_stops_and_a_refused_admission
   assert_missing "$MARKER_FILE" "no marker stands"
   assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
   assert_eq "not-quiet" "$(cat "$run/status")" "the status is not-quiet (exit 8)"
+  kill_recorded_pids "$CASE"
+}
+
+# review item (E3.S2): MAX_SERVER_STOPS no longer charges an admission that finds the server down, and an exit 3 is not a failed try, so a worker that exits 3 again and again on a
+# quiet PC (its own gate and the supervisor's quiet check disagree) had no bound but the deadline. The per-step bound: 3 x MAX_FAILED_TRIES repeats, or R9700_MAX_WAIT_REPEATS
+# (a test knob, the environment only); past it the step ends with exit 8 and its own line.
+t_l12c_a_worker_that_exits_3_again_and_again_on_a_quiet_pc_is_bounded_per_step() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_RUN_MINUTES=11 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60 MAX_FAILED_TRIES=1
+  export R9700_TIME_SCALE=25
+  prod_running
+  assert_exit 8 "a worker that always exits 3, MAX_FAILED_TRIES=1: the default bound is 3 repeats" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" exit3
+  assert_eq "r9700: t waited 4 times (worker exit 3), limit 3" "$ERR" "the step's own line (the fourth exit 3 is past the bound of three)"
+  assert_eq "4" "$(wc -l < "$STUB/worker.calls" | tr -d ' ')" "the worker ran four times, not until the deadline"
+  assert_eq "1" "$(count_calls wslc stop)" "the server was stopped once"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "and restored once, by the cleanup"
+  assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
+  assert_eq "not-quiet" "$(cat "$(run_dir_of)/status")" "the status is not-quiet (exit 8)"
+  kill_recorded_pids "$CASE"
+}
+
+t_l12d_the_wait_bound_is_a_knob_and_a_bad_knob_is_refused() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_RUN_MINUTES=11 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60
+  export R9700_TIME_SCALE=25
+  prod_running
+  R9700_MAX_WAIT_REPEATS=1 assert_exit 8 "R9700_MAX_WAIT_REPEATS=1" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" exit3
+  assert_eq "r9700: t waited 2 times (worker exit 3), limit 1" "$ERR" "the line names the knob's limit"
+  assert_eq "2" "$(wc -l < "$STUB/worker.calls" | tr -d ' ')" "two worker runs"
+  assert_exit 0 "exit3-then-ok stays inside the default bound" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" exit3-then-ok
+  R9700_MAX_WAIT_REPEATS=x assert_exit 2 "a knob that is not a whole number" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_contains "$ERR" "R9700_MAX_WAIT_REPEATS" "named"
   kill_recorded_pids "$CASE"
 }
 

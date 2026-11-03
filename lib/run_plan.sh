@@ -79,10 +79,13 @@ plan_step_kind() {
 
 # plan_parse <file>
 plan_parse() {
-  local file="$1" line text n=0 bad=0
+  local file="$1" line text n=0 bad=0 bytes
   local -a words=()
   _PLAN_LINES=() _PLAN_TEXT=() _PLAN_KIND=() _PLAN_SHA=""
-  _PLAN_SHA="$(sha256sum -- "$file" 2> /dev/null | cut -d' ' -f1)"
+  # the file is read ONCE: the hash and the lines are of the same bytes (a file edited between a hash and a second read would run one plan and record another)
+  bytes="$(cat -- "$file" 2> /dev/null; printf x)"
+  bytes="${bytes%x}"
+  _PLAN_SHA="$(printf '%s' "$bytes" | sha256sum | cut -d' ' -f1)"
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     text="${line#"${line%%[![:space:]]*}"}"
@@ -101,7 +104,7 @@ plan_parse() {
     _PLAN_LINES+=("$n")
     _PLAN_TEXT+=("$text")
     _PLAN_KIND+=("$_PLAN_STEP_KIND")
-  done < "$file"
+  done <<< "$bytes"
   if [ "$bad" -eq 0 ] && [ "${#_PLAN_TEXT[@]}" -eq 0 ]; then
     printf 'r9700: run: %s: no step\n' "$file" >&2
     return 2

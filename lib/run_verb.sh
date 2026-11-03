@@ -12,7 +12,7 @@
 #   run_body                           the body of `supervise`: the chain (decision 5); run.txt records every state change (run_record_write, lib/run_guarded.sh)
 #
 # Test knobs (the environment only, never machine.env): R9700_TEST_RUN_HOLD_S, a pause (a whole or decimal number of seconds, a signal ends it at once) at a step boundary, after
-# <run dir>/hold-<k> is made: the only way a test can send a signal BEFORE the first step or BETWEEN two steps without a race; R9700_TEST_RUN_HOLD_AT limits it to boundary <k>.
+# <run dir>/hold-<k> is made: the only way a test can send a signal BEFORE the first step or BETWEEN two steps without a race; R9700_TEST_RUN_HOLD_AT limits it to one hold, `<k>` or `<k>-end`.
 #
 # THE EXIT CODE OF A CHAIN is the NORMALIZED result of the step that stopped it, never a raw worker code: the body of a step returns what `step_run` returns after
 # `_step_settle` (lib/step.sh) or what the verb itself refuses with. The supervisor's own codes keep their meaning; `run` adds none. The rows (tests/test_run.sh R17 reads
@@ -123,6 +123,8 @@ _run_place() {
 
 run_prepare() {
   local i
+  _RUN_MACHINE_FILE="${R9700_MACHINE_ENV:-./machine.env}"
+  _RUN_MACHINE_SHA="$(_run_machine_sha)"
   for i in "${!_PLAN_TEXT[@]}"; do
     _run_load "$i" && _run_args && "$_RR_PREPARE" && _run_place && continue
     echo "r9700: run: step $((i + 1)) (${_PLAN_TEXT[$i]}) is refused" >&2
@@ -130,7 +132,7 @@ run_prepare() {
   done
 }
 
-# _run_hold <k>: the test knob of the header
+# _run_hold <label>: the test knob of the header; the labels are `<k>` (before step k) and `<k>-end` (after step k's final state is written, before the signal handler is told no step runs)
 _run_hold() {
   [[ ${R9700_TEST_RUN_HOLD_S:-} =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 0
   [ -z "${R9700_TEST_RUN_HOLD_AT:-}" ] || [ "$R9700_TEST_RUN_HOLD_AT" = "$1" ] || return 0
@@ -138,10 +140,22 @@ _run_hold() {
   _rg_sleep "$R9700_TEST_RUN_HOLD_S"
 }
 
+# _run_machine_sha: the sha256 of machine.env as it is now (empty when it cannot be read)
+_run_machine_sha() { sha256sum -- "${_RUN_MACHINE_FILE:?}" 2> /dev/null | cut -d' ' -f1; }
+
+# _run_machine_unchanged: machine.env is read again at every step (prepare_run), and it holds MAX_SERVER_STOPS, PROD_CONTAINER and the RESTORE_* fields the FINAL restore uses: an edit during
+# the night is refused (2) at the next step, before any admission, instead of changing them under a running chain
+_run_machine_unchanged() {
+  [ "$(_run_machine_sha)" = "${_RUN_MACHINE_SHA:-}" ] && return 0
+  echo "r9700: run: $_RUN_MACHINE_FILE changed since the run began (the stop cap, the operator's container and the restore command must not change under a running chain): run it again" >&2
+  return 2
+}
+
 # _run_step <index>: one step with the files of ITS model as they are now: the words, the verb's arguments, a check of the config in a subshell (a failed config_load leaves the
 # loaded config unset, and the cleanup still needs it), the prepare, then the verb's body (the dry flag set first for `run --dry-run`)
 _run_step() {
   _run_load "$1" && _run_args || return 2
+  _run_machine_unchanged || return 2
   ( "$_RR_PREPARE" ) 9>&- || return 2
   "$_RR_PREPARE" || return 2
   [ "${_RUN_DRY:-no}" != yes ] || printf -v "$_RR_DRY" '%s' yes
@@ -162,13 +176,15 @@ run_body() {
     if [ "${_RUN_DRY:-no}" = yes ]; then echo "run: step $k ($text):"; else echo "run: step $k of $n ($text)"; fi
     _run_step "$i"
     rc=$?
-    _RG_RUN_STEP=""
     case $rc in
-      0) run_record_write "$k" done 0; continue ;;
-      2 | 5 | 6 | 7 | 8 | 9) ;;
+      0 | 2 | 5 | 6 | 7 | 8 | 9) ;;
       *) rg_log "step $k returned $rc: counted as a failed step (7)"; rc=7 ;;
     esac
-    run_record_write "$k" stopped "$rc"
+    # the final state FIRST, then the handler is told no step runs: a signal in between finds a final state and leaves it (run_record_interrupt)
+    if [ "$rc" -eq 0 ]; then run_record_write "$k" done 0; else run_record_write "$k" stopped "$rc"; fi
+    _run_hold "$k-end"
+    _RG_RUN_STEP=""
+    [ "$rc" -ne 0 ] || continue
     rg_err "r9700: run: stopped at step $k of $n ($text): $rc"
     return "$rc"
   done

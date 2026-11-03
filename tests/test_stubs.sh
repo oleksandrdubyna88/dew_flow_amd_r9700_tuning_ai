@@ -366,13 +366,14 @@ t_the_stub_harness_writes_as_many_prompt_results_as_answers_prompts_n_says() {
 # a fixed 3 s wait for a TERM it never acts on, against the adapter's 6 s ceiling at the test scale: under load the stop timed out ("admit stopping vllm failed (code 124)").
 t_stopping_a_stub_container_that_ignores_term_takes_a_fraction_of_the_adapters_ceiling() {
   setup_case "$FUNCNAME"
-  local start end elapsed
+  local start end elapsed half
   ( trap '' TERM; wslc run -d --rm --name vllm img > /dev/null )
   start="$(date +%s.%N)"
   assert_exit 0 "wslc stop of a container that ignores TERM" -- wslc stop vllm
   end="$(date +%s.%N)"
   elapsed="$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }')"
-  if awk -v e="$elapsed" 'BEGIN { exit !(e < 1.5) }'; then assert_eq ok ok "it ended in ${elapsed} s, well inside the ceiling of 6 s"; else assert_eq "< 1.5 s" "$elapsed s" "a stop of a TERM-ignoring container waited for a signal it ignores"; fi
+  half="$(awk -v c="$(t_ceiling 60)" 'BEGIN { printf "%.2f", c / 2 }')" # half the adapter's ceiling: the old fixed wait was 3 s and more, the new one is half a second, and a loaded PC has room
+  if awk -v e="$elapsed" -v h="$half" 'BEGIN { exit !(e < h) }'; then assert_eq ok ok "it ended in ${elapsed} s, below half of the adapter's ceiling ($half s)"; else assert_eq "< $half s" "$elapsed s" "a stop of a TERM-ignoring container waited for a signal it ignores"; fi
   assert_eq "0" "$(wslc list | grep -c '^vllm')" "and the container is gone"
   ( trap '' TERM; wslc run -d --rm --name vllm img > /dev/null )
   assert_exit 0 "the adapter's wslc_stop under its real ceiling of this scale" -- wslc_stop vllm

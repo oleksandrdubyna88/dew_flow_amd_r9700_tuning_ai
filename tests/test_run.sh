@@ -100,6 +100,38 @@ t_pg4_every_step_of_the_table_has_its_functions_and_every_refused_verb_is_a_verb
   done
 }
 
+t_pg5_the_plan_hash_is_the_hash_of_the_bytes_that_were_parsed_whatever_the_line_ends() {
+  setup_case "$FUNCNAME"
+  local file="$CASE/pg5.plan" want got
+  printf 'prefixtest m --name a\n\n\n# c' > "$file" # no final newline, blank lines, a last comment
+  want="$(sha256sum "$file" | cut -d' ' -f1)"
+  got="$(source "$REPO/bin/r9700"; plan_parse "$file" && printf '%s|%s' "$_PLAN_SHA" "${#_PLAN_TEXT[@]}")"
+  assert_eq "$want|1" "$got" "plan_parse: the hash is of the file's bytes and the one step is found"
+  printf 'prefixtest m --name a\n\n\n' > "$file"
+  want="$(sha256sum "$file" | cut -d' ' -f1)"
+  got="$(source "$REPO/bin/r9700"; plan_parse "$file" && printf '%s' "$_PLAN_SHA")"
+  assert_eq "$want" "$got" "and with trailing newlines kept"
+}
+
+t_pg6_a_signal_never_overwrites_the_final_state_of_a_step_and_marks_a_running_one_interrupted() {
+  setup_case "$FUNCNAME"
+  RUN_DIR="$CASE/rd"
+  mkdir -p "$RUN_DIR"
+  _PLAN_TEXT=("one" "two")
+  _PLAN_SHA=abc
+  run_record_init "$CASE/x.plan" 2
+  run_record_write 1 running
+  run_record_interrupt 1
+  assert_eq "interrupted -" "$(awk '$1 == 1 { print $2, $3 }' "$RUN_DIR/run.txt")" "a running step is marked interrupted"
+  run_record_write 2 running
+  run_record_write 2 done 0
+  run_record_interrupt 2
+  assert_eq "done 0" "$(awk '$1 == 2 { print $2, $3 }' "$RUN_DIR/run.txt")" "a step whose final state is written stays done"
+  run_record_write 2 stopped 7
+  run_record_interrupt 2
+  assert_eq "stopped 7" "$(awk '$1 == 2 { print $2, $3 }' "$RUN_DIR/run.txt")" "and stays stopped"
+}
+
 # ---- R1: one lifecycle ------------------------------------------------------------------------------------------------------------------------------------------------
 
 t_r1_a_three_step_plan_runs_to_the_end_under_one_lifecycle() {
@@ -433,72 +465,92 @@ r17_one() {
   run_inline "$PLAN" series_body
 }
 
+# one function per row of the mapping comment in lib/run_verb.sh: r17_<row with - as _>; r17_row dispatches (a row without a function is a failure of its own)
+r17_worker_0() {
+  series_body() { step_run series -- "$WORKER" ok; }
+  r17_one
+  assert_eq "0" "$SRC" "worker-0: exit 0"
+  assert_eq "done 0" "$(run_state 1)" "worker-0: run.txt"
+}
+
+r17_worker_3() {
+  series_body() { step_run series -- "$WORKER" exit3-then-ok; }
+  r17_one
+  assert_eq "0" "$SRC" "worker-3: exit 0 after the repeat"
+  assert_not_contains "$(cat "$(last_run_dir)/supervisor.log")" "failed try" "worker-3: not a failed try"
+}
+
+r17_worker_4() {
+  series_body() { step_run series -- "$WORKER" exit4; }
+  r17_one
+  assert_eq "6" "$SRC" "worker-4: a worker that ended 4 ends the chain with 6, never 4"
+  assert_eq "stopped 6" "$(run_state 1)" "worker-4: run.txt"
+}
+
+r17_worker_5() {
+  step_cfg MAX_FAILED_TRIES=1
+  series_body() { step_run series -- bash -c 'exit 5'; }
+  r17_one
+  assert_eq "7" "$SRC" "worker-5: a worker that ended 5 is a failed try: 7, never 5"
+  assert_eq "stopped 7" "$(run_state 1)" "worker-5: run.txt"
+}
+
+r17_refused() {
+  series_body() { step_run series -- bash -c 'source "$1"; outcome_write "$R9700_OUTCOME_FILE" KIND=refused RC=2 DETAIL=identity; exit 1' _ "$REPO/lib/run_guarded.sh"; }
+  r17_one
+  assert_eq "2" "$SRC" "refused: a refused worker is 2"
+  assert_eq "stopped 2" "$(run_state 1)" "refused: run.txt"
+}
+
+r17_disk_gate() {
+  series_body() { step_run series -- bash -c 'source "$1"; outcome_write "$R9700_OUTCOME_FILE" KIND=disk_gate RC=1 DETAIL=event; exit 1' _ "$REPO/lib/run_guarded.sh"; }
+  r17_one
+  assert_eq "9" "$SRC" "disk_gate: the disk gate is 9"
+  assert_eq "stopped 9" "$(run_state 1)" "disk_gate: run.txt"
+}
+
+r17_not_quiet() {
+  short_variant
+  set_load 9.0
+  series_body() { step_run series -- "$WORKER" ok; }
+  r17_one
+  assert_eq "8" "$SRC" "not-quiet: not quiet before the deadline is 8"
+  assert_eq "stopped 8" "$(run_state 1)" "not-quiet: run.txt"
+}
+
+r17_restore_5() {
+  step_cfg MAX_FAILED_TRIES=1
+  series_body() { step_run series -- bash -c "echo 99 > '$STUB/fail-list'; printf '%s\\n' '$BUSY_LINE' > '$CASE/loadavg'; exit 3"; }
+  r17_one
+  assert_eq "5" "$SRC" "restore-5: a busy-wait restore that did not become ready is 5"
+  assert_eq "stopped 5" "$(run_state 1)" "restore-5: run.txt"
+}
+
+r17_other() {
+  series_body() { return 1; }
+  r17_one
+  assert_eq "7" "$SRC" "other: any other non-zero code is a failed step, 7"
+  assert_eq "stopped 7" "$(run_state 1)" "other: run.txt"
+}
+
+r17_lock() {
+  fake_supervisor run || return
+  plan_write r17 "series $KMODEL base --rounds 1"
+  assert_exit 4 "lock: the lock is held" -- r9700 run "$PLAN"
+  assert_missing "$R9700_RESULTS_DIR/runs" "lock: no run folder"
+  kill -KILL "$SUP"
+  kill_recorded_pids "$CASE"
+}
+
+r17_deadline() { assert_exit 0 "deadline is covered by R4" -- declare -F t_r4_the_deadline_ends_the_chain_and_the_restore_is_inside_the_budget; }
+r17_ram_guard() { assert_exit 0 "ram_guard is covered by R2" -- declare -F t_r2_a_ram_stop_in_step_two_kills_the_worker_group_stops_every_container_restores_once_and_the_code_names_the_step; }
+r17_cap() { assert_exit 0 "cap is covered by R18" -- declare -F t_r18_the_stop_cap_is_reached_only_by_real_stops_and_a_refused_admission_launches_nothing; }
+r17_signal() { assert_exit 0 "signal is covered by R10 and R20" -- declare -F t_r10_a_term_during_step_2_ends_the_chain_with_143_one_restore_and_run_txt_says_interrupted; }
+r17_final_restore() { assert_exit 0 "final-restore is covered by R19" -- declare -F t_r19_a_final_restore_failure_returns_5_while_run_txt_keeps_the_steps_own_outcome; }
+
 r17_row() {
-  local row="$1" restores
-  case $row in
-    worker-0)
-      series_body() { step_run series -- "$WORKER" ok; }
-      r17_one
-      assert_eq "0" "$SRC" "$row: exit 0"
-      assert_eq "done 0" "$(run_state 1)" "$row: run.txt" ;;
-    worker-3)
-      series_body() { step_run series -- "$WORKER" exit3-then-ok; }
-      r17_one
-      assert_eq "0" "$SRC" "$row: exit 0 after the repeat"
-      assert_not_contains "$(cat "$(last_run_dir)/supervisor.log")" "failed try" "$row: not a failed try" ;;
-    worker-4)
-      series_body() { step_run series -- "$WORKER" exit4; }
-      r17_one
-      assert_eq "6" "$SRC" "$row: a worker that ended 4 ends the chain with 6, never 4"
-      assert_eq "stopped 6" "$(run_state 1)" "$row: run.txt" ;;
-    worker-5)
-      step_cfg MAX_FAILED_TRIES=1
-      series_body() { step_run series -- bash -c 'exit 5'; }
-      r17_one
-      assert_eq "7" "$SRC" "$row: a worker that ended 5 is a failed try: 7, never 5"
-      assert_eq "stopped 7" "$(run_state 1)" "$row: run.txt" ;;
-    refused)
-      series_body() { step_run series -- bash -c 'source "$1"; outcome_write "$R9700_OUTCOME_FILE" KIND=refused RC=2 DETAIL=identity; exit 1' _ "$REPO/lib/run_guarded.sh"; }
-      r17_one
-      assert_eq "2" "$SRC" "$row: a refused worker is 2"
-      assert_eq "stopped 2" "$(run_state 1)" "$row: run.txt" ;;
-    disk_gate)
-      series_body() { step_run series -- bash -c 'source "$1"; outcome_write "$R9700_OUTCOME_FILE" KIND=disk_gate RC=1 DETAIL=event; exit 1' _ "$REPO/lib/run_guarded.sh"; }
-      r17_one
-      assert_eq "9" "$SRC" "$row: the disk gate is 9"
-      assert_eq "stopped 9" "$(run_state 1)" "$row: run.txt" ;;
-    not-quiet)
-      short_variant
-      set_load 9.0
-      series_body() { step_run series -- "$WORKER" ok; }
-      r17_one
-      assert_eq "8" "$SRC" "$row: not quiet before the deadline is 8"
-      assert_eq "stopped 8" "$(run_state 1)" "$row: run.txt" ;;
-    restore-5)
-      step_cfg MAX_FAILED_TRIES=1
-      series_body() { step_run series -- bash -c "echo 99 > '$STUB/fail-list'; printf '%s\\n' '$BUSY_LINE' > '$CASE/loadavg'; exit 3"; }
-      r17_one
-      assert_eq "5" "$SRC" "$row: a busy-wait restore that did not become ready is 5"
-      assert_eq "stopped 5" "$(run_state 1)" "$row: run.txt" ;;
-    other)
-      series_body() { return 1; }
-      r17_one
-      assert_eq "7" "$SRC" "$row: any other non-zero code is a failed step, 7"
-      assert_eq "stopped 7" "$(run_state 1)" "$row: run.txt" ;;
-    lock)
-      fake_supervisor run || return
-      plan_write r17 "series $KMODEL base --rounds 1"
-      assert_exit 4 "$row: the lock is held" -- r9700 run "$PLAN"
-      assert_missing "$R9700_RESULTS_DIR/runs" "$row: no run folder"
-      kill -KILL "$SUP"
-      kill_recorded_pids "$CASE" ;;
-    deadline) assert_exit 0 "$row is covered by R4" -- declare -F t_r4_the_deadline_ends_the_chain_and_the_restore_is_inside_the_budget ;;
-    ram_guard) assert_exit 0 "$row is covered by R2" -- declare -F t_r2_a_ram_stop_in_step_two_kills_the_worker_group_stops_every_container_restores_once_and_the_code_names_the_step ;;
-    cap) assert_exit 0 "$row is covered by R18" -- declare -F t_r18_the_stop_cap_is_reached_only_by_real_stops_and_a_refused_admission_launches_nothing ;;
-    signal) assert_exit 0 "$row is covered by R10 and R20" -- declare -F t_r10_a_term_during_step_2_ends_the_chain_with_143_one_restore_and_run_txt_says_interrupted ;;
-    final-restore) assert_exit 0 "$row is covered by R19" -- declare -F t_r19_a_final_restore_failure_returns_5_while_run_txt_keeps_the_steps_own_outcome ;;
-    *) _assert_fail "row $row" "tests/test_run.sh has no case for this row of the mapping in lib/run_verb.sh" ;;
-  esac
+  local fn="r17_${1//-/_}"
+  if declare -F "$fn" > /dev/null; then "$fn"; else _assert_fail "row $1" "tests/test_run.sh has no function $fn for this row of the mapping in lib/run_verb.sh"; fi
 }
 
 t_r17_the_exit_code_of_a_chain_is_the_normalized_step_result_row_by_row() {
@@ -620,6 +672,40 @@ t_r20_a_signal_before_the_first_step_and_between_steps_is_clean() {
   assert_missing "$MARKER_FILE" "(b) the marker is gone"
   assert_exit 0 "(b) the lock is free" -- bash -c 'flock -n 9' 9>> "$R9700_STATE_DIR/lock"
   assert_exit 0 "(c) R10 stays the during-a-step case" -- declare -F t_r10_a_term_during_step_2_ends_the_chain_with_143_one_restore_and_run_txt_says_interrupted
+}
+
+t_r20d_a_signal_between_a_steps_final_state_and_the_next_step_leaves_that_state() {
+  run_setup "$FUNCNAME"
+  plan_fixture three_steps
+  export R9700_TEST_RUN_HOLD_S=30 R9700_TEST_RUN_HOLD_AT=1-end
+  run_bg "$PLAN"
+  local run
+  run="$(run_dir_of)"
+  assert_exit 0 "step 1 reached its end hold" -- wait_for "$run/hold-1-end" 600
+  assert_eq "done 0" "$(run_state 1)" "step 1's final state is written before the hold"
+  kill -TERM "$SUP"
+  run_end
+  assert_eq "143" "$SRC" "exit 143"
+  assert_eq "done 0|not-started -|not-started -" "$(printf '%s|%s|%s' "$(run_state 1)" "$(run_state 2)" "$(run_state 3)")" "run.txt: step 1 stays done, never interrupted or running"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore"
+}
+
+# ---- R23: the machine file is the same for the whole night ------------------------------------------------------------------------------------------------------------
+
+t_r23_a_machine_file_edited_during_the_night_is_refused_at_the_next_step() {
+  run_setup "$FUNCNAME"
+  plan_write r23 "prefixtest $KMODEL --name a" "prefixtest $KMODEL --name b"
+  # MAX_SERVER_STOPS, PROD_CONTAINER and the RESTORE_* fields of the final restore are in machine.env: an edit between two steps must not change them under a running chain
+  printf 'printf "# edited in the night\\n" >> "%s"\n' "$CASE/machine.env" > "$STUB/on-stop-${R9700_CONTAINER_PREFIX}prefix-base-1"
+  assert_exit 2 "the plan" -- r9700 run "$PLAN"
+  local err="$ERR"
+  assert_contains "$err" "r9700: run: $CASE/machine.env changed since the run began" "named, with the file"
+  assert_contains "$err" "r9700: run: stopped at step 2 of 2 (prefixtest $KMODEL --name b): 2" "the place"
+  assert_eq "done 0|stopped 2" "$(printf '%s|%s' "$(run_state 1)" "$(run_state 2)")" "run.txt"
+  assert_exit 0 "step 1's record is final" -- test -d "$RECS/prefix/a"
+  assert_eq "1" "$(grep -c ' admitted$' "$(last_run_dir)/supervisor.log")" "step 2 was never admitted"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore"
+  assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
 }
 
 # ---- R21: the worst case is printed, not refused ---------------------------------------------------------------------------------------------------------------------

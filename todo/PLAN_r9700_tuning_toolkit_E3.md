@@ -735,7 +735,7 @@ cross-field rule `MAX_FAILED_TRIES ≤ MAX_SERVER_STOPS` stays (a retry after a 
 <n> stops of the operator's server if every step is admitted after a busy wait; MAX_SERVER_STOPS=<cap>`). The
 night's budget of `night5.sh` (6 failed tries over two series, line 36) becomes `MAX_FAILED_TRIES` per step
 (default 3) — the same figure per series. The deadline is computed ONCE by `supervise` for the whole chain
-(`T_END`, `T_STOP`): a step that ends with 6 ends the chain, and every later step is `not-started`.
+(`T_END`, `T_STOP`): a step that ends with 6 ends the chain, and every later step is `not-started`. **The exit-3 repeats have a bound of their own** (S2 review, 2026-11-03): an admission that finds the server down charges no stop and an exit 3 is not a failed try, so a worker that exits 3 again and again on a quiet PC would be started again until `T_STOP`; each step therefore allows `3 × MAX_FAILED_TRIES` repeats (the test knob `R9700_MAX_WAIT_REPEATS`, environment only, replaces the figure), and the next exit 3 ends the step with exit 8 and `r9700: <step> waited <n> times (worker exit 3), limit <m>`.
 
 **5. Validate everything, then run; re-check each step at its start.** `verb_run`: the arguments (`run <file>
 [--check] [--dry-run]`; the file must exist and be readable); `plan_parse` (decisions 1–3, every line); then for

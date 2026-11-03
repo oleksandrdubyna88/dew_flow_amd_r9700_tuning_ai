@@ -8,7 +8,8 @@
 #   step_run <label> -- <command...>   runs ONE step and neither restores the server nor releases the lock. Returns the exit table of decision 6:
 #                                      0 done; 2 refused arguments; 5 a restore while waiting did not become ready; 6 the deadline stopped the
 #                                      step or the worker said nothing more fits; 7 the step failed MAX_FAILED_TRIES times; 8 not quiet before
-#                                      the deadline, or the server-stop budget is used; 9 the disk gate stopped the run
+#                                      the deadline, or the server-stop budget is used, or the worker exited 3 more often than the repeat bound
+#                                      (3 x MAX_FAILED_TRIES); 9 the disk gate stopped the run
 #
 # Per invocation (reset by supervise): _RG_STEP_N counts worker starts (the number in steps/<n>.*), _RG_STOPS the ACTUAL stops of the operator's server, _RG_PROD_STOPPED
 # says whether the marker stands (the server is stopped by us), _RG_PROD_WAS what the server's state was before the first stop.
@@ -180,7 +181,17 @@ _step_settle() {
   local when
   case "$O_KIND:$O_RC" in
     worker:0) _RG_UNITS_DONE=$((_RG_UNITS_DONE + 1)); return 0 ;;
-    worker:3) rg_log "not quiet at a unit start, waiting"; return 10 ;;
+    worker:3)
+      # not a failed try, and an admission that finds the server down charges no stop: so the repeats have a bound of their own (3 x MAX_FAILED_TRIES, or the knob), or a worker whose
+      # gate and the supervisor's quiet check disagree would be started again until T_STOP
+      _RG_WAITS=$((_RG_WAITS + 1))
+      if [ "$_RG_WAITS" -gt "$_RG_WAIT_LIMIT" ]; then
+        rg_err "r9700: $_RG_STEP_LABEL waited $_RG_WAITS times (worker exit 3), limit $_RG_WAIT_LIMIT"
+        return 8
+      fi
+      rg_log "not quiet at a unit start, waiting"
+      return 10
+      ;;
     refused:*) rg_err "r9700: the worker refused to go on: $O_DETAIL"; return 2 ;; # the worker's own typed word, never a bare exit code: a retry would be refused again
     worker:4) ;;
     deadline:*) ;;
@@ -192,16 +203,27 @@ _step_settle() {
   return 6
 }
 
-# step_budget_reset: the failed-try count of the next step (step_run zeroes it itself; a chain says it where it begins a step). The stop count _RG_STOPS is
-# run-wide and is NEVER reset by a step: a chain that bounced the server once per step would otherwise have no cap at all (E3.S2 decision 4).
-step_budget_reset() { _RG_TRIES=0; }
+# step_budget_reset: the failed-try count and the exit-3 repeat count of the next step (step_run zeroes them itself; a chain says it where it begins a step). The stop count
+# _RG_STOPS is run-wide and is NEVER reset by a step: a chain that bounced the server once per step would otherwise have no cap at all (E3.S2 decision 4).
+step_budget_reset() { _RG_TRIES=0 _RG_WAITS=0; }
+
+# _step_wait_limit: prints how many exit-3 repeats one step may have: 3 x MAX_FAILED_TRIES, or R9700_MAX_WAIT_REPEATS (a test knob, the environment only, never machine.env);
+# 2 and one line when the knob is not a whole number from 1 to 999999
+_step_wait_limit() {
+  local knob="${R9700_MAX_WAIT_REPEATS-}"
+  if [ -z "$knob" ]; then echo $((3 * R9700_MAX_FAILED_TRIES)); return 0; fi
+  [[ $knob =~ ^[1-9][0-9]{0,5}$ ]] || { echo "r9700: R9700_MAX_WAIT_REPEATS \"$knob\" is not a whole number from 1 to 999999" >&2; return 2; }
+  echo "$knob"
+}
 
 step_run() {
   local label="${1:-}" rc
   if [ "${2:-}" != -- ] || [ "$#" -lt 3 ]; then echo "r9700: step: usage: step_run <label> -- <command...>" >&2; return 2; fi
   if ! [[ $label =~ $_STEP_LABEL_RE ]]; then echo "r9700: step: the label \"$label\" is not $_STEP_LABEL_RE" >&2; return 2; fi
   shift 2
-  _RG_TRIES=0
+  step_budget_reset
+  _RG_STEP_LABEL="$label"
+  _RG_WAIT_LIMIT="$(_step_wait_limit)" || return 2
   while :; do
     _step_quiet_phase
     rc=$?

@@ -465,6 +465,7 @@ _rg_state_reset() {
 # Defined HERE, beside the signal handler: the handler must never call a function that exists only when another file was sourced. A no-op while no plan is active (every
 # other verb). The state arrays are _RUN_STATE and _RUN_CODE (one slot per step); the lines of the plan are _PLAN_TEXT (lib/run_plan.sh).
 #   run_record_init <plan path> <steps>   every step `not-started`, the header `PLAN=<path> SHA256=<hash> STEPS=<n>`; run.txt is written; 0, or 2 when it cannot be
+#   run_record_interrupt <k>              the handler's call: `interrupted`, unless step <k> already has its final state (done, stopped)
 #   run_record_write <k> <state> [<code>] step <k> (1-based) is `not-started|running|done|stopped|interrupted` with its code (`-` when none); run.txt is rewritten whole,
 #                                         beside the name and moved over (a reader never sees half of it); never fails
 _run_record_flush() {
@@ -499,6 +500,14 @@ run_record_write() {
   return 0
 }
 
+# run_record_interrupt <k>: what the signal handler calls: step <k> is `interrupted` unless its final state (done, stopped) is already written, which a signal never overwrites
+run_record_interrupt() {
+  [ "${_RUN_PLAN_ACTIVE:-0}" = 1 ] || return 0
+  [[ ${1:-} =~ ^[1-9][0-9]*$ ]] || return 0
+  case "${_RUN_STATE[$(($1 - 1))]:-}" in done | stopped) return 0 ;; esac
+  run_record_write "$1" interrupted
+}
+
 _rg_traps_on() {
   trap '_rg_on_signal INT' INT
   trap '_rg_on_signal TERM' TERM
@@ -517,7 +526,7 @@ _rg_on_signal() {
   [ -z "${_RG_SLEEPER:-}" ] || kill "$_RG_SLEEPER" 2> /dev/null
   [ -z "${_RG_BG:-}" ] || _rg_bg_kill # a call in the background: its adapter fork kills the call's process group
   if [ -n "${_RG_OUTCOME:-}" ]; then outcome_write "$_RG_OUTCOME" KIND=interrupted "DETAIL=signal $1"; fi
-  [ -z "${_RG_RUN_STEP:-}" ] || run_record_write "$_RG_RUN_STEP" interrupted
+  [ -z "${_RG_RUN_STEP:-}" ] || run_record_interrupt "$_RG_RUN_STEP"
   rg_log "signal $1: cleaning up"
   if cleanup_once interrupted; then rg_err "r9700: interrupted, restored"; else rg_err "r9700: interrupted, the restore did not finish (the marker stays)"; fi
   exit "$code"
