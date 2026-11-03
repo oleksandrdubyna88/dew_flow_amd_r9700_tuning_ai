@@ -598,7 +598,13 @@ t_a_probe_cut_by_the_window_keeps_the_last_real_reason_and_adds_the_window() {
   assert_exit 5 "not ready" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"
   assert_contains "$ERR" "completion: HTTP 500)" "the line still ends with the last real failing check and its status"
-  assert_contains "$ERR" "the probe timed out" "and it says the last call was cut"
+  # Both notes mean the window cut the last call: under load the window can end before the second probe starts (2026-11-03, failed once in a
+  # full run), and then lib/restore.sh says "the readiness window ended" instead of "the probe timed out".
+  if [[ $ERR == *"the probe timed out"* || $ERR == *"the readiness window ended"* ]]; then
+    assert_eq ok ok "and it says the last call was cut"
+  else
+    assert_eq "the probe timed out | the readiness window ended" "$ERR" "and it says the last call was cut"
+  fi
   assert_exit 0 "the marker is kept" -- test -f "$MARKER_FILE"
   kill_recorded_pids "$CASE"
 }
