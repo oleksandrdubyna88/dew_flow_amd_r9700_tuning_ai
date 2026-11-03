@@ -23,7 +23,7 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
   <legal>`). All errors are printed in one pass; the exit status is 2. Nothing is stopped or started before the config is valid.
 - After the single-field checks, the cross-field checks run (also when a single field is wrong; a field that failed its own check is skipped): every `PREFILL_LENS` value + 128 ≤ `MAX_MODEL_LEN`; every
   `MOUNTS` source exists under `PATCH_DIR`; every `LINEAR_SHAPES` K is a multiple of `LINEAR_GROUP_SIZE` (E3.S1); `PROD_CONTAINER` does not start with `CONTAINER_PREFIX` (the toolkit stops every container with that prefix, so the operator's own server must stay outside it); `CLEANUP_BUDGET_S` ≥ `READY_TIMEOUT_S` + 300 (the budget must hold the restore
-  and its readiness wait); `MAX_FAILED_TRIES` ≤ `MAX_SERVER_STOPS` (every try is an admission, and every admission stops the operator's server, so more tries than stops could never all happen; E1 amendment A20).
+  and its readiness wait); `MAX_FAILED_TRIES` ≤ `MAX_SERVER_STOPS` (a retry after a busy-wait restore stops the operator's server again, so more tries than stops could not all happen; E1 amendment A20). `MAX_SERVER_STOPS` counts ACTUAL stops of the operator's server over the whole invocation, a chain of `run` included (E3.S2 decision 4); an admission that finds the server already down charges nothing.
 
 ## `machine.env`
 

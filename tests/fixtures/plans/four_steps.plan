@@ -1,0 +1,5 @@
+# The four-step plan of R8 and R18: four prefix checks (one container each, one stop of the operator's server when the PC stays quiet).
+prefixtest qwen3.6-35b-a3b-gptq --name p1
+prefixtest qwen3.6-35b-a3b-gptq --name p2
+prefixtest qwen3.6-35b-a3b-gptq --name p3
+prefixtest qwen3.6-35b-a3b-gptq --name p4

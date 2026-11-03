@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
 # verdict (E1.S3: the arm-round records of a series and the ship test read back from them), moe-tune (E2.S3: chunk, merge, activate, ab), linear-bench and
-# prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each).
+# prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each), run (E3.S2: a plan file of steps under ONE supervisor).
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
@@ -18,7 +18,7 @@
 #   5 the restore did not become ready
 #   6 the deadline stopped the step, or the worker said nothing more fits
 #   7 the step failed MAX_FAILED_TRIES times
-#   8 not quiet before the deadline, or admitted MAX_SERVER_STOPS times (each admission stops the operator's server)
+#   8 not quiet before the deadline, or the operator's server was already stopped MAX_SERVER_STOPS times in this invocation (the next stop is refused)
 #   9 the disk gate stopped the run
 #   10 init found a problem
 #   11 the recovery marker cannot be read
@@ -29,7 +29,7 @@ set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
@@ -534,6 +534,35 @@ verb_linear_bench() {
 verb_prefixtest() {
   kernels_args prefixtest "$@" || exit 2
   supervise prefixtest kernels_prepare kernels_prefix_body
+  exit $?
+}
+
+# ---------- run (E3.S2) ----------
+# verb_run <plan file> [--check] [--dry-run]: a plan file (one step per line, each the command line of a toolkit verb; lib/run_plan.sh) as ONE supervisor: one lock, restore first,
+# the operator's server stopped at the first admission and restored once at the end, the steps in order (lib/run_verb.sh). The whole plan is parsed and validated BEFORE the lock;
+# --check also checks every step's config, without the lock; --dry-run takes the lock and prints every step's dry run. The exit code is the code of the step that stopped the chain.
+verb_run() {
+  local file="" check=no dry=no
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --check) check=yes; shift ;;
+      --dry-run) dry=yes; shift ;;
+      -*) echo "r9700: run: unknown option \"$1\"; legal: --check, --dry-run" >&2; exit 2 ;;
+      *)
+        [ -z "$file" ] || { echo "r9700: run: unexpected argument \"$1\"" >&2; exit 2; }
+        file="$1"
+        shift
+        ;;
+    esac
+  done
+  [ -n "$file" ] || { echo "$_RUN_USAGE" >&2; exit 2; }
+  if [ "$check" = yes ] && [ "$dry" = yes ]; then echo "r9700: run: --check and --dry-run are two ways to look; give one" >&2; exit 2; fi
+  [ -f "$file" ] && [ -r "$file" ] || { echo "r9700: run: $file: cannot read (it is missing or not a readable file)" >&2; exit 2; }
+  plan_parse "$file" || exit 2
+  run_validate "$file" || exit 2
+  _RUN_FILE="$file" _RUN_DRY="$dry"
+  if [ "$check" = yes ]; then run_check "$file"; exit $?; fi
+  supervise run run_prepare run_body
   exit $?
 }
 

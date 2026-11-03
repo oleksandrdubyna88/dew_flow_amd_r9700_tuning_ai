@@ -94,6 +94,37 @@ another experiment: MS "1 2 6" -> "1 2"`).
 `linear-bench` refuses a model whose `LINEAR_SHAPES` is empty: the 27B AWQ file leaves it empty because nobody has measured whether that model takes the hybrid W4A16 kernel. The 35B file
 carries the five shapes of the speed-options runs. A new model gets its shapes in its model file (`LINEAR_SHAPES`, `LINEAR_GROUP_SIZE`; `research/module_config.md`).
 
+## A night: `run`
+
+`bin/r9700 run <plan>` runs a whole night from a text file: one step per line, each line the command line of a toolkit verb. The steps run in order under ONE supervisor: one lock, the
+restore of your own server first when a marker is left, your server stopped once at the first step and restored once at the end, one deadline for the whole chain. Blank lines and lines
+starting with `#` are skipped. A line is what you would type after `bin/r9700`, with words split on spaces (put a word that holds spaces in one pair of double quotes). The characters
+`$`, a backtick, `'`, `;`, `|`, `&`, `<`, `>`, `(`, `)` and a tab are refused: the file is never given to a shell. The plan is YOUR file; keep it outside the repository.
+
+```
+# night.plan
+prefixtest qwen3.6-35b-a3b-gptq --name p1
+series qwen3.6-35b-a3b-gptq base --rounds 1
+linear-bench qwen3.6-35b-a3b-gptq --name n1
+moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24 32" --coarse --chunk night-24-32
+```
+
+- **Check before you leave.** `bin/r9700 run night.plan --check` validates every line and every step's config, takes no lock and starts nothing. It prints `run: step <k>: ok (<line>)`
+  per step and the worst case: `run: at most <n> stops of your server if every step is admitted after a busy wait; MAX_SERVER_STOPS=<n>`. `--dry-run` takes the lock and prints
+  the dry run of every step.
+- **The steps.** `series`, `moe-tune chunk`, `moe-tune ab`, `linear-bench` and `prefixtest`. Four verbs are refused as steps, each with its reason: `init` (the machine check you run before a night),
+  `verdict` (a reading verb: run it in the morning), `moe-tune merge` (it reads chunks that you choose after reading them) and `moe-tune activate` (it changes what your own server reads: a chain at
+  night must not decide that). `--dry-run` inside a plan line is refused.
+- **Stops and budgets.** A quiet chain stops your server ONCE and restores it ONCE, however many steps it has. `MAX_SERVER_STOPS` is the cap for the whole run and counts real stops: the only
+  other stop is after your server was given back while the PC was busy (a step that exits 3 waits for a quiet PC; it is not a failed try). A step that would pass the cap is refused before it starts
+  anything, and your server is still restored. `MAX_FAILED_TRIES` is per step. The deadline is per run: a step that ends with 6 ends the chain, and the later steps are not started.
+- **How a stop reads.** The exit code is the code of the step that stopped the chain (the table below; `run` adds no code), and stderr says where: `r9700: run: stopped at step 2 of 3 (<the line>): 7`.
+  `<RESULTS_DIR>/runs/<id>/run.txt` has the plan's path and hash and one line per step: `<k> <state> <code> <line>`, the state one of `not-started`, `running`, `done`, `stopped`, `interrupted`;
+  `plan.txt` beside it is the plan as it was run.
+- **Resume.** Run the same command again: every step skips what it recorded. Give every `linear-bench` and `prefixtest` step a `--name`, or it runs again (without a name the record is named by the time).
+  A step whose model, image or patch changed since its records is refused by its own identity check (exit 2).
+- **Each step has its own model file.** The files are read again when the step starts: a model file edited after the check is refused at its step (exit 2), after the earlier steps' records are final.
+
 Where the records of a series are: `<RESULTS_DIR>/<name>/rounds/<arm>-<round>/` is one arm-round and exists only when it is complete; an attempt that failed
 its checks is kept, with a `reason`, in `rejected/`; an arm that did not start twice is in `unsupported/`; `fingerprint.json` is the identity of the
 series; `<RESULTS_DIR>/runs/` has one folder per invocation (the supervisor's log, the guards' logs). Nothing under `<RESULTS_DIR>` is ever deleted
@@ -103,12 +134,12 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 
 - `0` done.
 - `1` `verdict`: at least one arm is INCOMPLETE (a round is missing).
-- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment.
+- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment; `run`: a refused plan (a line that is not a step, a refused character, a refused argument, no step), or a step whose config or identity is refused when it starts.
 - `4` another run holds the lock.
 - `5` the restore of your own server did not become ready: look at the server by hand; the recovery marker stays.
 - `6` the deadline stopped the run (or the next arm-round no longer fits before it): run the same command again.
 - `7` the step failed `MAX_FAILED_TRIES` times.
-- `8` the PC was not quiet before the deadline, or the server was stopped `MAX_SERVER_STOPS` times.
+- `8` the PC was not quiet before the deadline, or your server was already stopped `MAX_SERVER_STOPS` times in this run (the next stop is refused).
 - `9` the disk gate stopped the run (a new disk event in the Windows log).
 - `10` `init` found a problem.
 - `11` the recovery marker cannot be read: check the server by hand, then remove the marker.
