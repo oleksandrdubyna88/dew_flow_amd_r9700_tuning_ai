@@ -6,6 +6,7 @@
 #   bash tests/check_static.sh --bash <files>      `bash -n` on each file
 #   bash tests/check_static.sh --python <files>    compile each file (syntax only; writes no __pycache__)
 #   bash tests/check_static.sh --vendored [<copy dir> <mount dir>]   tools/lib's leftovers helper equals the mounted one
+#   bash tests/check_static.sh --unfinished <files>   a document that says work is unfinished: the phrases `planned` (a whole word), `E3 will` and `not built yet`
 #   bash tests/check_static.sh --seam [<root>]     only lib/adapter.sh expands $R9700_WSLC, $R9700_POWERSHELL, $R9700_RESTORE_SHELL or runs wslc, powershell.exe, pwsh.exe (prints the files that do)
 #
 # Exit 0 clean, 1 on a finding, 2 when it scanned nothing or was called wrongly (a scan of nothing is not a pass).
@@ -21,6 +22,18 @@ scan_paths() { # <files...>
   for file in "$@"; do [ -f "$file" ] || { echo "check_static: not a file: $file" >&2; return 2; }; done
   hits="$(grep -InHiE -e '[A-Za-z]:\\Users\\[A-Za-z0-9._-]' -e '/mnt/[a-z]/Users/[A-Za-z0-9._-]' \
     -e '/home/[A-Za-z0-9._-]+/' -e '/Users/[A-Za-z0-9._-]+/' -- "$@" | sed -E 's/^([^:]+:[0-9]+:)/\1 /')"
+  [ -z "$hits" ] && return 0
+  printf '%s\n' "$hits"
+  return 1
+}
+
+# check_unfinished <files...>: the documents that describe the system as it is (README.md and the research files) may not say that something is unfinished (E3.S3 decision 4: E3 is
+# the last epic, so after it nothing is "planned"). The phrases are matched case-insensitively. Exit 0 clean, 1 on a finding (file:line: text), 2 when it scanned nothing.
+check_unfinished() {
+  local file hits
+  [ "$#" -gt 0 ] || { echo "check_static: --unfinished needs at least one file" >&2; return 2; }
+  for file in "$@"; do [ -f "$file" ] || { echo "check_static: not a file: $file" >&2; return 2; }; done
+  hits="$(grep -InHiE -e '\bplanned\b' -e 'E3 will' -e 'not built yet' -- "$@" | sed -E 's/^([^:]+:[0-9]+:)/\1 /')"
   [ -z "$hits" ] && return 0
   printf '%s\n' "$hits"
   return 1
@@ -125,6 +138,11 @@ run_all() {
   count="${#py[@]}"
   if [ "$count" -gt 0 ]; then check_python "${py[@]}" && echo "python: $count files ok" || status=1; fi
   if scan_paths "${all[@]}"; then echo "personal paths: ${#all[@]} files ok"; else status=1; fi
+  # the documents of the system as it is: README.md, research/architecture.md, module_tests.md and module_config.md
+  local -a docs=()
+  for file in README.md research/architecture.md research/module_tests.md research/module_config.md; do [ -f "$ROOT/$file" ] && docs+=("$ROOT/$file"); done
+  if [ "${#docs[@]}" -eq 0 ]; then echo "check_static: no document to scan for unfinished work" >&2; status=1
+  elif check_unfinished "${docs[@]}"; then echo "unfinished: ${#docs[@]} documents say nothing is unfinished"; else status=1; fi
   check_vendored || status=1
   if check_seam > /dev/null; then echo "seam: only lib/adapter.sh expands the executable variables or runs wslc, powershell.exe, pwsh.exe"; else check_seam >&2; status=1; fi
   return "$status"
@@ -137,5 +155,6 @@ case "${1:-}" in
   --python) shift; check_python "$@" ;;
   --vendored) shift; check_vendored "$@" ;;
   --seam) shift; check_seam "$@" ;;
-  *) echo "check_static: unknown argument $1 (use --scan, --bash, --python, --vendored or --seam)" >&2; exit 2 ;;
+  --unfinished) shift; check_unfinished "$@" ;;
+  *) echo "check_static: unknown argument $1 (use --scan, --bash, --python, --vendored, --unfinished or --seam)" >&2; exit 2 ;;
 esac

@@ -18,7 +18,7 @@
 #   5 the restore did not become ready
 #   6 the deadline stopped the step, or the worker said nothing more fits
 #   7 the step failed MAX_FAILED_TRIES times
-#   8 not quiet before the deadline, or the operator's server was already stopped MAX_SERVER_STOPS times in this invocation (the next stop is refused)
+#   8 not quiet before the deadline, or the operator's server was already stopped MAX_SERVER_STOPS times in this invocation (the next stop is refused), or a worker exited 3 more often than the repeat bound
 #   9 the disk gate stopped the run
 #   10 init found a problem
 #   11 the recovery marker cannot be read

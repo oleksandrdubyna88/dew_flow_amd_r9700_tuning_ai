@@ -21,6 +21,7 @@ t_the_tracked_tree_is_clean() {
   assert_contains "$OUT" "python:" "it ran the python check"
   assert_contains "$OUT" "personal paths:" "it ran the personal-path check"
   assert_contains "$OUT" "vendored:" "it ran the vendored-copy check"
+  assert_contains "$OUT" "unfinished:" "it ran the unfinished-work check over the documents"
 }
 
 t_the_scan_finds_a_planted_windows_profile_path() {
@@ -238,6 +239,34 @@ t_a_seam_scan_that_finds_nothing_is_an_error_not_a_pass() {
   assert_exit 2 "an adapter with no expansion: the scan is dead" -- bash "$CHECK" --seam "$root"
   rm "$root/lib/adapter.sh"
   assert_exit 2 "no adapter at all" -- bash "$CHECK" --seam "$root"
+}
+
+# ---- the documents say nothing is unfinished (E3.S3 decision 4): README.md and the research files describe what runs
+
+t_the_unfinished_scan_finds_each_phrase_in_the_fixture_and_names_the_line() {
+  local fixture="$HERE/fixtures/static/unfinished.md"
+  assert_exit 1 "the fixture is found" -- bash "$CHECK" --unfinished "$fixture"
+  assert_contains "$OUT" "unfinished.md:3:" "the whole word planned, in any case (line 3)"
+  assert_contains "$OUT" "unfinished.md:4:" "E3 will (line 4)"
+  assert_contains "$OUT" "unfinished.md:5:" "not built yet (line 5)"
+  assert_not_contains "$OUT" "unfinished.md:1:" "a header line that names none of the phrases is not a finding"
+  assert_not_contains "$OUT" "unfinished.md:2:" "nor is a blank line"
+}
+
+t_the_unfinished_scan_passes_a_clean_file_and_a_longer_word() {
+  local file="$R9700_TEST_ROOT/clean.md"
+  printf '%s\n' 'Everything here runs.' 'The planner of the night reads the plan file.' 'It was replanned and unplanned at once.' > "$file"
+  assert_exit 0 "planner, replanned and unplanned are other words" -- bash "$CHECK" --unfinished "$file"
+}
+
+t_the_unfinished_scan_of_nothing_is_an_error_not_a_pass() {
+  assert_exit 2 "no files given" -- bash "$CHECK" --unfinished
+  assert_exit 2 "a file that does not exist" -- bash "$CHECK" --unfinished "$R9700_TEST_ROOT/nosuch.md"
+}
+
+t_the_documents_of_the_system_as_it_is_say_nothing_is_unfinished() {
+  assert_exit 0 "README.md and the research documents are clean" -- bash "$CHECK" --unfinished "$REPO/README.md" "$REPO/research/architecture.md" "$REPO/research/module_tests.md" "$REPO/research/module_config.md"
+  assert_exit 0 "the scan is alive over the real tree: a copy of the architecture with one planted phrase is caught" -- bash -c 'cp "$1" "$3" && printf "%s\n" "E3 will add this." >> "$3" && ! bash "$2" --unfinished "$3"' _ "$REPO/research/architecture.md" "$CHECK" "$R9700_TEST_ROOT/arch-planted.md"
 }
 
 run_all_tests

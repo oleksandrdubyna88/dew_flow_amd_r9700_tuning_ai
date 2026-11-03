@@ -1,9 +1,26 @@
 # dew_flow_amd_r9700_tuning_ai
 
 Tune and measure vLLM on an AMD Radeon AI PRO R9700 under Windows + WSL2, where containers run with `wslc`. A series compares server
-configurations ("arms") against a base arm and ends with a ship test. (Work in progress — see `todo/`; the system as it is lives in `research/`.)
+configurations ("arms") against a base arm and ends with a ship test; the toolkit also tunes the fused-MoE kernel config, times the linear kernels, checks the prefix cache,
+and runs a whole night of those steps from one plan file. A new model is one file in `models/`, not a new script. The system as it is lives in `research/` (start with `research/architecture.md`).
 
 A run stops the operator's own vLLM server for its own duration and restores it once, at the end. Run it on a PC nobody is using.
+
+## The commands
+
+| Command | What it does |
+|---|---|
+| `bin/r9700 init` | checks the machine file, the folders, `wslc` and the telemetry; stops every leftover test container |
+| `bin/r9700 series <model> <arm>...` | the arms of a comparison, alternating, resumable, each arm-round recorded only when complete |
+| `bin/r9700 verdict <results folder>` | the ship test over the finished arm-rounds |
+| `bin/r9700 moe-tune <mode> <model>` | MoE config tuning: `chunk`, `merge`, `activate`, `ab` |
+| `bin/r9700 linear-bench <model>` | times the model's linear shapes (the hybrid W4A16 kernel) |
+| `bin/r9700 prefixtest <model>` | twelve prefix-cache requests against one measured server |
+| `bin/r9700 run <plan>` | a night: the steps of a plan file under ONE supervisor |
+| `bin/r9700 step <label> -- <command...>` | one command as a guarded step (the engine under the other verbs; for tests and by hand) |
+| `bin/r9700 commands` | prints the verbs |
+
+The sections below go through them in this order. Where every script of the old harness folder went is in `research/INPUTS_homes.md`.
 
 ## Quick start
 
@@ -117,7 +134,7 @@ moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24 32" --coarse --chunk night-24-32
   night must not decide that). `--dry-run` inside a plan line is refused.
 - **Stops and budgets.** A quiet chain stops your server ONCE and restores it ONCE, however many steps it has. `MAX_SERVER_STOPS` is the cap for the whole run and counts real stops: the only
   other stop is after your server was given back while the PC was busy (a step that exits 3 waits for a quiet PC; it is not a failed try). A step that would pass the cap is refused before it starts
-  anything, and your server is still restored. `MAX_FAILED_TRIES` is per step. The deadline is per run: a step that ends with 6 ends the chain, and the later steps are not started.
+  anything, and your server is still restored. `MAX_FAILED_TRIES` is per step. A step whose worker exits 3 more than 3 x `MAX_FAILED_TRIES` times ends with exit 8. Do not edit `machine.env` during a night: the next step is refused (exit 2). The deadline is per run: a step that ends with 6 ends the chain, and the later steps are not started.
 - **How a stop reads.** The exit code is the code of the step that stopped the chain (the table below; `run` adds no code), and stderr says where: `r9700: run: stopped at step 2 of 3 (<the line>): 7`.
   `<RESULTS_DIR>/runs/<id>/run.txt` has the plan's path and hash and one line per step: `<k> <state> <code> <line>`, the state one of `not-started`, `running`, `done`, `stopped`, `interrupted`;
   `plan.txt` beside it is the plan as it was run.
@@ -139,7 +156,7 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 - `5` the restore of your own server did not become ready: look at the server by hand; the recovery marker stays.
 - `6` the deadline stopped the run (or the next arm-round no longer fits before it): run the same command again.
 - `7` the step failed `MAX_FAILED_TRIES` times.
-- `8` the PC was not quiet before the deadline, or your server was already stopped `MAX_SERVER_STOPS` times in this run (the next stop is refused).
+- `8` the PC was not quiet before the deadline, your server was already stopped `MAX_SERVER_STOPS` times in this run (the next stop is refused), or a worker exited 3 more often than the repeat bound.
 - `9` the disk gate stopped the run (a new disk event in the Windows log).
 - `10` `init` found a problem.
 - `11` the recovery marker cannot be read: check the server by hand, then remove the marker.
@@ -147,4 +164,18 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 - `130` interrupted by `INT` (Ctrl-C); the server was restored.
 - `143` interrupted by `TERM`; the server was restored.
 
-Tests: `node tests/run.mjs` (stubs only: no container and no GPU) and `bash tests/check_static.sh`; `research/module_tests.md` says what they prove.
+Tests: `node tests/run.mjs` (stubs only: no container and no GPU) and `bash tests/check_static.sh`; `research/module_tests.md` says what they prove and what they do not. Run every test command under a process cap, as that file says
+(`bash -c 'ulimit -u $(( $(ps -L -u $(id -u) --no-headers | wc -l) + 3000 )); exec nice -n 19 node tests/run.mjs'`).
+
+## Acceptance on the GPU
+
+CI uses stubs, so every flow that needs the GPU, the real `wslc` and the real image has a record in `research/`, made by the operator's session on the R9700 PC before a release: the prediction is written first, the observed sections are filled after the run,
+and a record that was not run says NOT RUN in its title and keeps its observed sections empty. `research/ACCEPTANCE_series_2026-11-02.md` has been run. `research/ACCEPTANCE_moe_tune_2026-11-02.md`, `research/ACCEPTANCE_linear_bench_2026-11-03.md`,
+`research/ACCEPTANCE_prefixtest_2026-11-03.md` and `research/ACCEPTANCE_run_2026-11-03.md` are NOT RUN: the operator holds GPU runs for now. `POST_DEPLOY.md` is the short list to run on the PC after every install or update.
+
+## The family
+
+This repository is public and a consumer of the shared rules of `dew_flow_conventions`: they are mounted at `.agents/conventions` (the `release` branch; fresh clone: `git submodule update --init .agents/conventions` and
+`npm ci --ignore-scripts --prefix .agents/conventions`), and the consumers table in that repository's README lists this repository (test-leftovers token `r9700`). Both facts were read on 2026-11-03: the row at the pinned release of the rules, and the visibility
+with `gh repo view <owner>/dew_flow_amd_r9700_tuning_ai --json visibility` (PUBLIC). Machine specifics are never committed: they live in the untracked `machine.env` made from `machine.env.example`, and `bash tests/check_static.sh` fails when a tracked file holds a personal path.
+CI (`.github/workflows/tests.yml`) runs the tests, the static checks, the leftovers guard, the plan check and the shape check of `POST_DEPLOY.md`.
