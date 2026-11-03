@@ -170,8 +170,8 @@ Tests: `node tests/run.mjs` (stubs only: no container and no GPU) and `bash test
 ## Acceptance on the GPU
 
 CI uses stubs, so every flow that needs the GPU, the real `wslc` and the real image has a record in `research/`, made by the operator's session on the R9700 PC before a release: the prediction is written first, the observed sections are filled after the run,
-and a record that was not run says NOT RUN in its title and keeps its observed sections empty. `research/ACCEPTANCE_series_2026-11-02.md` has been run. `research/ACCEPTANCE_moe_tune_2026-11-02.md`, `research/ACCEPTANCE_linear_bench_2026-11-03.md`,
-`research/ACCEPTANCE_prefixtest_2026-11-03.md` and `research/ACCEPTANCE_run_2026-11-03.md` are NOT RUN: the operator holds GPU runs for now. `POST_DEPLOY.md` is the short list to run on the PC after every install or update.
+and a record that was not run says NOT RUN in its title and keeps its observed sections empty. `research/ACCEPTANCE_series_2026-11-02.md` was run on 2026-11-02; `research/ACCEPTANCE_moe_tune_2026-11-02.md`, `research/ACCEPTANCE_linear_bench_2026-11-03.md`,
+`research/ACCEPTANCE_prefixtest_2026-11-03.md` and `research/ACCEPTANCE_run_2026-11-03.md` were run on 2026-11-03, so all five are filled in, each with its observed-against-predicted table (where the run differed from the prediction, the record says so). `POST_DEPLOY.md` is the short list to run on the PC after every install or update.
 
 ## The family
 
