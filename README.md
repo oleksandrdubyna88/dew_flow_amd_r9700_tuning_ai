@@ -47,7 +47,7 @@ bin/r9700 moe-tune ab qwen3.6-35b-a3b-gptq --keys "8 12 16 24" --rule median --r
 Options: `chunk` takes `--keys "<k...>"` (required), `--coarse` (the 82 candidates of `config/coarse_candidates.json`, not the full search), `--layer experts|draft`,
 `--chunk <name>` (default `<layer>-<coarse|full>-<keys joined by ->`, for example `experts-coarse-24`) and `--dry-run`. `ab` takes `--keys`, `--rule each|median`
 and `--rule-keys` (the keys the decision is about; both required), `--reps` (default 3), `--layer` and `--dry-run`. `merge` takes the chunk names,
-`--layer` (refuses a chunk of another layer), `--base auto|none|<file>`. `activate` takes the stamp and `--force`. All take `--out <name>` (default
+`--layer` (refuses a chunk of another layer), `--base auto|none|<file>`. `activate` takes the stamp, `--layer experts|draft` (only for a record that has no layer in its `merge.env`, such as one made by hand) and `--force`. All take `--out <name>` (default
 `moe-<model name>`). `--dry-run` prints the resolved container lines; it starts no container and does not stop your server, but it is not read-only: like `activate` it runs under the supervisor, so it takes the lock (exit 4 when another run holds it), restores your server first when a recovery marker is left, makes a run folder under `<RESULTS_DIR>/runs/`, copies the two vendored files into the work folder, and is refused (exit 2) when the deadline leaves no room. The draft layer (`--layer draft`) is for an MTP draft MoE layer, the
 35B model's case. A model with no MoE layers sets `MOE_DTYPE=none` in its model file; `moe-tune` then refuses it before it stops anything.
 
@@ -60,7 +60,8 @@ Where things are:
 - A merge never changes the active file. `activate` does, atomically (the file is written beside and renamed over, so a reader sees the old bytes or the new
   ones), and keeps the file it replaced under `merged/previous/`. It is refused (exit 2) while your own server or a test container is listed, because such a
   container may read the folder; `--force` is your word that it does not (it is logged). Activating the stamp that is already active does nothing.
-- `merge --base auto` fails with `duplicate key` when a chunk holds a key that the production file already has: use `--base none` for such a chunk.
+- `merge --base auto` fails with `duplicate key` when a chunk holds a key that the production file already has: use `--base none` for such a chunk. When the model's `TUNED_CONFIG_DIR` is not under `/work` the production file cannot be read from WSL: `merge` refuses and asks for `--base <file>` or `--base none`.
+- `ab` reads the layer and the file name from `activate.env` (written by `activate`), so it works in any `--out`. If you activated a record of the other layer last, `ab` refuses and says which record to activate again. If a run was killed in the middle of an activation, the next `activate` (or the start of an `ab`) finishes it.
 
 To resume, run the same `chunk` command: a recorded chunk is skipped before anything is stopped. Name another `--chunk` for a second search. For a long search
 set `MAX_RUN_MINUTES` (up to 2880) and `MOE_CHUNK_MAX_S` in `machine.env`.

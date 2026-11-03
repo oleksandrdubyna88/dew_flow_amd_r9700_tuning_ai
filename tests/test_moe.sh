@@ -102,6 +102,7 @@ t_t4_the_cache_is_cleared_before_the_unit_by_a_prefixed_container_with_only_the_
   assert_not_contains "$got" "--gpus" "no GPU"
   assert_contains "$got" "rm -rf /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton-moe-ab" "the program removes both cache folders"
   assert_contains "$(worker_log 1)" "cache before clear: 1.3G" "the worker log keeps what the cache held"
+  assert_eq "1" "$([ "$(worker_log 1 | grep -n '^cache clear: running (ceiling 90 s)' | head -n 1 | cut -d: -f1)" -lt "$(worker_log 1 | grep -n '^cache before clear' | head -n 1 | cut -d: -f1)" ] && echo 1 || echo 0)" "a start line names the ceiling BEFORE the clear container ends"
 }
 
 # ---- T5-T8: what is not recorded, and what is not run again ------------------------------------------------------------------------------------
@@ -264,7 +265,7 @@ t_t16_an_ab_without_a_merged_file_is_refused_before_any_container_and_step_stops
   run="$(last_run_dir)"
   outcome_read "$run/steps/1.outcome"
   assert_eq "refused" "$O_KIND" "the worker's outcome is KIND=refused"
-  assert_contains "$O_DETAIL" "merged/ holds no E=*.json" "its detail"
+  assert_contains "$O_DETAIL" "merged/ holds no activate.env" "its detail"
   assert_eq "0" "$(run_lines_ab | wc -l | tr -d ' ')" "no moe-ab container ran"
   assert_eq "0" "$(run_lines moe-clear | wc -l | tr -d ' ')" "and no container of any kind (the identity check comes before the cache clear)"
   assert_eq "1" "$(prod_stops)" "one admission: the server was stopped once, no retry"
@@ -435,6 +436,7 @@ t_t13_the_deadline_ends_a_chunk_and_the_part_becomes_evidence() {
   assert_eq "6" "$SRC" "exit 6"
   outcome_read "$run/steps/1.outcome"
   assert_eq "deadline" "$O_KIND" "KIND=deadline"
+  for _w in $(seq 1 30); do [ -e "$STUB/containers/${R9700_CONTAINER_PREFIX}moe-tune-int4-24.pid" ] || break; sleep 0.1; done # the stub removes its record on its own TERM trap: a loaded machine may be a moment late
   assert_missing "$STUB/containers/${R9700_CONTAINER_PREFIX}moe-tune-int4-24.pid" "the chunk container is stopped (its record is gone)"
   assert_eq "2" "$(run_lines moe-clear | wc -l | tr -d ' ')" "the exit-path clear ran: the one before the unit and one more"
   assert_eq "1" "$(find "$RECS/chunks" -maxdepth 1 -name '*.part-*' | wc -l | tr -d ' ')" "the part stays"

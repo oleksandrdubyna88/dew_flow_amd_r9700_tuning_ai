@@ -513,3 +513,48 @@ def test_proc_ticks_reads_field_22_after_the_last_bracket_and_knows_nothing_from
     for text, want in cases.items():
         monkeypatch.setattr(module, "Path", lambda _path, text=text: FakeStat(text))
         assert module.proc_ticks(1) == want, repr(text)
+
+
+# ---- a claim left EMPTY (killed between the O_EXCL create and the write) must not block merges for ever ----------------------------------------------------------
+
+def empty_claim(out, age_s):
+    claim = out / f"{fixture_file(B1).name}.claim"
+    claim.write_text("")
+    old = time.time() - age_s
+    os.utime(claim, (old, old))
+    return claim
+
+
+def test_an_empty_claim_older_than_the_limit_is_swept_with_a_line_and_the_merge_goes_on(tmp_path, capsys):
+    module = load_module()
+    out = tmp_path / "m"
+    out.mkdir()
+    claim = empty_claim(out, 3600)
+    assert module.main(["merge", "--out", str(out), *map(str, b1_chunks(tmp_path))]) == 0
+    assert f"merge: removed stale {claim} (empty or unreadable, older than 60 s)" in capsys.readouterr().out.splitlines()
+    assert sorted(path.name for path in out.iterdir()) == [fixture_file(B1).name]
+
+
+def test_an_empty_claim_in_the_fallback_is_swept_too_and_a_fresh_one_is_a_refusal(tmp_path, monkeypatch, capsys):
+    module = forced_fallback(monkeypatch)
+    out = tmp_path / "m"
+    out.mkdir()
+    chunks = b1_chunks(tmp_path)
+    fresh = empty_claim(out, 0)  # a writer may be between the create and the write: not ours to remove
+    assert module.main(["merge", "--out", str(out), *map(str, chunks)]) == 2
+    assert f"cannot tell the owner of {fresh}" in capsys.readouterr().err
+    assert fresh.exists() and not (out / fixture_file(B1).name).exists()
+    old = time.time() - 3600
+    os.utime(fresh, (old, old))
+    assert module.main(["merge", "--out", str(out), *map(str, chunks)]) == 0
+    assert sorted(path.name for path in out.iterdir()) == [fixture_file(B1).name]
+
+
+def test_the_limit_is_a_scaled_knob_for_tests(tmp_path, monkeypatch, capsys):
+    module = load_module()
+    monkeypatch.setenv("R9700_TEST_CLAIM_STALE_S", "0")
+    out = tmp_path / "m"
+    out.mkdir()
+    claim = empty_claim(out, 5)
+    assert module.main(["merge", "--out", str(out), *map(str, b1_chunks(tmp_path))]) == 0
+    assert f"merge: removed stale {claim} (empty or unreadable, older than 0 s)" in capsys.readouterr().out.splitlines()

@@ -38,6 +38,8 @@ FIELDS = frozenset({"BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "GROUP_SIZE_
 IDENTITY = ("IMAGE", "MODEL_DIR", "DTYPE", "LAYER")  # the words of chunk.env that must be equal between chunks
 CHUNK_GLOB = "E=*.json"
 HOLD_ENV = "R9700_TEST_MERGE_HOLD_S"
+CLAIM_STALE_ENV = "R9700_TEST_CLAIM_STALE_S"  # test knob: the age (s) after which an empty or unreadable claim counts as left behind
+CLAIM_STALE_S = 60
 KEY = re.compile(r"[1-9][0-9]*")
 ENV_LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PART = re.compile(r"\.part-([0-9]+)-([0-9]+)$")
@@ -236,6 +238,22 @@ def claim_owner(claim):
     return (pid, ticks) if pid.isdigit() and ticks.isdigit() else None
 
 
+def claim_stale_after():
+    """Seconds after which a claim that names no owner is taken for one left by a writer killed between the O_EXCL create and the write (60; the test knob scales it)."""
+    try:
+        return float(os.environ.get(CLAIM_STALE_ENV) or CLAIM_STALE_S)
+    except ValueError:
+        return CLAIM_STALE_S
+
+
+def claim_left_behind(claim):
+    """True for a claim that is empty or unparseable AND older than the limit: no live writer is between its create and its write for that long."""
+    try:
+        return time.time() - claim.stat().st_mtime > claim_stale_after()
+    except OSError:
+        return False
+
+
 def take_claim(claim):
     """The fallback's lock: `<NAME>.claim`, created with O_EXCL, holding `<pid> <start ticks>`. A claim of a dead owner is swept (once); a live or unreadable one is a refusal."""
     for _attempt in range(2):
@@ -244,6 +262,9 @@ def take_claim(claim):
         except FileExistsError:
             owner = claim_owner(claim)
             if owner is None:
+                if claim_left_behind(claim):
+                    claim.unlink(missing_ok=True)
+                    continue
                 raise InputError(f"merge: cannot tell the owner of {claim}; remove it by hand") from None
             if proc_ticks(owner[0]) == owner[1]:
                 raise InputError(f"merge: another merge is writing {claim} (pid {owner[0]})") from None
@@ -259,6 +280,9 @@ def sweep_claim(out, name):
     """The line printed when a claim of a dead owner is removed before a write (a live one is left: `take_claim` refuses it)."""
     claim = out / f"{name}.claim"
     owner = claim_owner(claim) if claim.exists() else None
+    if owner is None and claim.exists() and claim_left_behind(claim):
+        claim.unlink(missing_ok=True)
+        return [f"merge: removed stale {claim} (empty or unreadable, older than {claim_stale_after():g} s)"]
     if owner is None or proc_ticks(owner[0]) == owner[1]:
         return []
     claim.unlink(missing_ok=True)

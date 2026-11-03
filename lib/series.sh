@@ -238,7 +238,7 @@ series_preflight() {
   for arm in "$@"; do _series_final "$outdir" "$arm" 1 || _series_unsupported "$outdir" "$arm" || need=yes; done
   [ "$need" = yes ] || return 0
   if [[ $R9700_GSM8K_DATA == /work/* ]]; then
-    file="$R9700_WORK_DIR/${R9700_GSM8K_DATA#/work/}"
+    file="$(container_host_path "$R9700_GSM8K_DATA")" || return 2
     [ -f "$file" ] || { echo "series: GSM8K_DATA $R9700_GSM8K_DATA not found at $file" >&2; return 2; }
   else
     echo "series: GSM8K_DATA $R9700_GSM8K_DATA is not under /work, not checked"
@@ -368,7 +368,7 @@ _series_measure() {
     _series_quality_words words "$sub" "$arm" "$series"
     wslc_exec 1800 "$name" "${words[@]}" > "$part/$sub.out" 2>&1 || { _SERIES_PROBLEMS+=("quality: $sub failed (code $?)"); return 0; }
     target="${words[-1]}"
-    mv "$R9700_WORK_DIR/${target#/work/}" "$part/" || { _SERIES_PROBLEMS+=("quality: $sub left no file at $target"); return 0; }
+    mv "$(container_host_path "$target")" "$part/" || { _SERIES_PROBLEMS+=("quality: $sub left no file at $target"); return 0; }
   done
 }
 

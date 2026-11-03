@@ -57,8 +57,11 @@ mv_chunks() {
 
 # mv_record <stamp> <b1|b2>: a merge record made by hand (the file of that merged fixture), for the tests that start at `activate`
 mv_record() {
+  local layer=experts
+  [ "$2" = b1 ] && layer=draft
   mkdir -p "$OUTD/merged/$1"
   cp "$HERE/fixtures/moe/$2"/E=*.json "$OUTD/merged/$1/"
+  printf 'CHUNKS=hand\nLAYER=%s\nBASE=none\n' "$layer" > "$OUTD/merged/$1/merge.env" # what `merge` writes: the layer is read from it
 }
 
 # stamp_of_merge: the stamp the merge printed, from the last stdout
@@ -164,14 +167,15 @@ t_u4_the_arguments_are_refused_before_the_lock_naming_the_legal_shape() {
   refused_before_lock "an unknown mode" 'unknown mode "frob"; legal: chunk merge activate ab' frob
   refused_before_lock "chunk without a model" "usage: moe-tune chunk|merge|activate|ab <model> [options]" chunk
   refused_before_lock "chunk without --keys" "moe-tune: chunk: --keys is required" chunk "$m"
-  refused_before_lock "a key that is not a number" '"a" is not a whole number from 1 to 65536' chunk "$m" --keys "a 2"
-  refused_before_lock "a key given twice" "given twice" chunk "$m" --keys "2 2"
-  refused_before_lock "a key too big" '"65537" is not a whole number from 1 to 65536' chunk "$m" --keys "65537"
+  refused_before_lock "a key that is not a number" '--keys "a 2" is not a list of whitespace-separated batch sizes, e.g. "8 16 24"' chunk "$m" --keys "a 2"
+  refused_before_lock "a key given twice" "2 is given twice" chunk "$m" --keys "2 2"
+  refused_before_lock "a key too big" '--keys "65537" is not a list of whitespace-separated batch sizes' chunk "$m" --keys "65537"
   refused_before_lock "a layer that is none" "experts draft" chunk "$m" --keys 1 --layer heads
   refused_before_lock "a chunk name with a space" '^[a-z0-9][a-z0-9-]{0,30}$' chunk "$m" --keys 1 --chunk "Bad Name"
   refused_before_lock "a default name that is too long" "pass --chunk" chunk "$m" --keys "11111 22222 33333 44444 55555"
   refused_before_lock "an option the mode does not take" 'unknown option "--rule"; legal: --keys, --coarse, --layer, --chunk, --out, --dry-run' chunk "$m" --keys 1 --rule each
   refused_before_lock "an outdir that is a path" '--out "../x" is not a name' chunk "$m" --keys 1 --out ../x
+  refused_before_lock "rule keys that are not numbers" '--rule-keys "x" is not a list of whitespace-separated batch sizes' ab "$m" --keys "1 4" --rule each --rule-keys "x"
   refused_before_lock "an option without its value" "--keys needs a value" chunk "$m" --keys
   refused_before_lock "ab with a rule that is none" "each median" ab "$m" --keys "1 4" --rule mean --rule-keys "1"
   refused_before_lock "ab without --rule" "moe-tune: ab: --rule is required" ab "$m" --keys "1 4" --rule-keys "1"
@@ -253,8 +257,7 @@ ab_dry_equals_real() {
   assert_eq "0" "$(since_count "$before" wslc run)" "no container was started"
   assert_missing "$OUTD/ab" "no ab folder"
   mapfile -t dry < <(printf '%s\n' "$dry_out" | grep '^dry-run: wslc run --rm --name r9700tune-moe-ab-')
-  mkdir -p "$EX/merged"
-  cp "$HERE/fixtures/moe/b1"/E=*.json "$EX/merged/"
+  moe_merged_place b1
   moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
   assert_exit 0 "the same A/B for real" -- mv_verb "${ab_args[@]}"
   n=0
@@ -320,12 +323,14 @@ t_u7_a_merge_writes_a_versioned_record_only_with_the_base_of_the_models_tuned_fo
   assert_exit 0 "the merged file passes check for its keys" -- python3 "$REPO/lib/merge_moe.py" check --keys "1 2 4 8 12 16 24 32 256 1024 2048" "$OUTD/merged/$stamp/$FIX_B2_NAME"
 }
 
-t_u8_a_merge_without_a_readable_base_says_so_and_goes_on_and_base_none_skips_it() {
+t_u8_a_merge_over_a_tuned_folder_that_is_not_under_work_refuses_and_base_none_skips_it() {
   mv_setup "$FUNCNAME"
   mv_chunks 24 32 || return
   mv_variant "TUNED_CONFIG_DIR=/data/moe"
-  assert_exit 0 "merge with a tuned folder outside /work" -- mv_verb merge "$MVM" --out m experts-full-24 experts-full-32
-  assert_contains "$OUT" "base: TUNED_CONFIG_DIR /data/moe is not under /work, no base" "the line says why there is no base"
+  assert_exit 2 "merge with a tuned folder outside /work" -- mv_verb merge "$MVM" --out m experts-full-24 experts-full-32
+  assert_contains "$ERR" "TUNED_CONFIG_DIR /data/moe is not under /work, so the production file cannot be read from here: pass --base <file>, or --base none" "the refusal says why and what to do"
+  assert_missing "$OUTD/merged" "nothing was written: a base that cannot be read is never silently no base"
+  assert_exit 0 "the same merge with --base none" -- mv_verb merge "$MVM" --out m --base none experts-full-24 experts-full-32
   assert_eq "24 32" "$(keys_of "$OUTD/merged/$(stamp_of_merge)/$FIX_B2_NAME")" "the output holds the chunks' keys only"
   assert_exit 0 "--base none with the unedited model" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 experts-full-32
   assert_not_contains "$OUT" "base:" "no base line at all"
@@ -427,20 +432,36 @@ t_u13_activate_swaps_atomically_keeps_the_previous_file_and_records_what_is_acti
   assert_eq "1" "$(ls "$EX/merged/previous" | wc -l | tr -d ' ')" "and keeps nothing twice"
 }
 
+# activate_hold_bg <KNOB=seconds> <args...>: `bin/r9700 moe-tune activate <args...>` with a test knob, in the background, as the leader of a session of its own (SUP is
+# its pid and its group id): a test kills the verb AND its one sleeper with `kill -KILL -- -$SUP`
+activate_hold_bg() {
+  local knob="$1"
+  local -a drop=()
+  local key
+  shift
+  while read -r key; do drop+=(-u "R9700_$key"); done < <(config_keys | awk '{ print $2 }')
+  ( exec setsid env "${drop[@]}" "$knob" "$REPO/bin/r9700" moe-tune activate "$@" ) > "$CASE/sup.out" 2> "$CASE/sup.err" &
+  SUP=$!
+  guard_pid "$SUP" "supervisor-$SUP"
+}
+
+# kill_verb: the verb of activate_hold_bg and everything in its group, reaped
+kill_verb() {
+  kill -KILL -- "-$SUP" 2> /dev/null
+  wait "$SUP" 2> /dev/null
+  return 0
+}
+
 t_u13b_a_verb_killed_between_the_part_write_and_the_swap_leaves_the_old_file_and_the_next_activation_sweeps_the_part() {
   mv_setup "$FUNCNAME"
   wslc stop vllm > /dev/null
   two_merges || return
   mv_verb activate "$MOE_MODEL" "$S1" --out m > /dev/null 2>&1 || return
-  local -a drop=()
-  local key
-  while read -r key; do drop+=(-u "R9700_$key"); done < <(config_keys | awk '{ print $2 }')
-  ( exec env "${drop[@]}" R9700_TEST_ACTIVATE_HOLD_S=30 "$REPO/bin/r9700" moe-tune activate "$MOE_MODEL" "$S2" --out m ) > "$CASE/sup.out" 2> "$CASE/sup.err" &
-  SUP=$!
-  guard_pid "$SUP" "supervisor-$SUP"
+  activate_hold_bg R9700_TEST_ACTIVATE_HOLD_S=30 "$MOE_MODEL" "$S2" --out m
   assert_exit 0 "the part file appears (bounded wait)" -- wait_glob "$EX/merged/$NAME.part-*"
-  kill -KILL "$SUP"
-  wait "$SUP" 2> /dev/null
+  kill_verb
+  assert_eq "0" "$(ps -o pid= -g "$SUP" 2> /dev/null | grep -c .)" "nothing of the verb's group is left (the hold is ONE sleep, ended with the group)"
+  assert_eq "0" "$(sed -n '/^_moe_activate_hold()/,/^}/p' "$REPO/lib/moe_verb.sh" | grep -cE 'while|date')" "the hold has no polling loop (one sleep, descriptor 9 closed)"
   assert_exit 0 "the exchange file is still the OLD bytes, never a half file" -- cmp "$OUTD/merged/$S1/$NAME" "$EX/merged/$NAME"
   assert_exit 0 "a part file is left" -- wait_glob "$EX/merged/$NAME.part-*" 1
   assert_exit 0 "the next activation" -- mv_verb activate "$MOE_MODEL" "$S2" --out m
@@ -448,6 +469,104 @@ t_u13b_a_verb_killed_between_the_part_write_and_the_swap_leaves_the_old_file_and
   assert_contains "$OUT" "(owner $SUP gone)" "naming the owner"
   assert_exit 0 "the exchange file equals the second record" -- cmp "$OUTD/merged/$S2/$NAME" "$EX/merged/$NAME"
   assert_eq "0" "$(parts_under "$EX")" "no .part- remains"
+}
+
+# killed_after_the_swap: S1 active, then S2 swapped in and the verb killed before activate.env is renamed (the test knob holds it there)
+killed_after_the_swap() {
+  wslc stop vllm > /dev/null
+  two_merges || return 1
+  mv_verb activate "$MOE_MODEL" "$S1" --out m > /dev/null 2>&1 || return 1
+  activate_hold_bg R9700_TEST_ACTIVATE_HOLD_AFTER_S=30 "$MOE_MODEL" "$S2" --out m
+  local i
+  for i in $(seq 1 100); do cmp -s "$OUTD/merged/$S2/$NAME" "$EX/merged/$NAME" && break; sleep 0.1; done
+  kill_verb
+}
+
+t_u13f_a_verb_killed_after_the_swap_is_finished_by_the_next_activate() {
+  mv_setup "$FUNCNAME"
+  killed_after_the_swap || return
+  assert_exit 0 "the config is the new one" -- cmp "$OUTD/merged/$S2/$NAME" "$EX/merged/$NAME"
+  assert_eq "$S1" "$(env_get "$EX/merged/activate.env" STAMP)" "and activate.env still names the OLD activation (the window of the kill)"
+  assert_exit 0 "the next activate of the same record" -- mv_verb activate "$MOE_MODEL" "$S2" --out m
+  assert_contains "$OUT" "recovered activate.env from $EX/merged/activate.env.part-$SUP-" "it finishes the rename and says so"
+  assert_contains "$OUT" "already active" "then there is nothing left to do"
+  assert_eq "$S2" "$(env_get "$EX/merged/activate.env" STAMP)" "activate.env names the new activation"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- remains"
+}
+
+t_u13g_the_start_of_an_ab_finishes_it_too_and_refuses_a_leftover_that_is_not_the_active_file() {
+  mv_setup "$FUNCNAME"
+  killed_after_the_swap || return
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$NAME" b2
+  local ab_args=(ab "$MOE_MODEL" --keys "8 16 20 24 32 48 64 96 128 192 256" --rule median --rule-keys "24" --layer experts --out m)
+  assert_exit 0 "an A/B after the kill" -- mv_verb "${ab_args[@]}"
+  assert_contains "$(worker_log 1)" "recovered activate.env from" "its worker finished the rename first"
+  assert_eq "$S2" "$(env_get "$EX/merged/activate.env" STAMP)" "activate.env names the new activation"
+  # a leftover of a dead owner whose file is NOT the active one: the A/B refuses, the next activate sweeps it
+  printf 'STAMP=x\nNAME=%s\nLAYER=experts\nSHA256=%s\n' "$NAME" "deadbeef" > "$EX/merged/activate.env.part-4194303-1"
+  assert_exit 2 "an A/B with such a leftover" -- mv_verb "${ab_args[@]}"
+  assert_contains "$ERR" "run moe-tune activate for the record again" "it says what to do"
+  assert_exit 0 "activate of another record" -- mv_verb activate "$MOE_MODEL" "$S1" --out m
+  assert_contains "$OUT" "removed stale $EX/merged/activate.env.part-4194303-1" "the sweep removes the leftover"
+  assert_eq "0" "$(parts_under "$EX")" "no .part- remains"
+}
+
+t_u15b_activate_needs_a_layer_from_merge_env_or_from_the_option_and_the_two_must_agree() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  mv_record rec1 b2 # merge.env says experts
+  assert_exit 2 "--layer draft over a record of the layer experts" -- mv_verb activate "$MOE_MODEL" rec1 --layer draft --out m
+  assert_contains "$ERR" "is a record of the layer experts, not draft" "named"
+  rm "$OUTD/merged/rec1/merge.env" # a record made by hand: no layer
+  assert_exit 2 "a record whose layer nobody says" -- mv_verb activate "$MOE_MODEL" rec1 --out m
+  assert_contains "$ERR" "pass --layer experts|draft" "the remedy"
+  assert_missing "$EX/merged" "nothing was written"
+  assert_exit 0 "with --layer" -- mv_verb activate "$MOE_MODEL" rec1 --layer experts --out m
+  assert_eq "experts" "$(env_get "$EX/merged/activate.env" LAYER)" "activate.env records the layer"
+  assert_eq "$FIX_B2_NAME" "$(env_get "$EX/merged/activate.env" NAME)" "and the file name"
+  assert_exit 2 "--layer heads" -- mv_verb activate "$MOE_MODEL" rec1 --layer heads --out m
+  assert_contains "$ERR" "experts draft" "names the legal layers"
+}
+
+t_u16_an_ab_in_a_fresh_out_reads_the_layer_and_the_file_from_activate_env_even_when_merged_holds_two_layers() {
+  mv_setup "$FUNCNAME"
+  mv_record recd b1
+  mv_record rece b2
+  assert_exit 0 "activate the draft record (the server is listed: --force)" -- mv_verb activate "$MOE_MODEL" recd --out m --force
+  assert_exit 0 "activate the experts record" -- mv_verb activate "$MOE_MODEL" rece --out m --force
+  assert_eq "2" "$(ls "$EX/merged"/E=*.json | wc -l | tr -d ' ')" "merged/ holds the files of two layers"
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B2_NAME" b2
+  # a fresh --out: no chunk record says anything about a layer
+  assert_exit 0 "an experts A/B in another --out" -- mv_verb ab "$MOE_MODEL" --keys "8 16 20 24 32 48 64 96 128 192 256" --rule median --rule-keys "24" --layer experts --out fresh
+  assert_eq "$FIX_B2_NAME" "$(env_get "$(ls -d "$R9700_RESULTS_DIR"/fresh/ab/*/ | head -n 1)ab.env" B_FILE)" "B_FILE is the file activate.env names"
+  assert_exit 2 "a draft A/B: the file activated last is of another layer" -- mv_verb ab "$MOE_MODEL" --keys "1 4" --rule each --rule-keys "1" --layer draft --out fresh
+  assert_contains "$ERR" "the file activated last is of the layer experts, not draft; run moe-tune activate for a record of the layer draft" "the message says what to do"
+  rm "$EX/merged/activate.env"
+  assert_exit 2 "an A/B without activate.env" -- mv_verb ab "$MOE_MODEL" --keys "1 4" --rule each --rule-keys "1" --layer draft --out fresh
+  assert_contains "$ERR" "merged/ holds no activate.env" "missing: refused with the remedy"
+}
+
+t_u1c_a_harness_left_by_an_older_series_is_refreshed_and_an_absent_one_stays_absent() {
+  mv_setup "$FUNCNAME"
+  assert_exit 0 "a verb chunk with no harness.py in the work folder" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  assert_missing "$WORK/harness.py" "the optional asset is not placed (that is series's job)"
+  rm -rf "$OUTD"
+  printf 'a harness of an older series\n' > "$WORK/harness.py"
+  assert_exit 0 "a verb chunk with an OLDER harness.py there (a refusal for ever before)" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  assert_exit 0 "it was refreshed, byte for byte" -- cmp "$REPO/lib/harness.py" "$WORK/harness.py"
+  assert_eq "$(sha256sum "$REPO/lib/harness.py" | cut -d' ' -f1)" "$(env_get "$OUTD/chunks/experts-full-24/chunk.env" HARNESS_SHA256)" "and chunk.env names its hash"
+}
+
+t_u17_container_paths_have_one_translation_that_refuses_what_is_not_under_work() {
+  mv_setup "$FUNCNAME"
+  assert_eq "$R9700_WORK_DIR/moe/tune/merged" "$(container_host_path /work/moe/tune/merged)" "/work/<rest> is WORK_DIR/<rest>"
+  assert_eq "$R9700_WORK_DIR/r9700/moe/$MOE_MODEL" "$(moe_exchange_dir "$MOE_MODEL")" "the exchange folder is the translation of its container path"
+  local bad rc
+  for bad in /data/moe /work /workx/a "/work/../etc" ""; do
+    container_host_path "$bad" > /dev/null 2>&1
+    rc=$?
+    assert_eq "1" "$rc" "\"$bad\" does not translate (1, never an empty answer taken for a path)"
+  done
 }
 
 t_u14a_activate_is_refused_while_the_operators_server_is_listed() {
@@ -629,7 +748,7 @@ t_u11_ab_through_the_verb_reads_the_activated_file_records_the_decision_and_regi
 t_u11b_ab_without_an_activation_is_refused_with_the_hint() {
   mv_setup "$FUNCNAME"
   assert_exit 2 "ab over a fresh exchange folder" -- mv_verb ab "$MOE_MODEL" --keys "1 4" --rule each --rule-keys "1 4" --layer draft --out m
-  assert_contains "$ERR" "merged/ holds no E=*.json" "the worker's detail"
+  assert_contains "$ERR" "merged/ holds no activate.env" "the worker's detail"
   assert_contains "$ERR" "run moe-tune activate first" "and the hint"
   assert_missing "$OUTD/ab" "no A/B record"
 }

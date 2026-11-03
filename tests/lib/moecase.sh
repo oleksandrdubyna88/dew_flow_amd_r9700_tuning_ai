@@ -73,9 +73,15 @@ moe_ab_answers() {
   done
 }
 
+# moe_merged_place <b1|b2>: the fixture's merged file in the exchange folder AS `activate` leaves it: the file and an activate.env that names it and its layer
+# (b1 is the draft layer's file, b2 the experts layer's)
 moe_merged_place() {
+  local file layer=experts
+  [ "$1" = b1 ] && layer=draft
   mkdir -p "$EX/merged"
   cp "$MOE_FIXTURES/$1"/E=*.json "$EX/merged/"
+  file="$(basename "$(ls "$MOE_FIXTURES/$1"/E=*.json)")"
+  printf 'STAMP=hand\nNAME=%s\nLAYER=%s\nSHA256=%s\nPREVIOUS=none\nACTIVATED_AT=2026-11-02T00:00:00Z\nFORCED=no\n' "$file" "$layer" "$(sha256sum "$EX/merged/$file" | cut -d' ' -f1)" > "$EX/merged/activate.env"
 }
 
 # the bodies of moe_sup_bg: they read their words from the environment of the child (MOE_BODY_ARGS holds one word per line)
