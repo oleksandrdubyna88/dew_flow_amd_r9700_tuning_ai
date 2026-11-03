@@ -9,8 +9,10 @@
 #   moe_exchange_dir <model> / moe_container_dir <model>   $R9700_WORK_DIR/r9700/moe/<model> and its path inside the containers
 #   moe_cache_clear                the Triton tuning caches cleared by a prefixed container with only the cache volume; the supervisor's hook
 #   moe_assets                     `<placed name> <repository source> <required|optional>` per line: the ONE table of the identity check
-#   moe_identity_check             every placed asset against its source; 2 and the outcome KIND=refused on a difference
-#   moe_asset_hashes               the `<KEY>_SHA256=` lines of chunk.env and ab.env
+#   moe_identity_check [<assets fn>]   every placed asset against its source; 2 and the outcome KIND=refused on a difference
+#   moe_asset_hashes [<assets fn>]     the `<KEY>_SHA256=` lines of chunk.env and ab.env
+#   (E3.S1: these and moe_place take the NAME of an assets function, default moe_assets, so lib/kernels.sh imports the placement and the identity
+#   check instead of copying them; _MOE_WHO and _MOE_PLACED_BY name the caller in a refusal)
 #   moe_sweep_parts <outdir>       a part directory an earlier worker left is moved to rejected/ as INTERRUPTED evidence
 #
 # Records (E2.S2 decisions 2-4, the shape of lib/series.sh): chunks/<chunk>/ is final; while it is built it is chunks/<chunk>.part-<run id>/. It
@@ -37,7 +39,8 @@ _MOE_AB_CACHE=/root/.cache/vllm/triton-moe-ab     # moe_kernel_ab.sh line 19
 _MOE_DRAFT_ACT=bfloat16                           # speed_CB.sh line 22: the draft layer is tuned with BF16 activations (hook 3 of the vendored benchmark)
 _MOE_AB_CEILING_S=1800                            # moe_kernel_ab.sh line 19: `timeout 1800`
 # the program of the cache-clear container: no variable in it (plan-gate E1 finding 1); b2.sh line 21, with both cache folders
-_MOE_CLEAR_SH='du -sh /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton-moe-ab 2> /dev/null; rm -rf /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton-moe-ab'
+_MOE_LINEAR_CACHE=/root/.cache/vllm/triton-linear # night3.sh line 38 (E3.S1: the linear-bench unit's cache); the ONE hook clears every Triton tuning cache the toolkit fills
+_MOE_CLEAR_SH='du -sh /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton-moe-ab /root/.cache/vllm/triton-linear 2> /dev/null; rm -rf /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton-moe-ab /root/.cache/vllm/triton-linear'
 # The clear's own adapter ceiling. It is LONGER than the 65 s window the supervisor's hook gives it (run_guarded.sh, _rg_cleanup_hook_run): in the hook
 # the supervisor's window is the enforced, outer one and kills the whole tree; this inner ceiling ends a clear that the worker runs before a unit.
 _MOE_CLEAR_CEILING_S=90
@@ -102,43 +105,44 @@ _moe_hash_key() {
   esac
 }
 
-# _moe_refuse <detail>: the worker's own word that it will not go on (KIND=refused: the supervisor stops at once, no retry); 2
+# _moe_refuse <detail>: the worker's own word that it will not go on (KIND=refused: the supervisor stops at once, no retry); 2. The line is prefixed with
+# _MOE_WHO (default `moe`; lib/kernels.sh sets `kernels`).
 _moe_refuse() {
-  echo "moe: $1"
-  [ -z "${R9700_OUTCOME_FILE:-}" ] || outcome_write "$R9700_OUTCOME_FILE" KIND=refused RC=2 "DETAIL=moe: $1"
+  echo "${_MOE_WHO:-moe}: $1"
+  [ -z "${R9700_OUTCOME_FILE:-}" ] || outcome_write "$R9700_OUTCOME_FILE" KIND=refused RC=2 "DETAIL=${_MOE_WHO:-moe}: $1"
   return 2
 }
 
 moe_identity_check() {
-  local name source need placed want got
+  local name source need placed want got assets="${1:-moe_assets}"
   while read -r name source need _; do
     placed="$(moe_placed_dir)/$name"
     want="$(_moe_sha "$_MOE_REPO/$source")"
     if [ ! -f "$placed" ]; then
       [ "$need" = optional ] && continue
-      _moe_refuse "$name is missing in the work folder (it is placed from $source by moe-tune)" || return 2
+      _moe_refuse "$name is missing in the work folder (it is placed from $source by ${_MOE_PLACED_BY:-moe-tune})" || return 2
     fi
     got="$(_moe_sha "$placed")"
     [ "$got" = "$want" ] || { _moe_refuse "$name in the work folder differs from $source (${got:0:12} -> ${want:0:12})"; return 2; }
-  done < <(moe_assets)
+  done < <("$assets")
   return 0
 }
 
 moe_asset_hashes() {
-  local name source need placed sum
+  local name source need placed sum assets="${1:-moe_assets}"
   while read -r name source need _; do
     placed="$(moe_placed_dir)/$name"
     sum=absent
     [ -f "$placed" ] && sum="$(_moe_sha "$placed")"
     printf '%s_SHA256=%s\n' "$(_moe_hash_key "$name")" "$sum"
-  done < <(moe_assets)
+  done < <("$assets")
 }
 
 # _moe_assets_unchanged: 0 when every placed asset still has the hash taken right after the identity check (_MOE_HASHES), which is what the record
 # names; else 1 and _MOE_REASON names the asset. An edit during a long unit would otherwise give a record with hashes the container did not run with.
 _moe_assets_unchanged() {
-  local name source need key before after now
-  now="$(moe_asset_hashes)" # ONE pass over the files, not one per row
+  local name source need key before after now assets="${1:-moe_assets}"
+  now="$(moe_asset_hashes "$assets")" # ONE pass over the files, not one per row
   while read -r name source need _; do
     key="$(_moe_hash_key "$name")_SHA256"
     before="$(grep -m 1 "^$key=" <<< "$_MOE_HASHES")"
@@ -146,7 +150,7 @@ _moe_assets_unchanged() {
     [ "$before" = "$after" ] && continue
     _MOE_REASON="$name changed during the run (${before#*=} -> ${after#*=})"
     return 1
-  done < <(moe_assets)
+  done < <("$assets")
 }
 
 # ---------- the container ----------

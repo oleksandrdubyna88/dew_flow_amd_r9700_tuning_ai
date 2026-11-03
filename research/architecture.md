@@ -6,7 +6,7 @@ the guards, the admission and the supervisor, `step`, `supervise`, `step_run` (p
 only when complete, a run identity that a resume must match) and `bin/r9700 verdict` (the ship test read back from the records). E2.S1 built the pure
 parts of MoE config tuning: the merge and check of chunk files, the kernel A/B table and decision, the coarse candidates and the vendored benchmark; they
 have no command of their own yet. E2.S2 built the chunk and the A/B as workers, E2.S3 the verb `bin/r9700 moe-tune chunk|merge|activate|ab` that drives them
-(with the merge record, the activation and the placed benchmark). What is still planned (E3) is in `todo/PLAN_r9700_tuning_toolkit.md`.
+(with the merge record, the activation and the placed benchmark). E3.S1 built the linear-kernel micro-benchmark and the prefix-cache check as two more verbs, `bin/r9700 linear-bench` and `bin/r9700 prefixtest`, each one step. What is still planned (E3.S2 and S3) is in `todo/PLAN_r9700_tuning_toolkit_E3.md`.
 
 ## Modules
 
@@ -22,6 +22,7 @@ have no command of their own yet. E2.S2 built the chunk and the A/B as workers, 
 | MoE pure parts (E2.S1) | `lib/merge_moe.py`, `lib/moe_kernel_ab.py`, `config/coarse_candidates.json`, `vendor/` | no container, no GPU. `merge_moe.py check` is the one definition of a valid chunk file; `merge` joins chunk dirs (and a base file) into a NEW file under `--out` and never replaces one. `moe_kernel_ab.py decide` turns the six logs of a kernel A/B into a table and one decision line. `vendor/benchmark_moe.py` is upstream vLLM plus three marked hooks, proven by its diff |
 | MoE tuning (E2.S2) | `lib/moe.sh` (the chunk unit, the A/B unit, the cache clear), `lib/run_guarded.sh` (`cleanup_hook_set`, `_rg_cleanup_hook_run`), `config/coarse_candidates.json`, `vendor/benchmark_moe.py` | the two units of `tune_chunk.sh` and `moe_kernel_ab.sh` as WORKERS of one `step_run` each (`bash lib/moe.sh chunk …` / `ab …`); they take no lock, set no trap and never stop the operator's server. A record is made only when complete and valid. The Triton caches are cleared before every unit and in the exit path of the invocation by ONE hook of `cleanup_once`. The verb is E2.S3 (the next row) |
 | MoE verb (E2.S3) | `bin/r9700` (`moe-tune`), `lib/moe_verb.sh` (`moe_place`, `moe_merge_verb`, `moe_activate_verb`, `moe_dry_run`), `lib/moe.sh` (the units it starts) | `moe-tune chunk\|merge\|activate\|ab <model> [options]`: the argument grammar is checked before the lock; `chunk` and `ab` are `supervise` around ONE `step_run`; `merge` is a reading verb (the lock only to restore first) that writes a new record `merged/<stamp>/` and replaces nothing; `activate` is `supervise` without a step (no admission) around an atomic swap of the exchange copy, refused while a server is listed. `vendor/benchmark_moe.py` and `config/coarse_candidates.json` are placed in `$WORK_DIR/r9700/` with their hashes checked before anything is stopped. Section *MoE verb* below |
+| Kernels (E3.S1) | `bin/r9700` (`linear-bench`, `prefixtest`), `lib/kernels.sh` (the two units and their records), `lib/kernels_verb.sh` (the grammar, the bodies, the dry runs), `lib/linear_bench.py`, `lib/prefixtest.py`, `lib/moe.sh` and `lib/moe_verb.sh` (the placement, the identity check and the cache clear it imports), `lib/series.sh` (the arm's serve options it reuses), `models/*.env` (`LINEAR_SHAPES`, `LINEAR_GROUP_SIZE`) | `linear-bench` times the model's hybrid W4A16 linear shapes in one foreground container; `prefixtest` starts one measured server for one arm and sends the twelve prefix-cache requests; each records only a validated result, under one supervisor |
 | Tests | `tests/`, `.github/workflows/tests.yml` | one runner for Python and bash tests, an owned run folder, the static checks. `research/module_tests.md` |
 
 **Config.** `config_load <machine.env> <model.env>` parses both files line by line, applies the defaults of the field table,
@@ -211,6 +212,46 @@ and a move when the hash differs, then checks the hash again; a failure is exit 
 reused). `<WORK_DIR>/r9700/moe/<model>/merged/` holds the active file and `activate.env` (≈ 3 KB) and `previous/<stamp>-<NAME>` ≈ 3 KB per activation, kept forever; a
 part file of an activation killed in its window is removed by the next `activate` when its owner is dead. `<WORK_DIR>/r9700/benchmark_moe.py` (41 KB) and `coarse_candidates.json` (11 KB) are
 replaced when `vendor/` changes.
+
+## Kernels and the prefix check (E3.S1)
+
+**Two verbs, two units, one lifecycle.** `bin/r9700 linear-bench <model> [--name <name>] [--ms "…"] [--sweep-ms "…"] [--timer graph|eager] [--out <name>] [--dry-run]` and
+`bin/r9700 prefixtest <model> [--name <name>] [--arm <arm>] [--lens "…"] [--tail <n>] [--out <name>] [--dry-run]` (`verb_linear_bench`, `verb_prefixtest`). Both are
+`supervise <verb> kernels_prepare kernels_<linear|prefix>_body`: the grammar is checked before the lock, then the lock, the restore-first, the config, and ONE `step_run`.
+The exit table above is unchanged: the verbs add no code. Exit 2 also covers a model with no `LINEAR_SHAPES` (`linear-bench`), a length that does not fit
+`MAX_MODEL_LEN`, an arm that is not in the table and a `--name` that names the record of another experiment.
+
+| Verb | Body order | The worker |
+|---|---|---|
+| `linear-bench` | `kernels: outdir …`, `moe_place kernels_assets` (hash-checked, before any stop), the dry run, the same-experiment check and the count of a recorded name (both before admission), `cleanup_hook_set moe_cache_clear`, `step_run linear-bench -- bash lib/kernels.sh linear …`, then the record's name and `summary.txt` | the identity check of every placed asset, the disk gate, the cache clear (a failed one refuses the unit), the exchange folder `<WORK_DIR>/r9700/linear/<name>/` made again, ONE foreground container (`wslc_run_once`, ceiling 5400 s cut at `T_STOP`), validation, ONE rename |
+| `prefixtest` | the same order without the cache hook | the same checks, `serve_start` of the arm's server with the series' own option builder (`_series_serve_options`), `wslc_exec` of `prefixtest.py run` inside it (ceiling 1800 s), the server's logs saved and the server stopped by name, validation, ONE rename |
+
+```mermaid
+flowchart LR
+  LB["linear-bench"] --> LU["lib/kernels.sh linear: ONE container, python3 linear_bench.py run"]
+  LU --> LV{"RC=0, linear_bench.py check: every (shape, M) pair exactly once, tuned at every sweep M"}
+  LV -->|yes| LR["kernels-&lt;model&gt;/linear/&lt;name&gt;/ (linear_bench.json, linear.log, summary.txt, linear.env)"]
+  LV -->|no| RJ["rejected/linear-&lt;name&gt;-&lt;stamp&gt;/ + reason"]
+  PT["prefixtest"] --> PU["lib/kernels.sh prefix: the arm's server, python3 prefixtest.py run inside it, the stop"]
+  PU --> PV{"RC=0, the server still listed, prefixtest.py check: exactly one line per length"}
+  PV -->|yes| PR["kernels-&lt;model&gt;/prefix/&lt;name&gt;/ (prefixtest.txt, summary.txt, server.log, prefix.env)"]
+  PV -->|no| RJ2["rejected/prefix-&lt;name&gt;-&lt;stamp&gt;/ + reason"]
+```
+
+**Reuse, not copies.** `moe_place`, `moe_identity_check`, `moe_asset_hashes` and `_moe_assets_unchanged` take the NAME of an assets function (default `moe_assets`, so the MoE
+callers and tests are unchanged); `kernels_assets` lists `linear_bench.py` and `prefixtest.py`. `_MOE_WHO` and `_MOE_PLACED_BY` name the caller in a refusal. The cache clear is the ONE
+hook: `_MOE_CLEAR_SH` clears `triton-linear` besides the two MoE folders, whichever units an invocation ran.
+
+**Records.** `<RESULTS_DIR>/kernels-<model>/linear/<name>/` and `prefix/<name>/` are final; while built they are `<name>.part-<run id>/`. A record becomes final by ONE rename after the
+validation; a failed one moves to `rejected/<kind>-<name>-<stamp>/` with a `reason`; a part a killed worker left moves there as `INTERRUPTED` at the next start of any kernels unit. A server
+that does not start or become ready is stopped by name before the worker exits (so the next try does not meet it). `--name` defaults to the UTC stamp (a new record every run); with a name
+the record is "recorded, nothing to do" only when its env file names the same experiment (`MODEL`, `IMAGE`, `MODEL_DIR`, the asset hashes and the run parameters): a difference is
+exit 2 with one line per key (`<KEY> "<recorded>" -> "<requested>"`) before anything is stopped.
+
+**Growth surfaces.** `kernels-<model>/linear/<name>/` ≈ 35 KB per run and `prefix/<name>/` ≈ 0.3 MB (the server log), kept forever; `rejected/` ≈ 35 KB (linear) or ≈ 0.3 MB (prefix) per
+rejected attempt, at most `MAX_FAILED_TRIES` per invocation; `<WORK_DIR>/r9700/linear/<name>/` (the JSON, ≈ 20 KB) is deleted and made again before every run of that name; the placed
+`linear_bench.py` and `prefixtest.py` (≈ 10 KB together) are replaced when `lib/` changes; the Triton cache `triton-linear` in the cache volume (size not measured) is cleared before every
+linear unit and in the exit path of every invocation that ran one.
 
 ## Flow
 

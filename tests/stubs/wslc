@@ -10,13 +10,15 @@ stub_mode_if_asked
 CRLF=$'\r'
 
 # ---- the MoE foreground runs (E2.S2 decision 9) -----------------------------------------------------------------------------------------------
-# moe_kind <argv...>: sets MOE_KIND to `bench` (a benchmark_moe.py run: `--tune` is a chunk, else a kernel A/B container), `clear` (the cache-clear
+# moe_kind <argv...>: sets MOE_KIND to `bench` (a benchmark_moe.py run: `--tune` is a chunk, else a kernel A/B container), `linear` (a linear_bench.py
+# run, E3.S1: the kernels worker's foreground container), `clear` (the cache-clear
 # program: `sh -c` with a program that names triton-moe-tune) or "" and returns 1 when the run is none of them (the fingerprint's throwaway run).
 moe_kind() {
   local arg prev=""
   MOE_KIND=""
   for arg in "$@"; do
     [ "$arg" = benchmark_moe.py ] && MOE_KIND=bench
+    [[ $arg == */linear_bench.py ]] && MOE_KIND=linear
     [ "$prev" = -c ] && [[ $arg == *triton-moe-tune* ]] && MOE_KIND=clear
     prev="$arg"
   done
@@ -47,7 +49,41 @@ moe_foreground() {
     if [ -f "$R9700_STUB_DIR/answers/moe_cache" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_cache"; else printf '1.3G\t/root/.cache/vllm/triton-moe-tune%s\n' "$CRLF"; fi
     return "$(moe_answer moe_clear_rc 0)" # answers/moe_clear_rc: the exit code of the clear container (default 0)
   fi
+  if [ "$MOE_KIND" = linear ]; then linear_bench "$name" "$@"; return $?; fi
   moe_bench "$name" "$@"
+}
+
+# linear_bench <name> <argv...>: a linear_bench.py container (E3.S1). Every answer file is read from $R9700_STUB_DIR only; the stub never runs a program:
+#   answers/linear_seconds   how long the container runs (default 0)
+#   answers/linear           a file: copied to the path of `--out` (a path under /work, which is $R9700_WORK_DIR here); without it nothing is written
+#   answers/linear.log       the container's output (default one line)
+#   answers/linear_rc        the exit code (default 0)
+linear_bench() {
+  local arg prev="" out=""
+  shift
+  for arg in "$@"; do
+    [ "$prev" = --out ] && out="$arg"
+    prev="$arg"
+  done
+  sleep "$(moe_answer linear_seconds 0)" < /dev/null > /dev/null 2>&1 &
+  MOE_SLEEPER=$!
+  wait "$MOE_SLEEPER"
+  if [ -f "$R9700_STUB_DIR/answers/linear" ] && [ -n "$out" ]; then cp "$R9700_STUB_DIR/answers/linear" "${R9700_WORK_DIR:?}/${out#/work/}"; fi
+  if [ -f "$R9700_STUB_DIR/answers/linear.log" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/linear.log"; else printf 'stub linear bench%s\n' "$CRLF"; fi
+  return "$(moe_answer linear_rc 0)"
+}
+
+# prefix_call <name> python3 <script> run <url> <model> <tag> ... (the first word is the container's name): what prefixtest.py would print (E3.S1): answers/prefix with its first word replaced by the asked
+# tag, else the two recorded lines of fcombo-1 (results § 13.3). answers/prefix_rc is the exit code; R9700_STUB_DELAY_S holds the call first.
+prefix_call() {
+  local tag="${7:-t}"
+  [ -n "${R9700_STUB_DELAY_S:-}" ] && sleep "$R9700_STUB_DELAY_S"
+  if [ -f "$R9700_STUB_DIR/answers/prefix" ]; then sed -e "s/^[^ ]* /$tag /" -e "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/prefix"
+  else
+    printf '%s prefixtest len=8192 A cold=2.1s A hit=0.5s A hit=0.51s B cold=2.15s B hit=0.48s A partial=0.49s%s\n' "$tag" "$CRLF"
+    printf '%s prefixtest len=1024 A cold=0.22s A hit=0.22s A hit=0.2s B cold=0.19s B hit=0.2s A partial=0.19s%s\n' "$tag" "$CRLF"
+  fi
+  return "$(moe_answer prefix_rc 0)"
 }
 
 # moe_answer <file name> <default>: the content of answers/<file name> (first line), else the default
@@ -207,6 +243,8 @@ exec_in() {
     done
     [ -n "${R9700_STUB_DELAY_S:-}" ] && sleep "$R9700_STUB_DELAY_S"
     bench_lines "$c" "$seed" "$len" "$outlen"
+  elif [ "${1:-}" = python3 ] && [[ ${2:-} == */prefixtest.py ]]; then
+    prefix_call "$name" "$@"
   elif [ "${1:-}" = python3 ] && [[ ${2:-} == */harness.py ]]; then
     harness_call "$2" "${3:-}" "${@:4}"
   elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *urlopen*/metrics* ]]; then

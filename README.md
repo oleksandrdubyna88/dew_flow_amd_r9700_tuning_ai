@@ -66,6 +66,34 @@ Where things are:
 To resume, run the same `chunk` command: a recorded chunk is skipped before anything is stopped. Name another `--chunk` for a second search. For a long search
 set `MAX_RUN_MINUTES` (up to 2880) and `MOE_CHUNK_MAX_S` in `machine.env`.
 
+## Kernels and the prefix check
+
+Two more single steps, each one supervised run (one lock, ONE stop of your server, ONE restore), each recorded only when its result is complete and valid:
+
+- `bin/r9700 linear-bench <model>` times the model's hybrid W4A16 linear shapes (the model file's `LINEAR_SHAPES`, no shape is typed in a script) in one foreground container with
+  the CUDA-graph timer: per shape and M the vLLM default dispatch, the HIP op split into chunks of at most five rows, and the best of a 144-tile Triton sweep at the sweep Ms. It records the
+  rows and prints the table of the results document (§ 12.1: per M, the sum over the shapes in ms, and the change of the tuned kernel against the default). The recorded graph-timer run took about 6 minutes (00:12 to 00:18 of the night of 2026-10-30); the eager run took 11.
+- `bin/r9700 prefixtest <model>` starts one measured server for one arm (`--arm`, default `base`) and sends twelve prefix-cache requests (per length: A cold, A hit twice, B cold, B hit, A
+  with its last 64 tokens changed). It records the two lines and prints their cold/hit ratios. It applies no threshold: it is the measurement behind the § 6.1 question.
+
+```bash
+bin/r9700 linear-bench qwen3.6-35b-a3b-gptq --name first
+bin/r9700 prefixtest qwen3.6-35b-a3b-gptq --name first --arm base
+```
+
+Options: `linear-bench` takes `--ms "…"` (default `1 2 3 4 5 6 8 10 12 16`), `--sweep-ms "…"` (default `6 8 12 16`, each also in `--ms`) and `--timer graph|eager` (default `graph`;
+the eager timer includes launch overhead and its sum is not a decode time). `prefixtest` takes `--lens "…"` (default `8192 1024`; each plus one must fit `MAX_MODEL_LEN`) and `--tail <n>`
+(default 64, below the shortest length). Both take `--name <name>` (default the UTC stamp: a new record every run), `--out <name>` (default `kernels-<model name>`) and `--dry-run`, which
+prints the resolved container lines and starts nothing (like `moe-tune --dry-run` it takes the lock and restores first).
+
+The records are `<RESULTS_DIR>/kernels-<model>/linear/<name>/` (`linear_bench.json`, `linear.log`, `summary.txt`, `linear.env`) and `prefix/<name>/` (`prefixtest.txt`, `summary.txt`,
+`server.log`, `prefix.env`); a failed attempt is kept in `rejected/` with a `reason`. Nothing there is deleted. With `--name`, the same command again skips a recorded name before anything is
+stopped, but only when it is the same experiment: when the model, the image, a parameter or a placed file differs, the command refuses and names the key (`the record linear/first is
+another experiment: MS "1 2 6" -> "1 2"`).
+
+`linear-bench` refuses a model whose `LINEAR_SHAPES` is empty: the 27B AWQ file leaves it empty because nobody has measured whether that model takes the hybrid W4A16 kernel. The 35B file
+carries the five shapes of the speed-options runs. A new model gets its shapes in its model file (`LINEAR_SHAPES`, `LINEAR_GROUP_SIZE`; `research/module_config.md`).
+
 Where the records of a series are: `<RESULTS_DIR>/<name>/rounds/<arm>-<round>/` is one arm-round and exists only when it is complete; an attempt that failed
 its checks is kept, with a `reason`, in `rejected/`; an arm that did not start twice is in `unsupported/`; `fingerprint.json` is the identity of the
 series; `<RESULTS_DIR>/runs/` has one folder per invocation (the supervisor's log, the guards' logs). Nothing under `<RESULTS_DIR>` is ever deleted
@@ -75,7 +103,7 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 
 - `0` done.
 - `1` `verdict`: at least one arm is INCOMPLETE (a round is missing).
-- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused.
+- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment.
 - `4` another run holds the lock.
 - `5` the restore of your own server did not become ready: look at the server by hand; the recovery marker stays.
 - `6` the deadline stopped the run (or the next arm-round no longer fits before it): run the same command again.

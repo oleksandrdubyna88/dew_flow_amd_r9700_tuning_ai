@@ -396,9 +396,9 @@ t_l18_the_verb_list_is_derived_and_the_catalogue_matches_it() {
 t_l20_an_unknown_verb_is_refused_naming_the_legal_ones() {
   lc_setup "$FUNCNAME"
   assert_exit 2 "an unknown verb" -- r9700 nosuch
-  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init moe-tune series step verdict' "$ERR" "the line"
+  assert_eq 'r9700: unknown verb "nosuch"; legal: commands init linear-bench moe-tune prefixtest series step verdict' "$ERR" "the line"
   assert_exit 2 "no verb" -- r9700
-  assert_contains "$ERR" "legal: commands init moe-tune series step verdict" "the same list"
+  assert_contains "$ERR" "legal: commands init linear-bench moe-tune prefixtest series step verdict" "the same list"
   assert_exit 2 "a verb that only looks like one" -- r9700 'verb_init'
   assert_missing "$STUB/calls.log" "nothing was called"
 }
