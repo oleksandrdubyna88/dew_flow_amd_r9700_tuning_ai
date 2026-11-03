@@ -232,6 +232,20 @@ moe_stop_by_name() {
   return 0
 }
 
+# moe_stop_verified <container>: moe_stop_by_name, then a CHECK that the container is no longer listed, up to 3 stops (a pause between them); 0 gone, 1 still listed (or the
+# list cannot be read: then it cannot be ruled out). The result of each stop is not trusted: only the list is. A caller that gets 1 refuses, so the supervisor's cleanup sweep
+# owns the container (E3 code gate).
+moe_stop_verified() {
+  local R9700_T_STOP="" try
+  for try in 1 2 3; do
+    wslc_stop "$1" > /dev/null 2>&1
+    wslc_list 2> /dev/null | grep -Fxq -- "$1" || { wslc_list > /dev/null 2>&1 && return 0; }
+    echo "kernels: $1 is still listed after stop $try of 3$([ "$try" -lt 3 ] && echo ", stopping it again")"
+    [ "$try" -lt 3 ] && sleep "$(t_scale 2)" 9>&-
+  done
+  return 1
+}
+
 # _moe_stop_came: 0 when the stop time of the supervisor has come (R9700_T_STOP, an epoch second; 50 ms of slack for a timer that fires at it)
 _moe_stop_came() {
   [[ ${R9700_T_STOP:-} =~ ^[0-9]+$ ]] || return 1

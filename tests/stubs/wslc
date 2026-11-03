@@ -284,6 +284,15 @@ case "${1:-}" in
   list) list_containers ;;
   stop)
     [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"
+    # stop-fail-<name>: a count; that many `stop <name>` calls fail and leave the container running (a stop that does not work), then stops work again
+    if [ -f "$R9700_STUB_DIR/stop-fail-${2:-}" ]; then
+      read -r _left < "$R9700_STUB_DIR/stop-fail-${2:-}"
+      if [ "${_left:-0}" -gt 0 ]; then
+        printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/stop-fail-${2:-}"
+        echo "stub: stop failed (scripted): ${2:-}" >&2
+        exit 1
+      fi
+    fi
     # on-stop-<name>: a script of the test (E1.S3), run once that container is stopped: the way a test changes the world at a unit's end
     if stub_container_stop "${2:-}"; then
       printf '%s%s\n' "$2" "$CRLF"
@@ -292,7 +301,7 @@ case "${1:-}" in
       exit 1
     fi
     ;;
-  logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
+  logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/on-logs-${2:-}" ] && bash "$R9700_STUB_DIR/on-logs-${2:-}"; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
   exec) stub_require_running "${2:-}" || exit 1; shift; exec_in "$@" ;;
   *) echo "stub: wslc: unknown subcommand \"${1:-}\"" >&2; exit 2 ;;
 esac

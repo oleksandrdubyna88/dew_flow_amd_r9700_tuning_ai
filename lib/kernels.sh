@@ -194,14 +194,15 @@ kernels_linear_unit() {
   _MOE_HASHES="$(moe_asset_hashes kernels_assets)"
   _moe_disk_gate || return 1
   _moe_clear_before_unit || return 2
-  part="$outdir/linear/$name.part-$RUN_ID"
-  mkdir -p "$outdir/linear" && mkdir "$part" || { echo "kernels: $part cannot be made"; return 1; }
   exchange="$(kernels_exchange_dir linear "$name")"
-  # a half-written JSON holds no evidence: the folder is deleted and made again; one that cannot be emptied would let a stale file pass `check`: refused
+  # a half-written JSON holds no evidence: the folder is deleted and made again; one that cannot be emptied would let a stale file pass `check`: refused. BEFORE the part
+  # is made: a refusal that left an empty part would be turned into a false INTERRUPTED record by the next start's sweep.
   if ! rm -rf "${exchange:?}" 2> /dev/null || ! mkdir -p "$exchange" || [ -n "$(ls -A "$exchange" 2> /dev/null)" ]; then
     _moe_refuse "the exchange folder $exchange cannot be cleared"
     return 2
   fi
+  part="$outdir/linear/$name.part-$RUN_ID"
+  mkdir -p "$outdir/linear" && mkdir "$part" || { echo "kernels: $part cannot be made"; return 1; }
   cname="$(container_name "linear-bench-${R9700_STEP_N:?}")" || return 2
   kernels_linear_argv argv "$cname" "$name" "$timer" "$ms" "$sweep"
   started="$(_moe_iso)"
@@ -250,19 +251,20 @@ _kern_prefix_validate() {
   [ -s "$part/server.log" ] || { _MOE_REASON="server.log is empty"; return 1; }
 }
 
-# _kern_prefix_serve <part> <server name> <arm>: starts the arm's server as the series does (the same option builder); 0 ready. A server that did not start or
-# become ready is stopped by name here, before the worker goes on.
+# _kern_prefix_serve <part> <server name> <arm>: starts the arm's server as the series does (the same option builder); 0 ready, 1 not ready and stopped, 3 not ready and
+# STILL LISTED after the bounded stops (the caller refuses: the supervisor's cleanup sweep owns the container). A server that did not start or become ready is stopped by
+# name here and the stop is checked against the list, before the worker goes on.
 _kern_prefix_serve() {
   local -a envs=() mounts=() sargs=()
   _series_serve_options envs mounts sargs "$3"
   serve_start "$2" "$1/server.log" "${envs[@]}" "${mounts[@]}" -- "${sargs[@]}" && return 0
-  _kern_stop_server "$2"
+  moe_stop_verified "$2" || return 3
   return 1
 }
 
 # kernels_prefix_unit <outdir> <model> <name> <arm> <lens> <tail>
 kernels_prefix_unit() {
-  local outdir="$1" model="$2" name="$3" arm="$4" lens="$5" tail="$6" part sname started finished rc valid alive=0
+  local outdir="$1" model="$2" name="$3" arm="$4" lens="$5" tail="$6" part sname started finished rc valid alive=0 logs
   local -a words=()
   if [ -d "$outdir/prefix/$name" ]; then echo "prefix $name: recorded, nothing to do"; return 0; fi
   echo "=== $(_moe_iso) prefix $name (arm $arm, lens $lens, tail $tail)"
@@ -273,8 +275,15 @@ kernels_prefix_unit() {
   mkdir -p "$outdir/prefix" && mkdir "$part" || { echo "kernels: $part cannot be made"; return 1; }
   sname="$(container_name "prefix-$arm-${R9700_STEP_N:?}")" || return 2
   started="$(_moe_iso)"
-  if ! _kern_prefix_serve "$part" "$sname" "$arm"; then
+  _kern_prefix_serve "$part" "$sname" "$arm"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
     if _moe_stop_came; then _moe_deadline "the start of $sname"; return 1; fi # the adapter refuses every call at the stop time: not the arm's fault, the part stays as evidence
+    if [ "$rc" -eq 3 ]; then
+      _kern_reject "$outdir" prefix "$name" "$part" "not ready, and $sname is still listed after its stops"
+      _moe_refuse "$sname is still listed after 3 stops; the supervisor's cleanup sweep owns it" # KIND=refused: no retry beside a live container
+      return 2
+    fi
     _kern_reject "$outdir" prefix "$name" "$part" "not ready: $sname did not start or become ready"
     return 1
   fi
@@ -283,7 +292,9 @@ kernels_prefix_unit() {
   rc=$?
   if [ "$rc" -ne 0 ] && _moe_stop_came; then _kern_stop_server "$sname"; _moe_deadline "the prefix check $name"; return 1; fi
   _series_alive "$sname" && alive=1
-  if wslc_logs "$sname" > "$part/server.log.new" 2> /dev/null && [ -s "$part/server.log.new" ]; then mv -f "$part/server.log.new" "$part/server.log"; else rm -f "$part/server.log.new"; fi
+  # the logs are taken beside the part (in the run folder) and moved in whole: a kill in the middle leaves nothing inside the record
+  logs="${R9700_RUN_DIR:?}/steps/${R9700_STEP_N:?}.server.log.new"
+  if wslc_logs "$sname" > "$logs" 2> /dev/null && [ -s "$logs" ]; then mv -f "$logs" "$part/server.log"; else rm -f "$logs"; fi
   _kern_stop_server "$sname"
   finished="$(_moe_iso)"
   _kern_prefix_env "$part" "$name" "$model" "$arm" "$lens" "$tail" "$sname" "$started" "$finished" "$rc"

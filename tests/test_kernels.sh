@@ -297,6 +297,61 @@ t_kw17_a_linear_container_left_running_by_a_cut_call_is_stopped_before_the_unit_
   assert_exit 0 "the second try recorded" -- test -s "$RECS/linear/n1/linear_bench.json"
 }
 
+t_kw18_a_failed_stop_of_an_unready_server_is_tried_again_and_checked() {
+  kernels_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1
+  local name="${R9700_CONTAINER_PREFIX}prefix-base-1"
+  printf 'down\n' > "$STUB/answers/ready.$name"
+  printf '1\n' > "$STUB/stop-fail-$name" # the first stop does not work
+  assert_exit 7 "a stub prefix unit whose server is not ready and whose first stop fails" -- kprefix p1 base "8192 1024" 64
+  assert_contains "$(worker_log 1)" "kernels: $name is still listed after stop 1 of 3, stopping it again" "the worker checked the first stop and said so"
+  assert_eq "2" "$(grep -c " wslc stop $name\$" "$STUB/calls.log")" "two stops in all"
+  assert_missing "$STUB/containers/$name.pid" "the server is gone"
+  assert_contains "$(cat "$(rejected_of prefix p1)/reason")" "not ready" "and the first try is a plain rejected record"
+}
+
+t_kw19_a_server_that_cannot_be_stopped_is_refused_for_the_supervisors_sweep() {
+  kernels_setup "$FUNCNAME"
+  local name="${R9700_CONTAINER_PREFIX}prefix-base-1"
+  printf 'down\n' > "$STUB/answers/ready.$name"
+  printf '3\n' > "$STUB/stop-fail-$name" # every bounded try of the worker fails; the supervisor's own sweep after it works
+  assert_exit 2 "a stub prefix unit whose server is not ready and cannot be stopped" -- kprefix p1 base "8192 1024" 64
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused: no retry beside a live container"
+  assert_contains "$O_DETAIL" "$name is still listed after 3 stops" "the line names the server and the number of stops"
+  assert_contains "$(cat "$(rejected_of prefix p1)/reason")" "still listed" "the attempt is kept as evidence"
+  assert_eq "0" "$(find "$RECS" -name '*.part-*' | wc -l | tr -d ' ')" "no part directory is left"
+  assert_missing "$STUB/containers/$name.pid" "the supervisor's cleanup sweep stopped the server in the end"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore"
+}
+
+t_kw20_a_refused_exchange_folder_leaves_no_part_directory_for_a_false_interrupted_record() {
+  kernels_setup "$FUNCNAME"
+  if [ "$(id -u)" = 0 ]; then assert_eq ok ok "skipped: running as root (chmod a-w does not stop root)"; return; fi
+  mkdir -p "$WORK/linear/n1"
+  : > "$WORK/linear/n1/stale"
+  chmod a-w "$WORK/linear/n1" # the stale file cannot be removed
+  assert_exit 2 "a stub linear unit over an exchange folder that cannot be cleared" -- klinear n1 graph "1 2 6" "6"
+  chmod u+w "$WORK/linear/n1"
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused"
+  assert_eq "0" "$(find "$RECS" -name '*.part-*' 2> /dev/null | wc -l | tr -d ' ')" "no empty part directory was made before the refusal"
+  rm -f "$WORK/linear/n1/stale"
+  assert_exit 0 "the same unit once the folder is fine" -- klinear n1 graph "1 2 6" "6"
+  assert_missing "$RECS/rejected" "and no INTERRUPTED record was made from a part the refusal left"
+}
+
+t_kw21_the_server_log_is_never_a_temporary_file_inside_the_part() {
+  kernels_setup "$FUNCNAME"
+  local name="${R9700_CONTAINER_PREFIX}prefix-base-1"
+  printf 'find "%s" -name "server.log.new*" > "%s/logs-seen"\n' "$RECS" "$CASE" > "$STUB/on-logs-$name" # what the part holds while `wslc logs` runs
+  assert_exit 0 "a stub prefix unit" -- kprefix p1 base "8192 1024" 64
+  assert_exit 0 "the logs call ran" -- test -e "$CASE/logs-seen"
+  assert_eq "" "$(cat "$CASE/logs-seen")" "no temporary log file stood in the record while the logs were taken: a kill then leaves nothing behind"
+  assert_exit 0 "server.log is there" -- test -s "$RECS/prefix/p1/server.log"
+  assert_eq "0" "$(find "$RECS" -name 'server.log.new*' | wc -l | tr -d ' ')" "and no temporary file at the end"
+}
+
 t_kw14_a_recorded_name_is_not_run_again_by_the_worker() {
   kernels_setup "$FUNCNAME"
   assert_exit 0 "a stub linear unit" -- klinear n1 graph "1 2 6" "6"

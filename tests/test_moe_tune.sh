@@ -562,7 +562,9 @@ t_u17_container_paths_have_one_translation_that_refuses_what_is_not_under_work()
   assert_eq "$R9700_WORK_DIR/moe/tune/merged" "$(container_host_path /work/moe/tune/merged)" "/work/<rest> is WORK_DIR/<rest>"
   assert_eq "$R9700_WORK_DIR/r9700/moe/$MOE_MODEL" "$(moe_exchange_dir "$MOE_MODEL")" "the exchange folder is the translation of its container path"
   local bad rc
-  for bad in /data/moe /work /workx/a "/work/../etc" ""; do
+  assert_eq "$R9700_WORK_DIR/r9700/model..json" "$(container_host_path /work/r9700/model..json)" "a name that holds two dots is a path (only a whole component .. is refused)"
+  assert_eq "$R9700_WORK_DIR/a/..b/c.." "$(container_host_path /work/a/..b/c..)" "and so are ..b and c.. as components"
+  for bad in /data/moe /work /workx/a "/work/../etc" "/work/a/.." "/work/a/../b" "/work/a/b/../../.." ""; do
     container_host_path "$bad" > /dev/null 2>&1
     rc=$?
     assert_eq "1" "$rc" "\"$bad\" does not translate (1, never an empty answer taken for a path)"
