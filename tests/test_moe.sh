@@ -343,7 +343,14 @@ t_t9_a_ram_stop_during_a_chunk_leaves_no_prefixed_container_no_worker_process_an
   pwsh="$(line_of " pwsh.exe ")"
   if [ -n "$stop" ] && [ "$stop" -lt "$clear" ] && [ "$clear" -lt "$pwsh" ]; then assert_eq ok ok "in the call log: the stop (line $stop), then the exit-path clear (line $clear), then the restore (line $pwsh)"; else assert_eq "stop < clear < restore" "$stop $clear $pwsh" "the order in the call log"; fi
   assert_contains "$(sup_log)" "cleanup hook: moe_cache_clear rc=0" "the supervisor log says the hook ended with rc=0"
-  assert_eq "1" "$(find "$RECS/chunks" -maxdepth 1 -name '*.part-*' | wc -l | tr -d ' ')" "the part directory stays in chunks/ until the next worker start"
+  # The guard stops the chunk container and the worker's session. A worker still alive after the container stop rejects its part into
+  # rejected/; one the session kill reaches first leaves it in chunks/ for the next start's sweep. Both keep the attempt and make no record
+  # (CI failed on "stays in chunks/" alone on 2026-11-03), so the guarantee is: exactly one kept attempt, and no final record.
+  local parts rejected
+  parts="$(find "$RECS/chunks" -maxdepth 1 -name '*.part-*' | wc -l | tr -d ' ')"
+  rejected="$(find "$RECS/rejected" -maxdepth 1 -mindepth 1 -name 'int4-24*' 2> /dev/null | wc -l | tr -d ' ')"
+  assert_eq "1" "$((parts + rejected))" "the attempt is kept once: a part in chunks/ ($parts) or a record in rejected/ ($rejected)"
+  assert_missing "$RECS/chunks/int4-24" "and no final chunk record"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "the server was restored once"
 }
 
