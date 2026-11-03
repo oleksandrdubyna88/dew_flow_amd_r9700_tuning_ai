@@ -252,15 +252,48 @@ t_l12_after_an_exit_3_the_server_is_restored_while_the_wait_goes_on_until_the_st
   kill_recorded_pids "$CASE"
 }
 
-t_l12_the_stops_per_invocation_are_bounded_by_max_server_stops() {
+# E3.S2 decision 4: MAX_SERVER_STOPS counts ACTUAL stops of the operator's server (charged right before the stop, only when the server is listed). The
+# first draft counted every admission, so a worker that exits 3 on a quiet PC was refused at its second admission although the server was stopped once.
+t_l12_an_admission_that_finds_the_server_already_down_charges_nothing_against_max_server_stops() {
   step_setup "$FUNCNAME"
   step_cfg MAX_SERVER_STOPS=1 MAX_FAILED_TRIES=1
   prod_running
-  assert_exit 8 "worker exit3 with MAX_SERVER_STOPS=1, the PC quiet throughout" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" exit3
-  assert_eq "r9700: admitted 1 times (each admission stops the operator's server), limit MAX_SERVER_STOPS=1" "$ERR" "the stderr line says what an admission is"
-  assert_eq "1" "$(log_count pwsh.exe -Detach)" "pwsh.exe once (the cleanup)"
-  assert_eq "1" "$(count_calls wslc stop)" "and one stop"
+  assert_exit 0 "worker exit3-then-ok with MAX_SERVER_STOPS=1, the PC quiet throughout: the second admission finds the server down" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" exit3-then-ok
+  assert_not_contains "$ERR" "MAX_SERVER_STOPS" "no stop budget line"
+  assert_eq "2" "$(wc -l < "$STUB/worker.calls" | tr -d ' ')" "the worker ran twice: both admissions went through"
+  assert_eq "2" "$(grep -c ' admitted$' "$(run_dir_of)/supervisor.log")" "two admissions in the supervisor log"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore (the cleanup)"
+  assert_eq "1" "$(count_calls wslc stop)" "and one stop of the server"
   assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
+  kill_recorded_pids "$CASE"
+}
+
+# an admission that WOULD stop the server past the cap is refused before the marker, the stop and any worker, with exit 8; the cap is reached only by real
+# stops: here a worker that exits 3 on a busy PC (the server goes back up while we wait, decision 15) and a quiet PC again, so the second admission lists
+# the server and would stop it a second time
+t_l12_the_stops_per_invocation_are_bounded_by_real_stops_and_a_refused_admission_starts_nothing() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_SERVER_STOPS=1 MAX_FAILED_TRIES=1
+  prod_running
+  # the first call counts itself, makes the PC busy and exits 3; a second call must never happen (the paths are baked in: the worker has no $CASE)
+  local script
+  script="echo x >> '$CASE/busy.count'; printf '9.0 0.40 0.30 1/100 1\\n' > '$CASE/loadavg'; exit 3"
+  step_bg --model "$MODEL_35B" t -- bash -c "$script"
+  local run i
+  run="$(run_dir_of)"
+  for i in $(seq 1 200); do grep -q "restoring the operator's server while the PC is not quiet" "$run/supervisor.log" 2> /dev/null && break; sleep 0.05; done
+  set_load 0.5
+  step_end
+  assert_eq "8" "$SRC" "exit 8"
+  assert_eq "r9700: stopped the operator's server 1 times, limit MAX_SERVER_STOPS=1" "$SERR" "the stderr line says what is counted"
+  assert_eq "1" "$(wc -l < "$CASE/busy.count" | tr -d ' ')" "the worker ran once: the refused admission started none"
+  assert_eq "1" "$(count_calls wslc stop)" "and the server was stopped once"
+  assert_eq "1" "$(grep -c ' admitted$' "$run/supervisor.log")" "one admission"
+  assert_missing "$run/steps/2.marker" "the refused admission wrote no marker"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "the one restore was the busy-wait restore"
+  assert_missing "$MARKER_FILE" "no marker stands"
+  assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
+  assert_eq "not-quiet" "$(cat "$run/status")" "the status is not-quiet (exit 8)"
   kill_recorded_pids "$CASE"
 }
 

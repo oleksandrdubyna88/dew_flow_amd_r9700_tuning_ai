@@ -10,7 +10,7 @@
 #                                      step or the worker said nothing more fits; 7 the step failed MAX_FAILED_TRIES times; 8 not quiet before
 #                                      the deadline, or the server-stop budget is used; 9 the disk gate stopped the run
 #
-# Per invocation (reset by supervise): _RG_STEP_N counts worker starts (the number in steps/<n>.*), _RG_STOPS the admissions, _RG_PROD_STOPPED
+# Per invocation (reset by supervise): _RG_STEP_N counts worker starts (the number in steps/<n>.*), _RG_STOPS the ACTUAL stops of the operator's server, _RG_PROD_STOPPED
 # says whether the marker stands (the server is stopped by us), _RG_PROD_WAS what the server's state was before the first stop.
 
 _STEP_LABEL_RE='^[a-z0-9][a-z0-9-]{0,39}$'
@@ -91,16 +91,16 @@ _step_admit() {
   local label="$1" listing rc n listed=no gate outcome wlog
   shift
   _step_disk_gate || return 9
-  if [ $((_RG_STOPS + 1)) -gt "$R9700_MAX_SERVER_STOPS" ]; then
-    rg_err "r9700: admitted $_RG_STOPS times (each admission stops the operator's server), limit MAX_SERVER_STOPS=$R9700_MAX_SERVER_STOPS"
+  if ! _rg_run listing wslc_list; then _RG_FAIL="the container list failed (${listing%%$'\n'*})"; return 1; fi
+  grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing" && listed=yes
+  # MAX_SERVER_STOPS is a RUN-WIDE cap on ACTUAL stops of the operator's server (E3.S2 decision 4): charged right before the stop below, and only when the
+  # server is listed. An admission that finds it already down (the quiet chain after the first step, the retry after an exit 3) charges nothing, so a quiet
+  # chain of any length costs ONE stop and ONE restore. An admission that would stop the server past the cap is refused HERE: before the marker, the
+  # stop and any worker; the marker of an earlier stop stands, and cleanup_once restores from it. Nothing resets the count inside an invocation.
+  if [ "$listed" = yes ] && [ $((_RG_STOPS + 1)) -gt "$R9700_MAX_SERVER_STOPS" ]; then
+    rg_err "r9700: stopped the operator's server $_RG_STOPS times, limit MAX_SERVER_STOPS=$R9700_MAX_SERVER_STOPS"
     return 8
   fi
-  if ! _rg_run listing wslc_list; then _RG_FAIL="the container list failed (${listing%%$'\n'*})"; return 1; fi
-  # An admission counts once the container list answered, that is once it goes on to the marker and the stop: a list that failed never got
-  # that far, and three failed lists are failed tries (exit 7), not three stops of the server. (After an exit 3 the server is already down and
-  # the admission still counts: decision 15, scenario L12.)
-  _RG_STOPS=$((_RG_STOPS + 1))
-  grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing" && listed=yes
   # What the restore must put back: yes when the server runs now; else what it was before our first stop
   if [ "$listed" = yes ]; then _RG_PROD_WAS=yes; elif [ "${_RG_PROD_STOPPED:-no}" != yes ]; then _RG_PROD_WAS=no; fi
   n=$((_RG_STEP_N + 1))
@@ -111,9 +111,11 @@ _step_admit() {
   _RG_PROD_STOPPED=yes
   cp -p "$MARKER_FILE" "$RUN_DIR/steps/$n.marker" # the evidence if the supervisor dies before the worker keys; replaced below, with this time
   if [ "$listed" = yes ]; then
+    _RG_STOPS=$((_RG_STOPS + 1))
     wslc_stop "$R9700_PROD_CONTAINER"
     rc=$?
     if [ "$rc" -ne 0 ]; then _RG_FAIL="stopping $R9700_PROD_CONTAINER failed (code $rc)"; return 1; fi
+    rg_log "stopped the operator's server (stop $_RG_STOPS of $R9700_MAX_SERVER_STOPS)"
   fi
   rg_log admitted
   export R9700_RUN_DIR="$RUN_DIR" R9700_STEP_N="$n" R9700_STEP_LABEL="$label" R9700_OUTCOME_FILE="$outcome"
@@ -189,6 +191,10 @@ _step_settle() {
   rg_err "r9700: deadline: step stopped at $when, $_RG_UNITS_DONE units done"
   return 6
 }
+
+# step_budget_reset: the failed-try count of the next step (step_run zeroes it itself; a chain says it where it begins a step). The stop count _RG_STOPS is
+# run-wide and is NEVER reset by a step: a chain that bounced the server once per step would otherwise have no cap at all (E3.S2 decision 4).
+step_budget_reset() { _RG_TRIES=0; }
 
 step_run() {
   local label="${1:-}" rc
