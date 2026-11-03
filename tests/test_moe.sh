@@ -746,4 +746,16 @@ t_t31_a_long_chunk_prints_a_heartbeat_and_the_log_and_argv_are_untouched() {
   assert_not_contains "${ARGV[*]}" "heartbeat" "and nor does the argv"
 }
 
+t_t32_a_chunk_container_left_running_by_a_cut_call_is_stopped_before_a_retry_starts() {
+  moe_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=2
+  printf '124\n' > "$STUB/answers/fault.${R9700_CONTAINER_PREFIX}moe-tune-int4-24" # cut at the ceiling, the container stays listed (once)
+  assert_exit 0 "a stub chunk whose first call is cut (124); the retry runs clean under the same container name" -- moe_chunk int4-24 experts full 24
+  local stop second
+  stop="$(line_of " wslc stop ${R9700_CONTAINER_PREFIX}moe-tune-int4-24")"
+  second="$(run_lines moe-tune-int4-24 | tail -n 1)"
+  if [ -n "$stop" ] && [ -n "$second" ] && [ "$stop" -lt "$second" ] && [ "$(run_lines moe-tune-int4-24 | wc -l | tr -d ' ')" = 2 ]; then assert_eq ok ok "the cut call's container was stopped by name (line $stop) before the second run (line $second)"; else assert_eq "stop < the second run" "$stop $second" "the order"; fi
+  assert_exit 0 "the second try recorded" -- test -s "$RECS/chunks/int4-24/$FIX_B2_NAME"
+}
+
 run_all_tests

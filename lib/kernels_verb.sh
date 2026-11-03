@@ -122,7 +122,7 @@ kernels_prepare() {
 
 # _kern_request_identity: the identity lines of the request (the identity words, then the asset hashes as the placed files now are)
 _kern_request_identity() {
-  if [ "$_KERN_VERB" = linear-bench ]; then kernels_identity linear "$_KERN_MODEL" "$_KERN_MS" "$_KERN_SWEEP" "$_KERN_TIMER"
+  if [ "$_KERN_VERB" = linear-bench ]; then kernels_identity linear "$_KERN_MODEL" "$_KERN_MS" "$_KERN_SWEEP" "$_KERN_TIMER" "$_KERN_NAME"
   else kernels_identity prefix "$_KERN_MODEL" "$_KERN_ARM" "$_KERN_LENS" "$_KERN_TAIL"; fi
   moe_asset_hashes kernels_assets
 }
@@ -163,9 +163,9 @@ _kern_dry_prefix() {
 # recorded name (before admission: nothing is stopped for a record that is done), then ONE step_run; a done step prints its record and its summary.
 _kern_body() {
   local kind="$1" outdir="$R9700_RESULTS_DIR/$_KERN_OUT" dest
+  local _MOE_PLACED_BY="$_KERN_VERB" # local: it names the verb in a placement refusal and must not leak to a later step of a chain
   local -a worker=()
   echo "kernels: outdir $outdir"
-  _MOE_PLACED_BY="$_KERN_VERB"
   moe_place kernels_assets || return 2
   if [ "$_KERN_DRY" = yes ]; then
     if [ "$kind" = linear ]; then _kern_dry_linear; else _kern_dry_prefix; fi

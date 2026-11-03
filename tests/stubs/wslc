@@ -33,6 +33,7 @@ moe_kind() {
 #       save dir (the path /work/ read as $R9700_WORK_DIR/; no folder: nothing is written, the half-written chunk), prints the log, exits with the rc
 #   answers/moe_ab_seconds, moe_ab.<arm>[.<rep>]          a kernel A/B container (the arm is the word after `moe-ab-` in the name, the rep its number): sleeps, prints
 #   answers/moe_cache                                     the clear: prints it (default one `du` line)
+#   answers/fault.<name>                                  a chunk, A/B or linear container: exits with the code in the file (once) and stays listed (foreground_fault)
 moe_foreground() {
   local name="$1" file="$R9700_STUB_DIR/containers/$1.pid"
   shift
@@ -49,8 +50,21 @@ moe_foreground() {
     if [ -f "$R9700_STUB_DIR/answers/moe_cache" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_cache"; else printf '1.3G\t/root/.cache/vllm/triton-moe-tune%s\n' "$CRLF"; fi
     return "$(moe_answer moe_clear_rc 0)" # answers/moe_clear_rc: the exit code of the clear container (default 0)
   fi
-  if [ "$MOE_KIND" = linear ]; then linear_bench "$name" "$@"; return $?; fi
-  moe_bench "$name" "$@"
+  local rc
+  if [ "$MOE_KIND" = linear ]; then linear_bench "$name" "$@"; rc=$?; else moe_bench "$name" "$@"; rc=$?; fi
+  foreground_fault "$name" rc
+  return "$rc"
+}
+
+# foreground_fault <name> <rc variable>: answers/fault.<name> holds an exit code (a ceiling that cut the call: 124): the foreground run returns it AND leaves its
+# container running and listed, as a `wslc run` cut by the adapter's ceiling can; the file is used once, so a retry starts clean (E3.S1 review)
+foreground_fault() {
+  local file="$R9700_STUB_DIR/answers/fault.$1"
+  [ -f "$file" ] || return 0
+  printf -v "$2" '%s' "$(head -n 1 "$file")"
+  rm -f "$file"
+  MOE_PIDFILE=/nonexistent/none # the exit trap must not remove the record of the container that stays
+  stub_container_start "$1"
 }
 
 # linear_bench <name> <argv...>: a linear_bench.py container (E3.S1). Every answer file is read from $R9700_STUB_DIR only; the stub never runs a program:

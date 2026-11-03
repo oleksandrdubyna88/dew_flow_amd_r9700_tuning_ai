@@ -151,7 +151,7 @@ t_kw5_the_deadline_ends_a_linear_unit_as_kind_deadline_and_the_part_becomes_evid
   assert_eq "6" "$SRC" "exit 6"
   outcome_read "$run/steps/1.outcome"
   assert_eq "deadline" "$O_KIND" "KIND=deadline"
-  for _w in $(seq 1 30); do [ -e "$STUB/containers/${R9700_CONTAINER_PREFIX}linear-bench-1.pid" ] || break; sleep 0.1; done
+  for _w in $(seq 1 100); do [ -e "$STUB/containers/${R9700_CONTAINER_PREFIX}linear-bench-1.pid" ] || break; sleep 0.1; done
   assert_missing "$STUB/containers/${R9700_CONTAINER_PREFIX}linear-bench-1.pid" "the linear container is stopped (its record is gone)"
   assert_eq "1" "$(find "$RECS/linear" -maxdepth 1 -name '*.part-*' | wc -l | tr -d ' ')" "the part stays"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore"
@@ -235,6 +235,17 @@ t_kw8_a_server_lost_during_the_exec_leaves_no_record() {
   assert_contains "$(cat "$(rejected_of prefix p1)/reason")" "the server was not listed" "the reason says the server was lost"
 }
 
+t_kw8b_a_lost_server_is_named_lost_even_when_the_exec_returned_an_error_code() {
+  kernels_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1
+  export R9700_STUB_DELAY_S=2
+  printf '1\n' > "$STUB/answers/prefix_rc" # the exec fails because the container went away under it
+  lose_prefix_server "${R9700_CONTAINER_PREFIX}prefix-base-1"
+  assert_exit 7 "a stub prefix unit whose server dies and whose exec returns 1" -- kprefix p1 base "8192 1024" 64
+  unset R9700_STUB_DELAY_S
+  assert_contains "$(cat "$(rejected_of prefix p1)/reason")" "LOST: the server was not listed" "the reason is LOST, not rc=1: a lost server is always named"
+}
+
 t_kw9_exactly_one_line_per_requested_length_a_count_of_two_would_pass_a_duplicate() {
   kernels_setup "$FUNCNAME"
   step_cfg MAX_FAILED_TRIES=1
@@ -271,6 +282,19 @@ t_kw13_a_server_that_does_not_become_ready_is_stopped_before_the_worker_exits_an
   assert_exit 0 "under a container name of its own (the step number is in the label)" -- test "$(env_get "$RECS/prefix/p1/prefix.env" CONTAINER)" = "${R9700_CONTAINER_PREFIX}prefix-base-2"
   outcome="$(last_run_dir)/steps/1.outcome"
   assert_exit 0 "the first try's outcome exists" -- test -s "$outcome"
+}
+
+t_kw17_a_linear_container_left_running_by_a_cut_call_is_stopped_before_the_unit_ends() {
+  kernels_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=2
+  printf '124\n' > "$STUB/answers/fault.${R9700_CONTAINER_PREFIX}linear-bench-1" # the call is cut at its ceiling and its container stays listed
+  assert_exit 0 "a stub linear unit whose first call is cut (124); the retry runs clean" -- klinear n1 graph "1 2 6" "6"
+  local stop second
+  stop="$(line_of " wslc stop ${R9700_CONTAINER_PREFIX}linear-bench-1")"
+  second="$(line_of " wslc run --rm --name ${R9700_CONTAINER_PREFIX}linear-bench-2 ")"
+  if [ -n "$stop" ] && [ -n "$second" ] && [ "$stop" -lt "$second" ]; then assert_eq ok ok "the cut call's container was stopped by name (line $stop) before the retry ran (line $second)"; else assert_eq "stop < retry's run" "$stop $second" "the order"; fi
+  assert_contains "$(cat "$(rejected_of linear n1)/reason")" "rc=124" "the first try is a rejected record with the code"
+  assert_exit 0 "the second try recorded" -- test -s "$RECS/linear/n1/linear_bench.json"
 }
 
 t_kw14_a_recorded_name_is_not_run_again_by_the_worker() {

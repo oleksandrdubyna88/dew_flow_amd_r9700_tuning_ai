@@ -207,6 +207,32 @@ t_kw10_a_reused_name_is_the_same_experiment_or_it_is_refused_naming_the_key() {
   assert_contains "$ERR" 'TAIL "64" -> "32"' "TAIL"
 }
 
+t_kw10b_an_edited_model_or_machine_field_that_changes_the_container_command_is_another_experiment() {
+  kv_setup "$FUNCNAME"
+  assert_exit 0 "linear/n1 recorded" -- lb --name n1 --ms "1 2 6" --sweep-ms 6
+  step_cfg CACHE_VOLUME=other-cache
+  assert_exit 2 "n1 again after the cache volume of machine.env was edited" -- lb --name n1 --ms "1 2 6" --sweep-ms 6
+  assert_contains "$ERR" "LINEAR_ARGV " "the key of the whole container command differs"
+  assert_exit 0 "p1 recorded" -- pt --name p1
+  mkdir -p "$CASE/v"
+  sed -e 's|^MAX_MODEL_LEN=.*|MAX_MODEL_LEN=65536|' -e 's|^EXTRA_SERVE_ARGS=.*|EXTRA_SERVE_ARGS="--limit-mm-per-prompt.image 1"|' "$MODEL_35B" > "$CASE/v/$KMODEL.env"
+  assert_exit 2 "p1 again for a model file with another MAX_MODEL_LEN and EXTRA_SERVE_ARGS" -- r9700 prefixtest "$CASE/v/$KMODEL.env" --name p1
+  assert_contains "$ERR" "the record prefix/p1 is another experiment: SERVE_LINE " "the whole serve line differs"
+  assert_eq "1" "$(printf '%s\n' "$ERR" | grep -c .)" "one line"
+}
+
+t_kv11_the_placement_word_does_not_leak_out_of_a_body() {
+  kv_setup "$FUNCNAME"
+  source "$REPO/lib/kernels_verb.sh"
+  unset _MOE_PLACED_BY
+  kernels_args linear-bench "$KMODEL" --dry-run
+  assert_exit 0 "a linear dry-run body in this shell" -- kernels_linear_body
+  assert_eq "unset" "${_MOE_PLACED_BY-unset}" "_MOE_PLACED_BY is not left set for the next step of a chain"
+  kernels_args prefixtest "$KMODEL" --dry-run
+  assert_exit 0 "a prefix dry-run body" -- kernels_prefix_body
+  assert_eq "unset" "${_MOE_PLACED_BY-unset}" "nor after the prefix body"
+}
+
 # ---- KV5, KV7: the fields and the verb list -----------------------------------------------------------------------------------------------------------------------------
 
 # shape_cases: <verdict>|<group>|<words> of the file both implementations of the grammar read

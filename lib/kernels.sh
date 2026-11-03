@@ -67,7 +67,7 @@ kernels_prefix_exec_words() {
 # _kern_arm_words <arm> <arm_args|arm_env|arm_mounts>: the words of an arm on one line
 _kern_arm_words() { "$2" "$1" | tr '\n' ' ' | sed 's/ $//'; }
 
-# kernels_identity linear <model> <ms> <sweep ms> <timer> | prefix <model> <arm> <lens> <tail>: the identity lines (KEY=value) of a record. The same function
+# kernels_identity linear <model> <ms> <sweep ms> <timer> <name> | prefix <model> <arm> <lens> <tail>: the identity lines (KEY=value) of a record. The same function
 # writes the env file and answers "is the record of this name the same experiment" (decision 6), so the two can never disagree about a key.
 kernels_identity() {
   local kind="$1" model="$2"
@@ -80,6 +80,7 @@ kernels_identity() {
     _moe_env_line MS "$3"
     _moe_env_line SWEEP_MS "$4"
     _moe_env_line TIMER "$5"
+    _moe_env_line LINEAR_ARGV "$(_kern_linear_line "$6" "$5" "$3" "$4")" # the whole container command: a field of machine.env or the model that changes it is another experiment
   else
     _moe_env_line ARM "$3"
     _moe_env_line ARM_ARGS "$(_kern_arm_words "$3" arm_args)"
@@ -88,7 +89,22 @@ kernels_identity() {
     _moe_env_line SERVED_NAME "$R9700_SERVED_NAME"
     _moe_env_line LENS "$4"
     _moe_env_line TAIL "$5"
+    _moe_env_line SERVE_LINE "$(_kern_serve_line "$3")" # the whole start command: MAX_MODEL_LEN, EXTRA_SERVE_ARGS, MOUNTS, TUNED_CONFIG_DIR ... are in it
   fi
+}
+
+# _kern_linear_line <name> <timer> <ms> <sweep ms>: the linear container's command as text, with a fixed container name (the name of a try is not an experiment)
+_kern_linear_line() {
+  local -a argv=()
+  kernels_linear_argv argv identity "$1" "$2" "$3" "$4"
+  wslc_argv_text run --rm "${argv[@]}"
+}
+
+# _kern_serve_line <arm>: the arm's server start command as text (serve_start --print over the series' own option builder), with a fixed container name
+_kern_serve_line() {
+  local -a envs=() mounts=() sargs=()
+  _series_serve_options envs mounts sargs "$1"
+  serve_start --print identity /dev/null "${envs[@]}" "${mounts[@]}" -- "${sargs[@]}"
 }
 
 # _kern_unquote <value as written by _moe_env_line>
@@ -116,10 +132,7 @@ kernels_record_diff() {
 }
 
 # _kern_stop_server <name>: the cleanup-phase stop of one server by name, without the stop time (a stop must work after T_STOP too); never fatal
-_kern_stop_server() {
-  local R9700_T_STOP=""
-  wslc_stop "$1" > /dev/null 2>&1
-}
+_kern_stop_server() { moe_stop_by_name "$1"; }
 
 # kernels_sweep_parts <outdir>: whatever an earlier worker left as a part directory is evidence, never a record
 kernels_sweep_parts() {
@@ -146,7 +159,7 @@ _kern_reject() {
 _kern_linear_env() {
   {
     _moe_env_line NAME "$2"
-    kernels_identity linear "$3" "$5" "$6" "$4"
+    kernels_identity linear "$3" "$5" "$6" "$4" "$2"
     printf '%s\n' "$_MOE_HASHES" # taken right after the identity check: what the container started with
     _moe_env_line CONTAINER "$7"
     _moe_env_line RUN_ID "$RUN_ID"
@@ -194,6 +207,7 @@ kernels_linear_unit() {
   started="$(_moe_iso)"
   wslc_run_once "$_KERN_LINEAR_CEILING_S" "${argv[@]}" > "$part/linear.log"
   rc=$?
+  [ "$rc" -eq 0 ] || moe_stop_by_name "$cname" # a call cut at its ceiling leaves its container running
   if [ "$rc" -ne 0 ] && _moe_stop_came; then _moe_deadline "linear unit $name"; return 1; fi
   finished="$(_moe_iso)"
   _kern_linear_env "$part" "$name" "$model" "$timer" "$ms" "$sweep" "$cname" "$started" "$finished" "$rc"
@@ -225,8 +239,9 @@ _kern_prefix_env() {
 _kern_prefix_validate() {
   local part="$1" rc="$2" alive="$3" out
   _MOE_REASON=""
-  if [ "$rc" -ne 0 ]; then _MOE_REASON="rc=$rc"; return 1; fi
+  # a lost server is named first: an exec whose container went away under it returns an error code too, and `rc=1` would hide the cause
   if [ "$alive" -ne 1 ]; then _MOE_REASON="LOST: the server was not listed after the check (a lost server leaves no record)"; return 1; fi
+  if [ "$rc" -ne 0 ]; then _MOE_REASON="rc=$rc"; return 1; fi
   if ! out="$(python3 "$_KERN_LIB/prefixtest.py" check "$part/prefixtest.txt" --lens "$5" --tag "$4" 2>&1)"; then
     _MOE_REASON="check: ${out%%$'\n'*}"
     return 1

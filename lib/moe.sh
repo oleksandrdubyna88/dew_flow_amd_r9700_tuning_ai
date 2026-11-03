@@ -224,6 +224,14 @@ _moe_disk_gate() {
   fi
 }
 
+# moe_stop_by_name <container>: the stop of one container by name, without the stop time (a stop must work after T_STOP too); never fatal. A foreground call that the
+# adapter's ceiling cut leaves its container running, and a retry under the same name (a chunk's) or the next step on the GPU must not meet it.
+moe_stop_by_name() {
+  local R9700_T_STOP=""
+  wslc_stop "$1" > /dev/null 2>&1
+  return 0
+}
+
 # _moe_stop_came: 0 when the stop time of the supervisor has come (R9700_T_STOP, an epoch second; 50 ms of slack for a timer that fires at it)
 _moe_stop_came() {
   [[ ${R9700_T_STOP:-} =~ ^[0-9]+$ ]] || return 1
@@ -329,6 +337,7 @@ moe_chunk_unit() {
   heartbeat=$!
   wslc_run_once "$R9700_MOE_CHUNK_MAX_S" --name "$name" "${argv[@]}" > "$part/chunk.log"
   rc=$?
+  [ "$rc" -eq 0 ] || moe_stop_by_name "$name"
   kill "$heartbeat" 2> /dev/null
   wait "$heartbeat" 2> /dev/null
   t1="$(date +%s 9>&-)"

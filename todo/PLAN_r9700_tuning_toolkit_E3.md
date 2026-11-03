@@ -349,7 +349,7 @@ stopped — exactly as a recorded chunk (`moe_chunk_body`, `bin/r9700` lines 458
 the same experiment** (gate finding 0): before it skips, the body reads the record's env file and compares its
 `MODEL`, `IMAGE`, `MODEL_DIR`, the asset hashes, and the run parameters (`SHAPES`, `GROUP_SIZE`, `MS`, `SWEEP_MS`,
 `TIMER` for linear; `ARM`, `ARM_ARGS`, `ARM_ENV`, `ARM_MOUNTS`, `SERVED_NAME`, `LENS`, `TAIL` for prefix) with the
-request's resolved values; a difference is refused with exit 2 and one line per differing key, `r9700: <verb>: the
+request's resolved values (and, from the Opus review of E3.S1, `LINEAR_ARGV` and `SERVE_LINE`: the whole container command and the whole `serve_start --print` text under a fixed container name, so an edited `EXTRA_SERVE_ARGS`, `MAX_MODEL_LEN`, `MOUNTS`, `TUNED_CONFIG_DIR` or volume is another experiment too); a difference is refused with exit 2 and one line per differing key, `r9700: <verb>: the
 record <kind>/<name> is another experiment: <KEY> <recorded> -> <requested>; use another --name`, before anything
 is stopped. A reused name never silently stands for a different measurement — the fingerprint rule of the series
 (E1.S3 decision 7) in its cheapest form. This is what the night

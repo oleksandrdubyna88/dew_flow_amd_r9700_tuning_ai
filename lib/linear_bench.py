@@ -145,7 +145,8 @@ def check_rows(rows):
             raise LinearError(f"row {index}: not an object")
         if not isinstance(row.get("shape"), str) or not row["shape"]:
             raise LinearError(f"row {index}: shape is missing or is not a name")
-        entry = {"shape": row["shape"], "layers": _positive_int(row, "layers", index), "M": _positive_int(row, "M", index), "values": {}}
+        entry = {"shape": row["shape"], "layers": _positive_int(row, "layers", index), "M": _positive_int(row, "M", index), "values": {},
+                 "index": index, "K": row.get("K"), "N": row.get("N")}
         for key, required in (("default", True), ("triton_default", True), ("split", False), ("tuned", False)):
             value = _number(row, f"{key}_us", index, required)
             if value is not None:
@@ -208,6 +209,7 @@ def _load_rows(path):
 
 def check_pairs(rows, shapes, ms, sweep):
     """The reasons (empty when the rows are exactly the product of the shapes and the Ms, each once, with a tuned value at every sweep M)."""
+    wanted = {shape[0]: shape for shape in shapes}
     counts = {}
     for row in rows:
         counts[(row["shape"], row["M"])] = counts.get((row["shape"], row["M"]), 0) + 1
@@ -222,7 +224,23 @@ def check_pairs(rows, shapes, ms, sweep):
     for row in rows:
         if row["M"] in sweep and "tuned" not in row["values"]:
             reasons.append(f"no tuned_us in ({row['shape']}, M {row['M']}): a sweep M")
+        if (row["shape"], row["M"]) in expected:
+            reasons += _shape_mismatches(row, wanted[row["shape"]])
     return reasons
+
+
+def _shape_mismatches(row, shape):
+    """A row of a requested shape must carry that shape's K, N and layers: a result of another model or another file is not this experiment."""
+    _name, k, n, layers = shape
+    out = []
+    for key, asked in (("K", k), ("N", n)):
+        if not isinstance(row[key], int) or isinstance(row[key], bool):
+            raise LinearError(f"row {row['index']}: {key} is missing or is not a whole number")
+        if row[key] != asked:
+            out.append(f"({row['shape']}, M {row['M']}): {key} is {row[key]}, not the requested {asked}")
+    if row["layers"] != layers:
+        out.append(f"({row['shape']}, M {row['M']}): layers is {row['layers']}, not the requested {layers}")
+    return out
 
 
 def command_check(args):

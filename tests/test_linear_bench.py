@@ -197,12 +197,12 @@ THREE = "a:2048:16:1 b:2048:16:2 c:2048:16:3"
 
 
 def pairs(shapes, ms, sweep):
-    """The rows a good run of those shapes and Ms would print: tuned values at the sweep Ms only."""
+    """The rows a good run of THREE's shapes and Ms would print (K, N and layers as asked): tuned values at the sweep Ms only."""
     out = []
-    for shape in shapes:
+    for index, shape in enumerate(shapes, 1):
         for m in ms:
             extra = {"tuned_us": 80.0, "tuned_tile": [16, 16, 32, 1, None], "tuned_maxdiff": 0.0} if m in sweep else {}
-            out.append(row(shape, m=m, **extra))
+            out.append({**row(shape, m=m, layers=index, **extra), "K": 2048, "N": 16})
     return out
 
 
@@ -244,6 +244,18 @@ def test_check_wants_a_tuned_value_in_every_row_of_a_sweep_m(tmp_path):
             del r["tuned_us"], r["tuned_tile"], r["tuned_maxdiff"]
     code, out, err = check(tmp_path, rows)
     assert code == 2 and err.splitlines() == ["linear: no tuned_us in (c, M 6): a sweep M"]
+
+
+def test_check_compares_k_n_and_layers_of_every_row_with_the_requested_shape(tmp_path):
+    for key, wrong, words in (("K", 4096, "K is 4096, not the requested 2048"), ("N", 32, "N is 32, not the requested 16"), ("layers", 9, "layers is 9, not the requested 1")):
+        rows = pairs("abc", (1, 2, 6, 8), (6,))
+        rows[0][key] = wrong
+        code, out, err = check(tmp_path, rows)
+        assert code == 2 and err.splitlines() == [f"linear: (a, M 1): {words}"], (key, err)
+    rows = pairs("abc", (1, 2, 6, 8), (6,))
+    del rows[0]["K"]
+    code, out, err = check(tmp_path, rows)
+    assert code == 2 and "row 0: K is missing" in err
 
 
 def test_check_refuses_a_malformed_row_as_summarize_does_and_an_unreadable_file(tmp_path):
