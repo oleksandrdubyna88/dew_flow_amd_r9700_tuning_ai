@@ -3,8 +3,10 @@
 Tune and measure vLLM on an AMD Radeon AI PRO R9700. This file describes what EXISTS. E1.S1 built the config layer, the ship-test verdict, the
 quality harness and the test base. E1.S2 built the adapter seam (part (a)), the lock, the recovery marker, the worker gate and the restore (part (b)), and
 the guards, the admission and the supervisor, `step`, `supervise`, `step_run` (part (c)). E1.S3 built the series: `bin/r9700 series` (arm-rounds recorded
-only when complete, a run identity that a resume must match) and `bin/r9700 verdict` (the ship test read back from the records). What is still planned
-(the commands of E2 and E3) is in `todo/PLAN_r9700_tuning_toolkit.md`.
+only when complete, a run identity that a resume must match) and `bin/r9700 verdict` (the ship test read back from the records). E2.S1 built the pure
+parts of MoE config tuning: the merge and check of chunk files, the kernel A/B table and decision, the coarse candidates and the vendored benchmark; they
+have no command of their own yet. E2.S2 built the chunk and the A/B as workers, E2.S3 the verb `bin/r9700 moe-tune chunk|merge|activate|ab` that drives them
+(with the merge record, the activation and the placed benchmark). What is still planned (E3) is in `todo/PLAN_r9700_tuning_toolkit.md`.
 
 ## Modules
 
@@ -17,6 +19,9 @@ only when complete, a run identity that a resume must match) and `bin/r9700 verd
 | Ownership and recovery | `bin/r9700` (`commands`, `init`, `verdict` as a restore-first shell), `lib/run_guarded.sh` (lock, session stop, worker start), `lib/worker_gate.sh`, `lib/restore.sh` | one run at a time on the GPU; the operator's server is restored once, ready, even after a hard kill. Added by E1.S2 part (b) |
 | Supervisor and guards | `bin/r9700` (`step`), `lib/run_guarded.sh` (`supervise`, `cleanup_once`, outcome file, deadline, run folder), `lib/step.sh` (`step_run`), `lib/guard_quiet.sh`, `lib/guard_ram.sh`, `lib/guard_deadline.sh`, `lib/guard_common.sh`, `lib/disk_gate.sh`, `lib/wait_ready.sh` | one guarded step: wait until the PC is quiet, check the disk log, stop the operator's server (marker first), run the worker in its own session behind the gate, watch it (RAM, deadline), read its typed outcome, retry, and restore once at the end. Added by E1.S2 part (c) |
 | Series and verdict | `bin/r9700` (`series`, `verdict`), `lib/series.sh`, `lib/fingerprint.py`, `lib/bench.sh` (`prefill_run`), `lib/serve.sh` (`container_name`, `serve_start --print`), `lib/adapter.sh` (`wslc_run_once`, `wslc_argv_text`) | `series <model> <arm>...` runs arm-rounds in alternating order as ONE step of the supervisor and records each arm-round only when it is complete, by one rename; the same command again resumes, and a resume whose effective experiment differs is refused naming what differs; `verdict <outdir>` prints the ship test over the final records. Added by E1.S3 |
+| MoE pure parts (E2.S1) | `lib/merge_moe.py`, `lib/moe_kernel_ab.py`, `config/coarse_candidates.json`, `vendor/` | no container, no GPU. `merge_moe.py check` is the one definition of a valid chunk file; `merge` joins chunk dirs (and a base file) into a NEW file under `--out` and never replaces one. `moe_kernel_ab.py decide` turns the six logs of a kernel A/B into a table and one decision line. `vendor/benchmark_moe.py` is upstream vLLM plus three marked hooks, proven by its diff |
+| MoE tuning (E2.S2) | `lib/moe.sh` (the chunk unit, the A/B unit, the cache clear), `lib/run_guarded.sh` (`cleanup_hook_set`, `_rg_cleanup_hook_run`), `config/coarse_candidates.json`, `vendor/benchmark_moe.py` | the two units of `tune_chunk.sh` and `moe_kernel_ab.sh` as WORKERS of one `step_run` each (`bash lib/moe.sh chunk …` / `ab …`); they take no lock, set no trap and never stop the operator's server. A record is made only when complete and valid. The Triton caches are cleared before every unit and in the exit path of the invocation by ONE hook of `cleanup_once`. The verb is E2.S3 (the next row) |
+| MoE verb (E2.S3) | `bin/r9700` (`moe-tune`), `lib/moe_verb.sh` (`moe_place`, `moe_merge_verb`, `moe_activate_verb`, `moe_dry_run`), `lib/moe.sh` (the units it starts) | `moe-tune chunk\|merge\|activate\|ab <model> [options]`: the argument grammar is checked before the lock; `chunk` and `ab` are `supervise` around ONE `step_run`; `merge` is a reading verb (the lock only to restore first) that writes a new record `merged/<stamp>/` and replaces nothing; `activate` is `supervise` without a step (no admission) around an atomic swap of the exchange copy, refused while a server is listed. `vendor/benchmark_moe.py` and `config/coarse_candidates.json` are placed in `$WORK_DIR/r9700/` with their hashes checked before anything is stopped. Section *MoE verb* below |
 | Tests | `tests/`, `.github/workflows/tests.yml` | one runner for Python and bash tests, an owned run folder, the static checks. `research/module_tests.md` |
 
 **Config.** `config_load <machine.env> <model.env>` parses both files line by line, applies the defaults of the field table,
@@ -46,6 +51,19 @@ runs the six measured `vllm bench serve` runs and prints the tagged metric lines
 A guard is a background fork of the supervisor with descriptor 9 closed. It writes the outcome FIRST, then stops every prefixed container (log tail saved before the stop) and then the worker's whole session by session id (`TERM`, the grace, `KILL`): GNU `timeout` gives every adapter call a process group of its own inside the worker's session, so a group kill would miss a call in flight (amendment A8). A guard ends by itself when the worker's leader (same start ticks) is gone, and runs without `R9700_T_STOP`: its work is cleanup-phase work. The RAM guard reads every 15 s; below `RAM_MIN_MB` is a stop, exactly at it is fine; a read that is not an integer is a miss, and three in a row are a stop (`telemetry unreadable 3 times`). The supervisor's step-phase adapter calls and the worker's run with `R9700_T_STOP` set (amendment A9); the cleanup phase runs without it (decision 8).
 
 `cleanup_once <kind>` runs once per invocation (a flag; the second call returns the first one's result). It ignores `INT`, `TERM` and `HUP` from its first line, BEFORE it sets the flag, then: stops the guards, stops the worker's session, stops every prefixed container (when a worker ever started), restores the operator's server when a marker stands (not again when a restore of this invocation already failed: the marker stays), writes `<run dir>/status` (`done`, `failed`, `deadline`, `interrupted`, `restore-failed`, `not-quiet`, `disk-gate`; `running` while the run lives) and releases the lock. The handler of `INT`, `TERM` and `HUP` writes `KIND=interrupted` to the running step's outcome, runs `cleanup_once interrupted`, prints `r9700: interrupted, restored` and exits 130, 143 or 129; an `EXIT` trap runs the same cleanup for an `exit` in a body. Bash holds a trapped signal until a foreground command ends, so the supervisor's own waits are background jobs (`_rg_sleep`, `_rg_run`): a `TERM` ends a sleep or an adapter call of the admission at once (the call's whole process group is killed). The restore inside a run (decision 15) and the readiness sleep are foreground: a signal waits for the current call, at most its ceiling.
+
+**MoE pure parts (E2.S1).** Three files with no side effects beyond their own output, so every rule of tuning that can be checked without a GPU is checked in CI.
+
+- `lib/merge_moe.py check --keys "<bs…>" <file>` parses one chunk file (`{"triton_version": v, "<batch size>": {config}}`): JSON, a `triton_version`, keys that are positive integers
+  written once, every config holding the six fields (`FIELDS`; more are allowed, `waves_per_eu` and `SPLIT_K` are), and exactly the promised keys. Exit 0, or 1 with the first problem on stdout.
+- `lib/merge_moe.py merge --out <dir> [--base <file>] [--expect "<bs…>"] <chunk dir>…` reads every chunk dir (exactly one `E=*.json`, read back and never typed, and an optional `chunk.env` with
+  `KEYS=` and the identity words `IMAGE`, `MODEL_DIR`, `DTYPE`, `LAYER`), reports every problem in one pass (`merge: …`, exit 2), and writes `<out>/<NAME>` in the sources' format. The expected key
+  set is the base's keys plus each chunk's `KEYS=` promise (what the chunk holds when it has no `chunk.env`; a `chunk.env` without `KEYS=` is refused); `--expect` replaces it. An identity word set in some chunks and not in others is refused. The write goes to `<NAME>.part-<pid>-<start ticks>` and is
+  moved with `os.link`, which fails when the name exists: **a merge never replaces a file** (append-only; which file a server reads is a separate step). A part whose owner is gone is removed
+  before the next write; a part whose owner lives is a refusal. Where hard links fail, the write takes a `<NAME>.claim` (`O_EXCL`, owner inside, swept when dead) around check and replace.
+- `lib/moe_kernel_ab.py decide <dir> --keys … --rule each|median --rule-keys …` takes the median of `reps` values per batch size and arm (a rep is a log: every log must be there and hold each batch size once) (exact decimals, strict comparison with the threshold),
+  prints the table, one config line per arm and batch size, and `KERNEL: faster|not faster (<why>)`. Exit 0 faster, 1 not faster, 2 not decidable (a missing rep is `incomplete:`, nothing on stdout).
+- `vendor/benchmark_moe.py`: see `vendor/README.md` (upstream commit and hash, the three hooks, the diff). `config/coarse_candidates.json`: 82 configs, the 81-config product plus the batch-size-1 winner.
 
 ```mermaid
 sequenceDiagram
@@ -124,6 +142,75 @@ larger stderr. Exit 0 every arm decided, 1 an arm is incomplete, 2 an input erro
 **Quality harness.** `collect` runs the 20 prompts one at a time at temperature 0; `compare` finds where two runs diverge and
 whether the divergences are near-ties; `gsm8k` scores a test file through the chat endpoint; `gsm8k-compare` applies the
 2 x stderr limit. A result file is written to `<path>.part` and moved over the target.
+
+## MoE tuning (E2.S2)
+
+**The units.** `bash lib/moe.sh chunk <outdir> <model> <chunk> <layer> <search> <keys…>` runs ONE tuning chunk (layer `experts` or `draft`, search `full` or `coarse`), `bash lib/moe.sh ab <outdir> <model> <layer> <rule> "<rule keys>" <reps> "<keys>"` ONE kernel A/B. Each is the command of one `step_run` (so: one admission, the guards of E1, the typed outcome, the retries). Exit codes: 0 done (recorded, or already recorded: `chunk <name>: recorded, nothing to do`), 1 the unit failed (a rejected record is a failed try), 2 refused. A refusal by the identity check, by `MOE_DTYPE=none` or by an A/B without its merged file writes the outcome `KIND=refused`, so `step` stops at once (exit 2, no retry, one restore); a bad argument is a plain 2 with one `moe:` line. A unit whose container was cut by the stop time writes `KIND=deadline` (the deadline watcher may be first: the first writer wins) and leaves its part for the next start's sweep.
+
+**Identity of a record.** The hashes of the placed assets (and, for an A/B, of the activated file) are taken right after the identity check and are what `chunk.env` and `ab.env` name. They are taken again when the container has ended: a difference (an edit during a long unit) rejects the record with the reason `<asset> changed during the run (<old> -> <new>)`. After the stop time the disk gate is not asked (the adapter refuses every call then): the unit writes `KIND=deadline`. An exchange folder `tune/<chunk>/` that cannot be emptied refuses the unit (`KIND=refused`: a stale file would pass `check`). `supervise` clears the hook registered before it at its start and keeps it only once prepare, the deadline and the run folder have succeeded, so an early return leaves no hook for the next invocation of the process.
+
+**Code gate (E2).** The A/B's `decision.txt` is the one line of decide's stdout that starts with `KERNEL:`, and there must be exactly one: zero or two reject the record (the last line is not assumed). The A/B prints `  ab rep <r>/<n>: <arm>` before each container; a chunk prints `  chunk <name>: running <m> min` every 5 production minutes (a heartbeat fork of the worker, ended when the container call returns; the argv and `chunk.log` are untouched). A failed cache clear BEFORE a unit refuses it (`KIND=refused`: a stale cache is never measured); the exit-path hook stays best-effort. The current hashes of the placed assets are computed in one pass. The batch-size list grammar (1 to 20 distinct whole numbers from 1 to 65536, whitespace-separated, e.g. `8 16 24`) is in ONE Python module, `lib/moekeys.py`, used by `merge_moe.py` and `moe_kernel_ab.py`; `_moe_keys_problem` in `lib/moe.sh` has NO grammar of its own: it calls `python3 lib/moekeys.py check` (one call; the message names the option, the format and the limits), and `tests/test_moekeys.py` feeds the module, the command line and the worker the same edge cases. `merge_moe.py`'s `proc_ticks` returns "not known" for a `/proc` line it cannot read, and a claim file that is empty or unparseable and older than 60 s (`R9700_TEST_CLAIM_STALE_S` scales it) is swept with a `removed stale` line, so a writer killed between the create and the write cannot block merges for ever.
+
+**Final round (E2).** The layer of the file an A/B reads is RECORDED, never guessed: `merge` writes `LAYER` into `merge.env` (`--layer`, else the chunks' own `chunk.env`), `activate` takes it from there (or from `--layer`; the two must agree; a record whose layer nobody says is refused with the remedy) and writes `LAYER` and `NAME` into `activate.env`. `ab` reads both from `activate.env`, so an `ab` in another `--out`, or with the files of two layers in `merged/`, finds the right file; no `activate.env`, no layer, or another layer than the one asked for is `KIND=refused` with what to do (`activate.env` names the layer activated LAST: re-activate the other layer's record to read its file). A container path is translated to a host path in ONE place, `container_host_path` (`lib/serve.sh`; `moe_exchange_dir`, `moe_placed_dir`, the GSM8K file and the quality files use it): a path not under `/work` does not translate, and `merge --base auto` over such a `TUNED_CONFIG_DIR` REFUSES (pass `--base <file>` or `--base none`) instead of meaning "no base". `moe_place` refreshes an optional asset (`harness.py`) that is already placed by an older series, so it never fails the identity check of every unit for ever. A hard kill between the swap and the rename of `activate.env` leaves `activate.env.part-<pid>-<ticks>` of a dead owner whose config part is gone and whose `SHA256` is the active file's: the next `activate` and the start of an A/B finish the rename (`recovered activate.env from …`); any other leftover is swept by `activate` and makes an A/B refuse. The pre-unit clear prints `cache clear: running (ceiling <n> s)` first.
+
+**The exchange folder.** The containers see `/work` only, so a chunk saves into `$WORK_DIR/r9700/moe/<model>/tune/<chunk>/` (container path `/work/r9700/moe/<model>/tune/<chunk>/`). It is scratch: deleted and made again before every run of that chunk (a half-written chunk holds no evidence, and a stale file there would pass `check`). The record is copied out of it. `merged/` in the same folder is what `activate` (E2.S3) fills and what the A/B's tuned arm reads.
+
+**The record life cycle.**
+
+```mermaid
+flowchart TD
+  SW["sweep: chunks/*.part-* and ab/*.part-* to rejected/ (INTERRUPTED)"] --> SK{"chunks/NAME exists?"}
+  SK -- yes --> NO["chunk NAME: recorded, nothing to do, exit 0"]
+  SK -- no --> ID{"identity: every placed asset equals its source"}
+  ID -- differs --> RF["KIND=refused, exit 2"]
+  ID -- ok --> DG["disk gate"] --> CL["cache clear: a prefixed container with only the cache volume"]
+  CL --> EX["tune/NAME deleted and made again"] --> RUN["wslc_run_once chunk container > chunks/NAME.part-RUN/chunk.log"]
+  RUN --> CP["chunk.env, chunk.summary, copy the E=*.json"]
+  CP --> V{"RC=0, one E=*.json, merge_moe.py check, log not empty"}
+  V -- fails --> RJ["rejected/NAME-stamp/ with reason, exit 1"]
+  V -- passes --> MV["mv -T part to chunks/NAME, then the disk gate"]
+```
+
+`chunks/<chunk>/` holds the JSON under the name vLLM gave it, `chunk.log`, `chunk.summary` (the grep of `tune_chunk.sh` line 21), `chunk.env` (the keys it promised, the layer, the dtype, the identity hashes of the three placed files — `absent` for one that is not there — the image, the model directory, the run id and the times). The A/B record `ab/<stamp>/` holds `default-<rep>.log` and `tuned-<rep>.log` (one file per container, written once, never appended to: `decide` refuses a repeated key), `ab.env`, `summary.txt` and `decision.txt`. It is made only when every log holds one `Kernel time` line per key AND every tuned log shows `Using configuration from <B folder>/<B file> for MoE layer`: without the second rule a decision could compare the default config with itself. `decide` exiting 0 (faster) or 1 (not faster) are both complete records. The identity check iterates `moe_assets` (benchmark, candidates, harness) on EVERY unit, whatever the mode, and refuses a placed file that differs from its source in the repository.
+
+**The cleanup hook.** `cleanup_hook_set <function>` registers one function (the MoE verb registers `moe_cache_clear` before `supervise`); `cleanup_once` runs it once, after `container_stop_all` and before the restore, and only when a step was admitted. It runs as a background fork of the supervisor under an ENFORCED ceiling (`t_ceiling 60` plus the 5 s grace, in wall time) and a fork still alive then is ended with `_rg_tree_kill`; the log line is `cleanup hook: <name> rc=<n>` or `cleanup hook: <name> timeout after <n> s, killed`. Neither changes the cleanup's result: the restore runs whatever the clear did. A foreground hook would be wrong: the cleanup ignores signals, so a call whose own ceiling does not hold would hang it before the restore. The clear container's own adapter ceiling (90 s) is deliberately LONGER than the supervisor's window, so the supervisor's is the outer, enforced one. **The budget rule** follows: `CLEANUP_BUDGET_S ≥ READY_TIMEOUT_S + 365` (300 for the restore, 65 for the hook), default 1565; `READY_TIMEOUT_S` tops out at 3235.
+
+**Growth surfaces.** `<RESULTS_DIR>/moe-<model>/chunks/` ≈ 35 KB per chunk and `ab/` ≈ 25 KB per A/B, kept forever; `rejected/` ≈ 35 KB per rejected attempt (at most `MAX_FAILED_TRIES` per invocation), kept forever; a cut chunk's `.part-` goes there at the next worker start. The exchange folder `tune/<chunk>/` ≈ 1–3 KB, deleted before every run of that chunk. The Triton caches `triton-moe-tune` and `triton-moe-ab` in the cache volume grow by 0.5–1.3 GB per chunk and are cleared before every unit and by the hook; a hard-killed supervisor runs no hook, so the next unit's start is what clears them.
+
+## MoE verb (E2.S3)
+
+**One verb, four modes, one merge policy.** `bin/r9700 moe-tune <mode> <model> [options]` (the function is `verb_moe_tune`; `commands` prints the name with a hyphen).
+The policy: a merge writes a new versioned record and replaces nothing; `activate` is the only step that changes what a server or an A/B reads, it is explicit,
+atomic, keeps the previous file and is refused while a container that may read the folder is listed.
+
+| Mode | Lifecycle | What it does |
+|---|---|---|
+| `chunk` | `supervise moe-tune moe_prepare moe_chunk_body` | `moe_place` (the files, hash-checked), the dry run, the count of a recorded chunk (before admission), `cleanup_hook_set moe_cache_clear`, `step_run moe-chunk -- bash lib/moe.sh chunk …` |
+| `ab` | `supervise …` with `moe_ab_body` | the same order; `step_run moe-ab -- bash lib/moe.sh ab …`; prints the new record and its decision |
+| `merge` | reading verb: the lock only when a marker exists, to restore first; then the config | `lib/merge_moe.py merge --out <outdir>/merged/<stamp>/ [--base <file>] <outdir>/chunks/<chunk>…`, then `merge.env` (`CHUNKS`, `BASE`, `BASE_SHA256`, `OUTPUT_SHA256`, `WRITTEN_AT`). `--base auto` is the file of the merged name in `TUNED_CONFIG_DIR` when that folder is under `/work` |
+| `activate` | `supervise …` with `moe_activate_body`: lock, restore-first, config, the deadline and the run folder (so it is refused when the deadline leaves no room), the swap, the one cleanup; no `step_run`, so no admission, no marker and no cleanup hook | the record must hold one `E=*.json`; the listed containers are read (`wslc_list`) and the operator's server or any prefixed one refuses the swap unless `--force` (logged); stale `.part-<pid>-<ticks>` files of dead owners are swept; the active file is copied to `merged/previous/<UTC stamp>-<NAME>`; `activate.env` is written to a part FIRST; then the record's file is written to a part beside the active one, fsynced and moved with `mv -T` (one `rename(2)`); then `activate.env`'s part is renamed into place. Recoverable: a failed swap removes both parts and changes nothing; a failed rename of `activate.env` puts the previous file back from `merged/previous/` (or removes the new file when none was active) and refuses. `activate.env` holds (`STAMP`, `NAME`, `SHA256`, `PREVIOUS`, `ACTIVATED_AT`, `FORCED`) |
+
+```mermaid
+flowchart LR
+  CH["moe-tune chunk"] --> CR["chunks/&lt;chunk&gt;/"]
+  CR --> MG["moe-tune merge"] --> MR["merged/&lt;stamp&gt;/ (a new record per merge)"]
+  MR --> AC["moe-tune activate (refused while a server is listed)"] --> EX["exchange merged/&lt;NAME&gt; (the active file) + previous/"]
+  EX --> AB["moe-tune ab"] --> DC["ab/&lt;stamp&gt;/decision.txt"]
+```
+
+The exit codes are the supervisor's table above; `moe-tune` adds none. Exit 2 also covers a bad argument (one `r9700: moe-tune: <mode>: …` line, before the lock),
+`MOE_DTYPE=none` for the experts layer, a merge input error (`merge_moe.py`'s code) and an activation that is refused (not a record, or a server is listed); 4 is
+another run holding the lock, 5 a restore-first that did not become ready.
+
+**Placed files.** `moe_place` copies the `required` rows of `moe_assets` (`vendor/benchmark_moe.py`, `config/coarse_candidates.json`) to `$WORK_DIR/r9700/` through a `.part`
+and a move when the hash differs, then checks the hash again; a failure is exit 2 before any stop. The worker checks them again on every unit (E2.S2 decision 8).
+
+**Dry run.** `--dry-run` (chunk, ab) prints `dry-run: wslc run --rm --name …` lines built by the worker's own `moe_argv` (the folder word of each arm comes from `_moe_ab_arm_envs`, the one function the worker uses too) and the clear's line. It starts no container, stops nothing and writes no record or part. It is NOT lock-free or read-only: like `activate` it runs inside `supervise`, so it takes the lock (exit 4 when held), runs the restore-first when a marker exists, makes `runs/<id>/` (with its `supervisor.log`), is refused by `deadline_compute` when the deadline leaves no room, and places the two vendored files in the work folder (a hash-checked copy).
+
+**Growth surfaces.** `<RESULTS_DIR>/moe-<model>/merged/<stamp>/` ≈ 3 KB per merge, kept forever (a `.part-<pid>-<ticks>` of an interrupted merge stays in its own folder, never
+reused). `<WORK_DIR>/r9700/moe/<model>/merged/` holds the active file and `activate.env` (≈ 3 KB) and `previous/<stamp>-<NAME>` ≈ 3 KB per activation, kept forever; a
+part file of an activation killed in its window is removed by the next `activate` when its owner is dead. `<WORK_DIR>/r9700/benchmark_moe.py` (41 KB) and `coarse_candidates.json` (11 KB) are
+replaced when `vendor/` changes.
 
 ## Flow
 

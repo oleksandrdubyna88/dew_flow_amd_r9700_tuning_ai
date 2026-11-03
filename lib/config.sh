@@ -58,10 +58,11 @@ _field machine QUIET_BUSY_IGNORE str? "" "a command-line substring that excludes
 _field machine DISK_GATE enum:on,off on "check the disk event log before each unit: on or off"
 _field machine DEADLINE hhmm? "" "the clock time (HH:MM, 24 h) by which a run must be over; empty means none"
 _field machine MAX_RUN_MINUTES int:10:2880 720 "the ceiling of a run in minutes when DEADLINE is empty or later"
-_field machine READY_TIMEOUT_S int:60:3300 1200 "how long a server may take to become ready, in seconds"
+_field machine READY_TIMEOUT_S int:60:3235 1200 "how long a server may take to become ready, in seconds"
 _field machine MAX_FAILED_TRIES int:1:20 3 "how many failed tries a step gets before the run gives up; at most MAX_SERVER_STOPS"
 _field machine MAX_SERVER_STOPS int:1:10 3 "how many times one invocation may stop the operator's server"
-_field machine CLEANUP_BUDGET_S int:60:3600 1500 "seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 300"
+_field machine CLEANUP_BUDGET_S int:60:3600 1565 "seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 365"
+_field machine MOE_CHUNK_MAX_S int:600:86400 43200 "the ceiling of one MoE tuning chunk container, in seconds"
 
 _field model MODEL_DIR cpath required "the model directory, as a path inside the container"
 _field model SERVED_NAME name required "the served model name"
@@ -69,6 +70,7 @@ _field model MAX_MODEL_LEN int:2048:1048576 required "the context length of the 
 _field model MAX_NUM_SEQS int:1:256 required "the number of concurrent sequences of the server"
 _field model GPU_MEM_UTIL dec:0.10:0.95 0.85 "the GPU memory fraction of the server"
 _field model PREFILL_LENS ints required "the prefill lengths to measure, in tokens; each plus 128 must fit MAX_MODEL_LEN"
+_field model MOE_DTYPE enum:auto,fp8_w8a8,int8_w8a16,int4_w4a16,none int4_w4a16 "the weight dtype of the model's MoE layers for tuning; none means no MoE layers"
 _field model TUNED_CONFIG_DIR cpath? "" "the folder of tuned MoE configs, as a path inside the container; empty means none"
 _field model MOUNTS mounts "" "extra mounts: <source relative to PATCH_DIR>:<container path>[:ro], separated by spaces"
 _field model EXTRA_SERVE_ARGS args "" "extra arguments of the serve command, split on spaces; quotes are refused"
@@ -344,9 +346,10 @@ _cfg_cross() {
       "at most MAX_SERVER_STOPS (each try stops the operator's server, so more tries than stops could never all happen)"
   fi
   if [ -z "${_C_BAD[CLEANUP_BUDGET_S]+set}${_C_BAD[READY_TIMEOUT_S]+set}" ] \
-    && ((_C_VAL[CLEANUP_BUDGET_S] < _C_VAL[READY_TIMEOUT_S] + 300)); then
+    && ((_C_VAL[CLEANUP_BUDGET_S] < _C_VAL[READY_TIMEOUT_S] + 365)); then
     _cfg_error "$(_cfg_where CLEANUP_BUDGET_S)" "${_C_LINE[CLEANUP_BUDGET_S]-}" CLEANUP_BUDGET_S \
-      "${_C_VAL[CLEANUP_BUDGET_S]} is less than READY_TIMEOUT_S ${_C_VAL[READY_TIMEOUT_S]} + 300" "at least READY_TIMEOUT_S + 300"
+      "${_C_VAL[CLEANUP_BUDGET_S]} is less than READY_TIMEOUT_S ${_C_VAL[READY_TIMEOUT_S]} + 365" \
+      "at least READY_TIMEOUT_S + 365 (300 for the restore + 65 for the cleanup hook)"
   fi
 }
 

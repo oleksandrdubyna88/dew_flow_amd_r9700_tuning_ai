@@ -86,6 +86,18 @@ _serve_argv() {
   )
 }
 
+# container_host_path <path inside a container>: the host (WSL) path of a file under the mount `/work` (WORK_DIR and WORK_DIR_WIN are one folder, mounted at /work).
+# The ONE translation of a container path to a host path: every caller uses it. 1 with one line on stderr for a path that is not under /work (or holds `..`):
+# such a path cannot be read from here and is never silently taken for "no file".
+container_host_path() {
+  local path="${1:-}"
+  if [[ $path != /work/?* || $path == *..* ]]; then
+    echo "container_host_path: \"$path\" is not under /work (or holds ..): it cannot be read from the host" >&2
+    return 1
+  fi
+  printf '%s/%s\n' "${R9700_WORK_DIR:?}" "${path#/work/}"
+}
+
 _SERVE_LABEL_RE='^[a-z0-9][a-z0-9-]{0,39}$'
 
 container_name() {

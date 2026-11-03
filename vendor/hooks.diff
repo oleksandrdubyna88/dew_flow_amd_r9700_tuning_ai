@@ -1,0 +1,45 @@
+--- a/benchmark_moe.py
++++ b/benchmark_moe.py
+@@ -922,6 +922,10 @@
+ 
+ 
+ def resolve_dtype(config) -> torch.dtype:
++    # LOCAL CHANGE (vllm_pr_work speed-options plan, 2026-10-27): MOE_TUNE_ACT_DTYPE=bfloat16 tunes the
++    # BF16 MTP draft experts with BF16 activations instead of ROCm's fixed fp16.
++    if os.environ.get("MOE_TUNE_ACT_DTYPE") == "bfloat16":
++        return torch.bfloat16
+     if current_platform.is_rocm():
+         return torch.float16
+ 
+@@ -1029,15 +1033,10 @@
+ 
+     use_deep_gemm = bool(args.use_deep_gemm)
+ 
+-    if current_platform.is_rocm() and "HIP_VISIBLE_DEVICES" in os.environ:
+-        # Ray will set ROCR_VISIBLE_DEVICES for device visibility
+-        logger.warning(
+-            "Ray uses ROCR_VISIBLE_DEVICES to control device accessibility."
+-            "Replacing HIP_VISIBLE_DEVICES with ROCR_VISIBLE_DEVICES."
+-        )
+-        val = os.environ["HIP_VISIBLE_DEVICES"]
+-        os.environ["ROCR_VISIBLE_DEVICES"] = val
+-        del os.environ["HIP_VISIBLE_DEVICES"]
++    # LOCAL CHANGE (vllm_pr_work plan 2, 2026-10-26): the HIP->ROCR rename is removed. Ray 2.59 in
++    # the rocm/vllm image raises "Please use HIP_VISIBLE_DEVICES instead of ROCR_VISIBLE_DEVICES"
++    # (ray/_private/accelerators/amd_gpu.py:46), and without HIP_VISIBLE_DEVICES Ray also schedules a
++    # worker on the 890M iGPU. HIP_VISIBLE_DEVICES=0 is kept as set by the caller.
+ 
+     ray.init()
+     num_gpus = int(ray.available_resources()["GPU"])
+@@ -1064,6 +1063,11 @@
+         # search space (e.g. BLOCK_SIZE_K=64 with group_size=128).
+         tune_block_quant_shape = None if use_int4_w4a16 else block_quant_shape
+         search_space = get_configs_compute_bound(is_fp16, tune_block_quant_shape)
++        # LOCAL CHANGE (vllm_pr_work plan 2, 2026-10-26): optional fixed candidate list for a
++        # coarse large-M sweep; the ROCm pruning below still applies per batch size.
++        if os.environ.get("MOE_TUNE_CANDIDATES"):
++            with open(os.environ["MOE_TUNE_CANDIDATES"]) as f:
++                search_space = json.load(f)
+         if use_int4_w4a16:
+             # SPLIT_K is a required kernel constexpr for gptq_awq kernel;
+             # only SPLIT_K=1 is used at runtime, so fix it during tuning.

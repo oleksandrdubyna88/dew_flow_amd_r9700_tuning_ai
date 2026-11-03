@@ -13,7 +13,7 @@
 #   prod_stops                          how many times the operator's server was stopped
 #   calls_since <n>                     the call-log lines after line <n>
 #   json_get <file> <python expression over d>   one value of a JSON file
-#   short_variant                       the short variant of S2's G5: T_STOP 9.6 s after the start (scale 25)
+#   short_variant                       the short variant of S2's G5: T_STOP 9.4 s after the start (scale 25; budget 425 since E2.S2 decision 6)
 #   build_fixture_outdir <dir>          an outdir built from tests/fixtures/ship_test/bench_final_ab.txt, the way S16 describes
 #   lose_server_after <n>               a killer: after the n-th `bench serve` call of a container the container is killed
 
@@ -62,7 +62,7 @@ calls_since() { tail -n +"$(($1 + 1))" "$STUB/calls.log"; }
 
 json_get() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-short_variant() { step_cfg MAX_RUN_MINUTES=10 CLEANUP_BUDGET_S=360 READY_TIMEOUT_S=60; export R9700_TIME_SCALE=25; }
+short_variant() { step_cfg MAX_RUN_MINUTES=11 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60; export R9700_TIME_SCALE=25; }
 
 # build_fixture_outdir <dir>: every line of the recorded bench file goes to rounds/<its own tag>/bench.txt in file order (the tags are read from
 # the lines, never typed), the fingerprint is written with the base fbase, the arms fbase fcombo fb1, 3 rounds and the prefill lengths 8192 32768,

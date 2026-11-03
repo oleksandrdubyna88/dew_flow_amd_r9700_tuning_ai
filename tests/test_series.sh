@@ -224,10 +224,10 @@ t_s12_the_quiet_check_runs_before_every_arm_round_and_exits_3_and_the_series_res
 t_s13_the_fit_check_ends_the_series_cleanly_before_the_deadline() {
   series_setup "$FUNCNAME"
   short_variant
-  # T_STOP is 8.6..9.6 s after the start (the stop is rounded down to a whole second); an arm-round is allowed 4 s (100 s at scale 25) and takes
+  # T_STOP is 8.4..9.4 s after the start (E2.S2: 11 minutes and a budget of 425 s) (the stop is rounded down to a whole second); an arm-round is allowed 4 s (100 s at scale 25) and takes
   # about 5 s (twelve bench calls of 0.3 s and the rest): the first starts at t1 (a second or two in: the fingerprint's python calls come first)
-  # and fits while t1 + 4 < 8.6, that is for every t1 below 4.6 s; the second starts at about t1 + 5.5 and cannot (t1 + 5.5 + 4 > 9.6 for any
-  # t1 above 0.1 s) while the first still ends before T_STOP (t1 + 5 < 8.6)
+  # and fits while t1 + 4 < 8.4, that is for every t1 below 4.4 s; the second starts at about t1 + 5.5 and cannot (t1 + 5.5 + 4 > 9.4 for any
+  # t1 above 0.1 s) while the first still ends before T_STOP (t1 + 5 < 8.4)
   export R9700_ARM_SECONDS=100 R9700_STUB_DELAY_S=0.3
   local out run
   out="$(outdir)"

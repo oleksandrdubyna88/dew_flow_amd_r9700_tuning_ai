@@ -18,8 +18,8 @@ source "$HERE/lib/stepcase.sh"
 WORKER="$STUBS/worker.sh"
 
 # short_variant: the short variant of G5. The story's scale 100 (T_END 6 s, T_STOP 2.4 s) leaves a loaded machine no room for the admission's
-# dozen stub calls, so the sleeps and deadlines run at scale 25 here: T_END 24 s, T_STOP 9.6 s after the start, the cleanup budget 14.4 s.
-short_variant() { step_cfg MAX_RUN_MINUTES=10 CLEANUP_BUDGET_S=360 READY_TIMEOUT_S=60; export R9700_TIME_SCALE=25; }
+# dozen stub calls, so the sleeps and deadlines run at scale 25 here: T_END 26.4 s, T_STOP 9.4 s after the start, the cleanup budget 17 s (E2.S2 decision 6: the budget rule is READY_TIMEOUT_S + 365, so 425 and 11 minutes; E1 had 360 and 10).
+short_variant() { step_cfg MAX_RUN_MINUTES=11 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60; export R9700_TIME_SCALE=25; }
 
 # ---- G14: wait_ready through the serve worker -----------------------------------------------------------------------------------------------------
 
@@ -213,7 +213,7 @@ t_g5_the_deadline_stops_the_step_and_keeps_the_cleanup_budget() {
   # The supervisor's 60 s net also writes KIND=deadline; only the watcher writes this detail.
   assert_contains "$O_DETAIL" "deadline reached" "the deadline watcher fired, not the supervisor's net"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "the restore ran (pwsh.exe once)"
-  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 24) }'; then assert_eq ok ok "the whole invocation ended before T_END (24 s): $(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }')"; else assert_eq "< 24 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
+  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 26.4) }'; then assert_eq ok ok "the whole invocation ended before T_END (26.4 s): $(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }')"; else assert_eq "< 26.4 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
   kill_recorded_pids "$CASE"
 }
 
@@ -261,7 +261,7 @@ t_g8_the_quiet_wait_is_bounded_by_the_deadline_not_by_its_own_loop() {
   start="$(date +%s.%N)"
   assert_exit 8 "a busy PC and the short variant" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
   end="$(date +%s.%N)"
-  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 11.5) }'; then assert_eq ok ok "exit 8 within T_STOP (9.6 s) and a margin, before an uncut 12 s tick would end ($(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }') s)"; else assert_eq "< 11.5 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "the quiet wait ended at T_STOP"; fi
+  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 11.5) }'; then assert_eq ok ok "exit 8 within T_STOP (9.4 s) and a margin, before an uncut 12 s tick would end ($(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }') s)"; else assert_eq "< 11.5 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "the quiet wait ended at T_STOP"; fi
   assert_eq "r9700: not quiet before the deadline" "$ERR" "the stderr line"
   assert_eq "0" "$(stop_lines)" "no stop vllm: never admitted"
   assert_eq "0" "$(log_count pwsh.exe -Detach)" "pwsh.exe never called: the server was never stopped"
@@ -376,7 +376,7 @@ t_a_baseline_that_cannot_be_read_stops_the_run_before_the_server_is_stopped() {
 
 t_a_deadline_watcher_that_is_gone_does_not_leave_the_worker_running_past_the_deadline() {
   step_setup "$FUNCNAME"
-  short_variant # T_STOP 9.6 s after the start; the supervisor's own net acts a minute (2.4 s at scale 25) later
+  short_variant # T_STOP 9.4 s after the start; the supervisor's own net acts a minute (2.4 s at scale 25) later
   prod_running
   local start end worker pid
   start="$(date +%s.%N)"
@@ -392,7 +392,7 @@ t_a_deadline_watcher_that_is_gone_does_not_leave_the_worker_running_past_the_dea
   outcome_read "$(run_dir_of)/steps/1.outcome"
   assert_eq "deadline" "$O_KIND" "KIND=deadline"
   assert_contains "$O_DETAIL" "did not stop the worker" "the detail says the watcher was not the one"
-  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 24) }'; then assert_eq ok ok "the call ended before T_END ($(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }'))"; else assert_eq "< 24 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
+  if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 26.4) }'; then assert_eq ok ok "the call ended before T_END ($(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f s", b - a }'))"; else assert_eq "< 26.4 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "ended before T_END"; fi
   kill_recorded_pids "$CASE"
 }
 

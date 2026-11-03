@@ -9,6 +9,87 @@ stub_mode_if_asked
 
 CRLF=$'\r'
 
+# ---- the MoE foreground runs (E2.S2 decision 9) -----------------------------------------------------------------------------------------------
+# moe_kind <argv...>: sets MOE_KIND to `bench` (a benchmark_moe.py run: `--tune` is a chunk, else a kernel A/B container), `clear` (the cache-clear
+# program: `sh -c` with a program that names triton-moe-tune) or "" and returns 1 when the run is none of them (the fingerprint's throwaway run).
+moe_kind() {
+  local arg prev=""
+  MOE_KIND=""
+  for arg in "$@"; do
+    [ "$arg" = benchmark_moe.py ] && MOE_KIND=bench
+    [ "$prev" = -c ] && [[ $arg == *triton-moe-tune* ]] && MOE_KIND=clear
+    prev="$arg"
+  done
+  [ -n "$MOE_KIND" ]
+}
+
+# moe_foreground <name> <argv...>: the container of a foreground `run --rm --name <name>`. Like a detached one it is a recorded process
+# (containers/<name>.pid, here the stub's own pid) for its duration, so `wslc list` shows it and `wslc stop <name>` ends it (UNVERIFIED for the real
+# wslc: nobody has observed whether a foreground run is listed). The record goes at the stub's end, however it ends. Every answer file is read from
+# $R9700_STUB_DIR only:
+#   answers/moe_tune_seconds, moe_tune_rc, moe_tune_log   a chunk (`--tune`): sleeps, writes every file of the folder answers/moe_json/ into the
+#       save dir (the path /work/ read as $R9700_WORK_DIR/; no folder: nothing is written, the half-written chunk), prints the log, exits with the rc
+#   answers/moe_ab_seconds, moe_ab.<arm>[.<rep>]          a kernel A/B container (the arm is the word after `moe-ab-` in the name, the rep its number): sleeps, prints
+#   answers/moe_cache                                     the clear: prints it (default one `du` line)
+moe_foreground() {
+  local name="$1" file="$R9700_STUB_DIR/containers/$1.pid"
+  shift
+  if stub_alive "$file"; then echo "stub: container name in use: $name" >&2; exit 1; fi
+  stub_record_pid "$file" "$$"
+  MOE_PIDFILE="$file"
+  trap 'rm -f "$MOE_PIDFILE"; [ -z "${MOE_SLEEPER:-}" ] || kill "$MOE_SLEEPER" 2> /dev/null' EXIT
+  trap 'exit 143' TERM
+  # on-start-<name>: a script of the test, run once that container has started (E2.S2: the way a test arms a fault for the calls that come AFTER a
+  # unit's container started, like the cleanup hook's clear, however that container ends: stopped by name, killed with its session, or cut by its ceiling)
+  [ -f "$R9700_STUB_DIR/on-start-$name" ] && bash "$R9700_STUB_DIR/on-start-$name"
+  if [ "$MOE_KIND" = clear ] && [ -f "$R9700_STUB_DIR/moe_clear_mode" ]; then stub_mode_apply "$(cat "$R9700_STUB_DIR/moe_clear_mode")"; fi
+  if [ "$MOE_KIND" = clear ]; then
+    if [ -f "$R9700_STUB_DIR/answers/moe_cache" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_cache"; else printf '1.3G\t/root/.cache/vllm/triton-moe-tune%s\n' "$CRLF"; fi
+    return "$(moe_answer moe_clear_rc 0)" # answers/moe_clear_rc: the exit code of the clear container (default 0)
+  fi
+  moe_bench "$name" "$@"
+}
+
+# moe_answer <file name> <default>: the content of answers/<file name> (first line), else the default
+moe_answer() {
+  if [ -f "$R9700_STUB_DIR/answers/$1" ]; then head -n 1 "$R9700_STUB_DIR/answers/$1"; else printf '%s\n' "$2"; fi
+}
+
+# moe_bench <name> <argv...>: a chunk or a kernel A/B container (see the answers above)
+moe_bench() {
+  local name="$1" arg prev="" tune=no save="" arm rep keys=() collecting=no seconds rc
+  shift
+  for arg in "$@"; do
+    [ "$arg" = --tune ] && tune=yes
+    [ "$prev" = --save-dir ] && save="$arg"
+    if [[ $arg == --* ]]; then collecting=no; fi
+    [ "$collecting" = yes ] && keys+=("$arg")
+    [ "$arg" = --batch-size ] && collecting=yes
+    prev="$arg"
+  done
+  if [ "$tune" = yes ]; then seconds="$(moe_answer moe_tune_seconds 0)"; else seconds="$(moe_answer moe_ab_seconds 0)"; fi
+  sleep "$seconds" < /dev/null > /dev/null 2>&1 &
+  MOE_SLEEPER=$!
+  wait "$MOE_SLEEPER"
+  if [ "$tune" = yes ]; then
+    if [ -d "$R9700_STUB_DIR/answers/moe_json" ]; then cp "$R9700_STUB_DIR"/answers/moe_json/* "${R9700_WORK_DIR:?}/${save#/work/}/"; fi
+    if [ -f "$R9700_STUB_DIR/answers/moe_tune_log" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_tune_log"
+    else
+      printf 'Start tuning over 3 configurations%s\nTuning space has 3 configs%s\n' "$CRLF" "$CRLF"
+      printf 'Completed tuning for batch_size=%s%s\n' "${keys[0]:-0}" "$CRLF"
+    fi
+    rc="$(moe_answer moe_tune_rc 0)"
+    return "$rc"
+  fi
+  arm="${name##*moe-ab-}"
+  rep="${arm##*-}"
+  arm="${arm%-*}"
+  # answers/moe_ab.<arm>.<rep> (one log per rep, so a table of three different medians can be served), else answers/moe_ab.<arm>
+  if [ -f "$R9700_STUB_DIR/answers/moe_ab.$arm.$rep" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_ab.$arm.$rep"
+  elif [ -f "$R9700_STUB_DIR/answers/moe_ab.$arm" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_ab.$arm"; fi
+  return 0
+}
+
 # run -d --rm --name X ...: a detached container; prints three lines. `run --rm ...` WITHOUT -d is a foreground run (E1.S3: the throwaway
 # container of the fingerprint): it starts nothing and prints answers/find, a `---` line and answers/genconfig (a missing file prints nothing).
 run_container() {
@@ -18,6 +99,10 @@ run_container() {
     [ "$arg" = -d ] && detached=yes
     prev="$arg"
   done
+  if [ "$detached" = no ] && moe_kind "$@"; then
+    moe_foreground "$name" "$@"
+    return $?
+  fi
   if [ "$detached" = no ]; then
     [ -f "$R9700_STUB_DIR/hang-foreground-run" ] && stub_hang # a throwaway container that never answers (the caller's ceiling ends it)
     [ -f "$R9700_STUB_DIR/answers/find" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/find"

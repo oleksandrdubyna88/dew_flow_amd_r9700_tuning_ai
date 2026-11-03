@@ -2,7 +2,7 @@
 
 The test harness of the R9700 vLLM tuning toolkit, as built by E1.S1: the runner, the assertion file, the fixtures, the
 static checks and the CI workflow. E1.S2 added the adapter's test file, the stub executables and the supervisor's tests; E1.S3 added the
-tests of the series, of the run identity and of the verdict read back from the records. Later stories add their test files to the same runner;
+tests of the series, of the run identity and of the verdict read back from the records. E2.S1 added the tests of the pure parts of MoE tuning (the merge and check of chunk files, the kernel A/B decision, the coarse candidates, the vendored benchmark); E2.S2 the tests of the MoE units, E2.S3 those of the verb `moe-tune`. Later stories add their test files to the same runner;
 there is no second one.
 
 ## Where it is
@@ -14,7 +14,7 @@ there is no second one.
 | `tests/test_verdict.py` | the ship test and the block check (`lib/verdict.py`) |
 | `tests/test_harness.py` | the quality harness (`lib/harness.py`), against an HTTP stub |
 | `tests/test_assert.sh` | `tests/lib/assert.sh` itself: a test function that dies early, exits early or asserts nothing fails its file; the pid killer |
-| `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match |
+| `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match; the process cap (a file that forks without end FAILS within seconds and leaves nothing: *The process cap*) |
 | `tests/test_adapter.sh` | the adapter seam (`lib/adapter.sh`) and `t_scale`, `t_ceiling` (`lib/run_guarded.sh`): argv, CR removal, the ceilings that kill the child, the `R9700_T_STOP` cut, the refusals (E1.S2 part (a): scenarios A2-A5, A7) |
 | `tests/test_adapter_signals.sh` | the adapter's signal and process rules, split from the file above (it was over the 800-line limit): `--kill-after` and the grandchild, the interrupt chain as the supervisor meets it (the caller's traps are back after a call, a handler that makes a nested call, a signal the caller ignores), the group kill, descriptor 9 (the supervisor's lock). The trap tests compare `trap -p` before and after a call and never spell a listing out: whether an ignored-at-entry signal is listed depends on how the shell was started |
 | `tests/test_serve_bench.sh` | `serve_start` (also `--print`), `container_name` (`lib/serve.sh`), `bench_run` and `prefill_run` (`lib/bench.sh`): the measured commands (scenario A8; E1.S3 adds the prefill runs, the container name and the dry-run text) |
@@ -27,6 +27,14 @@ there is no second one.
 | `tests/test_series_identity.sh` | `bin/r9700 series` (E1.S3): the run identity. S7 (a resume skips exactly the recorded arm-rounds, a finished series admits nothing), S8-S10 (a changed model field, patch file, listing, generation config or base is refused naming what differs BEFORE anything is stopped; a new arm and more rounds are extensions), F7 and F8 (the throwaway container's program is run for real on a tree with nested and hidden files, and receives the model path as ONE argument), S19 (`--dry-run`, which writes nothing: byte-identical `fingerprint.json` after a dry run with more rounds and another arm), a deleted `fingerprint.json` over records is refused, a `TERM` during a hanging throwaway container ends the supervisor with 143 within seconds and nothing stopped, S20 (`harness.py` placed with its hash checked, the GSM8K data checked before round 1), the refusals of the arguments, the lock |
 | `tests/test_series_verdict.sh` | `bin/r9700 verdict` (E1.S3): S15 (a base with no final record is refused; an in-flight or rejected attempt never reaches the verdict; a missing round is INCOMPLETE), S16 (the recorded verdict of 2026-10-31 reproduced from records built out of the fixture), S17 (an unsupported arm is reported and left out; an unsupported base is refused), S18 (a one-round series names its condition), the options |
 | `tests/test_fingerprint.py` | `lib/fingerprint.py` (E1.S3): F1-F6, a stored document whose digest or version does not hold is refused, `show`, `check-quality`, the extensions (a new arm, more rounds) and the catalogue rows of its commands |
+| `tests/test_merge_moe.py` | `lib/merge_moe.py` (E2.S1): M1 and M2 (the two published merged files, byte for byte), M3-M11 and M15 (the refusals, all in one pass; a `chunk.env` without `KEYS=`; an identity word held by only some chunks, a base file excepted), M12, M13, M17 (append-only, the atomic write, a part with a dead owner swept, a live owner refused, a merge killed in its write window, two merges at once; in the forced no-hard-link fallback a live `<NAME>.claim` stops a second merge and a dead one is swept), M14 (`check`), M16 (the catalogue) |
+| `tests/test_moe_kernel_ab.py` | `lib/moe_kernel_ab.py` (E2.S1): K1 and K2 (the recorded B1 and B2 tables and decisions), K3-K11 (both rules, the exact threshold, the median of three; a rep is a log: a missing log, a key twice in one log and two logs joined into one are refused naming the file; malformed logs), K12 (the catalogue) |
+| `tests/test_candidates.py` | `config/coarse_candidates.json` (E2.S1): C1 (the 81-config product plus the batch-size-1 winner), C2 (the merge's field check), C3 (the published hash) |
+| `tests/test_moekeys.py` | `lib/moekeys.py` (E2 code gate): the one grammar of a batch-size list, the edge cases fed to the module, to its command line and to the worker's `_moe_keys_problem` (which delegates: a test reads `lib/moe.sh` for a second grammar), the two programs using the module |
+| `tests/test_vendor.sh` | `vendor/benchmark_moe.py` (E2.S1): V1-V5 (`patch -R` gives upstream's hash; three hunks, each a `LOCAL CHANGE`; the licence header; it compiles) and the README (the diff embedded verbatim, the hashes named) |
+| `tests/test_moe.sh` | the MoE units (E2.S2): T1-T8 (a chunk recorded only when its JSON passes `check`; the measured argv; the draft and coarse words; the cache clear; the half-written chunk deleted; fewer keys than promised; a non-zero exit; a recorded chunk is not run again), T9-T13 and T19-T20 (a RAM stop, an interrupt, a hung hook that ignores or obeys `TERM`, the deadline: no prefixed container, the clear in the exit path before the restore, the restore before `T_END`), T14-T16 (the A/B record and its two validation rules; a missing merged file is `KIND=refused`), T17 (every placed asset on every unit, derived from `moe_assets`), T21-T22b (an asset or the activated file edited DURING a unit gives a rejected record: the record names the hashes taken right after the identity check), T23 (the stop time at the disk gate is `KIND=deadline`, never a false disk alarm), T24 (an exchange folder that cannot be emptied is `KIND=refused`; skipped with a line when the tests run as root, which `chmod` does not stop), T25 (a hook registered for an invocation that returned early is not run by the next `supervise`). T4 also checks the start line of the pre-unit clear; T26 (`decision.txt` is the `KERNEL:` line even when decide prints more; zero or two such lines are rejected), T27 (one progress line before each A/B container), T28 (the current hashes are computed in one pass), T29 (a failed cache clear before a unit refuses a chunk and an A/B), T30 (a failed clear in the exit path stays best-effort), T31 (a long chunk prints a heartbeat; `chunk.log` and the argv are untouched; at scale 100 a 5-minute beat is 3 s). T13 and T19 run at time scale 25 (T_STOP 9.4 s after the start), like E1's `short_variant`. T18 (the new fields and the moved budget rule) is in `tests/test_config.sh` |
+| `tests/test_moe_tune.sh` | the verb `bin/r9700 moe-tune` (E2.S3): U1 and U1b (the files placed, hash-checked; a stale one replaced; an unwritable folder refused before any stop), U2 (the name and the worker words), U3 (a recorded chunk counted before admission), U4 (every refusal of the grammar before the lock), U5 and U5b (`MOE_DTYPE=none` after the restore-first), U6, U6b and U6c (the dry-run lines equal the real calls' words, for a model with and without a `TUNED_CONFIG_DIR`), U7-U10 (merge: the base of the tuned folder, no base, the layer check, a missing chunk, a second record replaces nothing, the exchange folder untouched), U11 and U11b (the A/B reads the activated file, the hook ran before the restore; no activation is refused with the hint), U12 (the verb is listed, the model resolver), U13 and U13b (activate: atomic swap, the previous file kept, `activate.env`, already active; a kill inside the window leaves the old bytes and the next call sweeps the part), U13f and U13g (a verb killed after the swap: the next `activate`, and the start of an A/B, finish the `activate.env` rename; a leftover that is not the active file makes the A/B refuse and the next `activate` sweep it), U15b (the layer from `merge.env` or `--layer`, the two must agree), U16 (an A/B in a fresh `--out`, with two layers in `merged/`, reads the layer and the file from `activate.env`), U17 (`container_host_path`: one translation, refusals), U1c (an older `harness.py` is refreshed, an absent one stays absent), U13c-e (an activation that fails half way: a failed swap changes nothing and leaves no part; a failed `activate.env` rename puts the previous file back, or removes the new one when none was active; the failures are made with folders where files are expected, so root is stopped too), U14a-f (refused while the server or a prefixed container is listed, `--force`, a marker first, the lock held, an unreadable list, a `TERM` during a hanging list ends the verb at once), U15 (a stamp that is not a record) |
+| `tests/lib/moecase.sh` | the helpers of `tests/test_moe.sh`: `moe_setup`, `moe_chunk`, `moe_ab`, `chunk_json_for`, `moe_ab_answers`, `moe_sup_bg` (`supervise` with the cleanup hook registered, a body in the child), `ram_stop_run`, `run_argv`, `env_get` |
 | `tests/lib/seriescase.sh` | the helpers of the three series files: `series_setup` (the stub answers of a stub series), `sr`, `series_bg`, `starts`, `build_fixture_outdir`, `lose_server_after` |
 | `tests/lib/stepcase.sh` | the helpers of part (c): `step_setup`, `step_bg`/`step_end`, `session_fixture`, `append_answer`; it sources the part (c) libraries |
 | `tests/lib/lifecycle.sh`, `tests/lib/fake_supervisor.sh` | helpers: a marker written by hand, `bin/r9700` as a user runs it, and a TEST DOUBLE of part (c)'s `step` (lock, marker, stop, worker behind the gate, kill) used to kill a supervisor |
@@ -37,7 +45,7 @@ there is no second one.
 | `tests/lib/assert.sh` | the bash assertions (`assert_eq`, `assert_contains`, `assert_exit`, `t_finish`, `run_all_tests`) |
 | `tools/lib/owned.mjs`, `git.mjs`, `leftovers-sweep.mjs`, `owned-token.mjs` | the leftovers helper: byte-identical copies of the shared files, plus this repository's own token file. They sit in `tools/lib/` because that is where the leftovers guard recognises a copied helper (product code, never scanned as a test) |
 | `tests/lib/lower-priority.mjs` | the priority preload (the shared template with its `MOUNT` line edited) |
-| `tests/fixtures/` | measured bench lines and quality files of 2026-10-28..31 (`ship_test/`, `prompts/`) and the machine fixture (`config/`) |
+| `tests/fixtures/` | measured bench lines and quality files of 2026-10-28..31 (`ship_test/`, `prompts/`), the machine fixture (`config/`) and the MoE tuning fixtures (`moe/`, below) |
 | `.github/workflows/tests.yml` | CI: the same commands as below, then the leftovers guard and the plan check |
 
 Python is `pytest`, the only third-party package, pinned in `tests/requirements.txt`. Shell tests are plain bash with
@@ -59,6 +67,23 @@ node .agents/conventions/tools/post-deploy-check.mjs   # POST_DEPLOY.md: shape o
 The runner lowers its own priority first (`tests/lib/lower-priority.mjs`), so every child inherits it; it runs one file at a
 time (one worker, below the cap of 8) and gives each file a ceiling of 10 minutes, after which the child's whole process
 group is killed. It starts every child from an argv array, never a shell string. CI throttles nothing.
+
+## The process cap
+
+Why: on 2026-11-02 a test shim for `python3` found itself first on `PATH` (the second call of its helper looked the tool up and found the shim) and exec'd itself without end:
+about 15,900 processes, a crashed session. So no test file runs unguarded any more.
+
+- `tests/run.mjs` starts every file as `bash -c 'ulimit -u <cap>; exec <command>'`. The cap is the user's THREAD count at the start of the run (Linux counts the threads of the
+  whole user against `RLIMIT_NPROC`; `ps -L -u <uid> | wc -l`) plus `R9700_TEST_NPROC_HEADROOM` (default 3000), never above the hard limit the runner itself has. The runner
+  prints `run: process cap <n> …` first.
+- It also watches the file's own session every 0.4 s. When the session's threads reach half of the headroom (the other processes of the user may grow while the file runs, so the kernel limit alone could come first; no test file keeps anywhere near that many threads) it prints `process cap reached (<n>): a test forks without end`,
+  stops and then kills every member of that session (round after round: a fork loop keeps making members while it is killed), and the file FAILS (`FAIL <file> (process cap
+  reached (<n>))`, the run exits 1). Only the file's session is signalled, never another process. The kernel limit is the backstop: a file that forks past it gets `EAGAIN`.
+- Proved by `tests/test_runner.sh` with `tests/fixtures/runner/test_forks_without_end.sh` (a folder the normal suite never lists; the runner is pointed at it with
+  `R9700_RUNNER_TESTS_DIR`): FAIL within seconds, exit non-zero, the user's thread count back to its start value. The fixture refuses to run without a cap.
+- Run every test command under an outer guard as well, so a bug in the runner itself is contained: `bash -c 'ulimit -u $(( $(ps -L -u $(id -u) --no-headers | wc -l) + 3000 )); exec nice -n 19 node tests/run.mjs <file>'`.
+- **Rule for every test shim: a shim never resolves to itself.** Look the real tool up with the shim directory removed from `PATH` (`PATH="${PATH//"$dir:"/}" command -v python3`), refuse a
+  result inside the shim directory, and put the directory on `PATH` once however often the shim is written.
 
 ## Test leftovers
 
@@ -88,12 +113,18 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `R9700_TIME_SCALE` | `t_scale` in `lib/run_guarded.sh` | a positive integer; every sleep in `lib/` is divided by it (default 1); it is also the default of the ceiling scale |
 | `R9700_CEILING_SCALE` | `t_ceiling` in `lib/run_guarded.sh` | a positive integer; divides only the adapter's ceilings and its kill-after grace (default: `R9700_TIME_SCALE`). The adapter tests set it to 10 while the sleeps run 100 times faster (a bash stub call takes 39 ms idle and up to 227 ms under load; a 0.3 s ceiling would be a flaky test), and set it to 100 in the tests that must see a ceiling fire |
 | `R9700_T_STOP` | `lib/adapter.sh` | an epoch second, set by the supervisor: no adapter call waits past it (its ceiling is the smaller of its own and the time left) and none is made at or after it. Tested directly |
+| `R9700_TEST_NPROC_HEADROOM` | `tests/run.mjs` | the headroom of the process cap, a whole number from 100 (default 3000): every test file runs under `ulimit -u <the user's threads at the start + this>`; see *The process cap* below. `tests/test_runner.sh` sets 300 for its fork-without-end fixture |
+| `R9700_RUNNER_FORKBOMB_OK`, `R9700_RUNNER_FIXTURE_HARD_LIMIT` | `tests/fixtures/runner/test_forks_without_end.sh` | the fixture forks without end ON PURPOSE and refuses to run unless the first is `1` and the process cap (the hard limit) is at most 20000; the second replaces the hard limit when only the check (`--check`) is tested |
 | `R9700_RUNNER_CEILING_MS` | `tests/run.mjs` | replaces the 10-minute ceiling of one test file (`tests/test_runner.sh` uses it to reach the ceiling in seconds) |
 | `R9700_STUB_DIR` | the stubs | the only place a stub reads or writes; unset or empty: the stub exits 99 at once, so it can never run against a real machine |
 | `R9700_STUB_PROD` | `pwsh.exe` stub | the name of the operator's server container the restore creates (default `vllm`) |
 | `R9700_STUB_OK_HOLD` | `worker.sh ok` | seconds the stub worker holds before it exits 0 (default 0.3, so a guard gets reads) |
 | `R9700_QUIET_CHECKS` | `quiet_wait` in `lib/guard_quiet.sh` | the number of quiet checks in a row, 1..10 (default 3); the lifecycle and guard tests set it to 1, and the test of the check count sets 3 (amendment A3). Never in `machine.env` |
 | `R9700_LOADAVG_FILE` | `quiet_check` in `lib/guard_quiet.sh` | the file the 1-minute load is read from (default `/proc/loadavg`); every part (c) test points it at its own file, so the PC's real load never decides a test |
+| `R9700_TEST_MERGE_HOLD_S` | `merge` in `lib/merge_moe.py` | seconds the merge sleeps between writing its part and moving it to its name, so a test can kill it inside the window (M17). Never in `machine.env` |
+| `R9700_TEST_ACTIVATE_HOLD_S` | `moe_activate_verb` in `lib/moe_verb.sh` | seconds the verb waits (ONE sleep, descriptor 9 closed) between writing the part file and moving it onto the active file, so a test can kill the verb inside the window (U13b); the test kills the verb's whole process group. The bash twin of `R9700_TEST_MERGE_HOLD_S`. Never in `machine.env` |
+| `R9700_TEST_ACTIVATE_HOLD_AFTER_S` | `moe_activate_verb` in `lib/moe_verb.sh` | seconds the verb waits (ONE sleep) between the swap of the active file and the rename of `activate.env`, so a test can kill the verb in that window (U13f, U13g); the test kills the verb's whole process group. Never in `machine.env` |
+| `R9700_TEST_CLAIM_STALE_S` | `lib/merge_moe.py` | the age in seconds after which a claim file that is empty or unparseable counts as left behind and is swept (default 60); the tests scale it |
 | `R9700_TEST_KILL_BEFORE_GATE` | `step_run` in `lib/step.sh` | `1` makes the supervisor `kill -KILL` itself right after the worker start, before the gate file exists (scenario L21) |
 | `R9700_STUB_SERVE_HOLD` | `worker.sh serve` | seconds the serve worker holds after the server is ready (default 1000: it stays up until it is stopped) |
 | `R9700_ARM_SECONDS` | `series_main` in `lib/series.sh` | the time one arm-round is allowed to need for the fit check (default 1500, the figure of the old `night5.sh`); it goes through `t_scale`. Scenario S13 sets it |
@@ -106,6 +137,11 @@ All of them are read from the environment only, never from `machine.env` and nev
 | `<stub dir>/fail-list` | the `wslc` stub | `<count>` or `<skip> <count>`: after `<skip>` good `list` calls (default 0) the next `<count>` calls fail with exit 1 (a transient fault of `wslc`; the restore's retries) |
 | `<stub dir>/on-stop-<name>` | the `wslc` stub | a script run once the named container is stopped: the way a test changes the world at the end of an arm-round (S12 turns the load busy) |
 | `<stub dir>/stop-delay-<name>` | the `wslc` stub | seconds `wslc stop <name>` sleeps before it stops the container (a slow stop that a test interrupts) |
+| `<stub dir>/answers/moe_json/` | the `wslc` stub | a folder: every file in it is written into the `--save-dir` of a foreground `benchmark_moe.py --tune` run (the path `/work/` read as `$R9700_WORK_DIR/`); no folder, nothing written (the half-written chunk) |
+| `<stub dir>/answers/moe_tune_seconds`, `moe_tune_rc`, `moe_tune_log` | the `wslc` stub | how long a chunk container sleeps (default 0; a test that faults it sets 100 and is ended by a guard), its exit code (default 0) and its output (default three lines ending `Completed tuning for batch_size=<k>`) |
+| `<stub dir>/answers/moe_ab_seconds`, `moe_ab.<arm>[.<rep>]`, `moe_cache` | the `wslc` stub | the kernel A/B containers (`default` or `tuned`; the per-rep file first, so the three medians of a recorded table can be served) and the cache-clear container's output (default `1.3G` and the tuning cache folder) |
+| `<stub dir>/moe_clear_mode` | the `wslc` stub | `hang`, `hang-ignore-term` or `eat-stdin` for the cache-clear container ONLY (a foreground run whose program names `triton-moe-tune`), so a test can hang the cleanup hook without hanging the restore |
+| `<stub dir>/on-start-<name>` | the `wslc` stub | a script run once the named MoE foreground container has started: the way a test arms a fault for the calls that come after the unit's container, however that container ends |
 | `<stub dir>/mode` | the stubs | the file holds `hang` (every call sleeps; the sleeper is recorded in `hung/containers`), `hang-ignore-term` (the stub and its sleeper ignore `TERM`: only the kill-after ends the stub) or `eat-stdin` (every call reads its standard input) |
 
 ## Flow catalogue
@@ -126,6 +162,14 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | `lib/fingerprint.py compare` — every differing leaf with its path, a new arm is an extension, `--merge` | covered | `tests/test_fingerprint.py` (F2-F4) |
 | `lib/fingerprint.py show` — one leaf of a document | covered | `tests/test_fingerprint.py` |
 | `lib/fingerprint.py check-quality` — the round-1 quality files of a record | covered | `tests/test_fingerprint.py` |
+| `lib/merge_moe.py check` — one chunk file against its promised keys: JSON, version, positive-integer keys written once, the six fields (extras pass) | covered | `tests/test_merge_moe.py` (M14) |
+| `lib/merge_moe.py merge` — chunk dirs and a base into one new file: the two published merged files byte for byte, every refusal in one pass, the promise of `chunk.env`, identity words, append-only, atomic, parts with an owner | covered | `tests/test_merge_moe.py` (M1-M13, M15, M17) |
+| `lib/moe_kernel_ab.py decide` — the table, the config lines and the decision of a kernel A/B folder: the recorded B1 and B2 results, exact decimals, `incomplete` | covered | `tests/test_moe_kernel_ab.py` (K1-K11) |
+| `config/coarse_candidates.json` — the 82 candidates of the coarse search | covered | `tests/test_candidates.py` |
+| `vendor/benchmark_moe.py` — upstream vLLM plus three marked hooks, proven by `vendor/hooks.diff` and `vendor/UPSTREAM` | covered (the file is never RUN in CI) | `tests/test_vendor.sh` |
+| `lib/moe.sh chunk` (as `bin/r9700 step … -- bash lib/moe.sh chunk …`) — one tuning chunk as a worker: the record, its identity, the argv, the two modes, the cache clear, the rejected attempts, the skip of a recorded chunk, the identity check of every placed asset | covered | `tests/test_moe.sh` (T1–T8, T17) |
+| `lib/moe.sh ab` (as `bin/r9700 step … -- bash lib/moe.sh ab …`) — one kernel A/B as a worker: six logs of their own, the table and the decision, the tuned arm proven to load the activated file, a missing merged file refused | covered | `tests/test_moe.sh` (T14–T17) |
+| `cleanup_hook_set` and `_rg_cleanup_hook_run` — the exit-path hook of `cleanup_once`: once per invocation, never without an admitted step, killed at its ceiling with its tree, the restore after it | covered | `tests/test_moe.sh` (T9, T11, T12, T13, T19, T20) |
 | the config loader (`config_load`, `config_keys`, `config_resolved`) | covered | `tests/test_config.sh` |
 | the arm table (`arms_load`, `arm_args`, `arm_env`, `arm_mounts`, `arms_check`) | covered | `tests/test_config.sh` |
 | the static checks (`tests/check_static.sh`) | covered | `tests/test_static.sh` |
@@ -134,6 +178,8 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | `bin/r9700 step` — one guarded step: the quiet wait, the disk gate, admission (marker, stop), the worker behind its gate, the guards, the typed outcome, retries, the one cleanup | covered | `tests/test_step.sh` (L1–L3, L6, L8, L10–L14, L19–L22), `tests/test_guards.sh` (G1–G12) |
 | `bin/r9700 series` — an arm-round recorded only when complete, atomically; alternating arms; resume; the fingerprint and its refusals; unsupported arms; the fit check; the dry run | covered | `tests/test_series.sh` (S1-S6, S11-S14), `tests/test_series_identity.sh` (S7-S10, S19, S20, F7, F8) |
 | `bin/r9700 verdict` — the restore-first half, then the ship test over the final records | covered | `tests/test_lifecycle.sh` (L6, L9), `tests/test_series_verdict.sh` (S15-S18) |
+| `bin/r9700 moe-tune` — `chunk`, `merge`, `activate`, `ab`: the grammar before the lock, the placed files, one supervisor per GPU invocation, the merge as a versioned record, the atomic activation with the previous file kept and its refusal while a server is listed, the dry runs | covered | `tests/test_moe_tune.sh` (U1-U15) |
+| the acceptance run of `moe-tune` on the R9700 (`chunk --coarse --keys 24`, `merge`, `activate`, the kernel A/B with key 24 as the measured case) | not covered by CI: run by the operator's session; the record is `research/ACCEPTANCE_moe_tune_2026-11-02.md` |
 | the acceptance run of `series` on the R9700 (`base` against `ta3`, one round; the 27B file as a dry run) | not covered by CI: run by the operator's session before a release; the record is `research/ACCEPTANCE_series_2026-11-02.md` | — |
 | the lock, the recovery marker, the worker gate, the session stop, the restore and its readiness wait (`lib/run_guarded.sh`, `lib/restore.sh`, `lib/worker_gate.sh`) | covered | `tests/test_restore.sh` |
 | the adapter functions (`wslc_run`, `wslc_run_once`, `wslc_exec`, `wslc_argv_text`, `wslc_list`, `wslc_stop`, `wslc_logs`, `win_ram_mb`, `win_disk_newest`, `restore_start`, `restore_probe`): argv, CR removal, ceilings that kill the child, refusals | covered | `tests/test_adapter.sh` |
@@ -147,7 +193,22 @@ fails when a command is added without a `covered` row here. `covered` names the 
 | the runner: one owned folder, removed after a run, swept after a `kill -9` | covered by hand, below | — |
 | the assertion file (`tests/lib/assert.sh`) | covered | `tests/test_assert.sh` |
 
-Everything E1 builds is in the catalogue.
+Everything E1 builds and everything E2.S1 and E2.S2 build is in the catalogue.
+
+## The MoE fixtures (E2.S1)
+
+`tests/fixtures/moe/` holds measured files of the 2026-10-27..11-01 MoE work, copied byte for byte with `git show` from the published results (they are `-text` in `.gitattributes`):
+
+| Folder | What | Where it comes from |
+|---|---|---|
+| `b1_ab/` | `default-{1,2,3}.log`, `tuned-{1,2,3}.log` of the B1 kernel A/B (the draft layer, 8 batch sizes) and `expected.txt` | the results of the night of 2026-10-31, `phaseB1_kernel_ab/`; `expected.txt` is lines 19-32 of its `summary.log` with ONE edit: the last line `B1 KERNEL: faster` is replaced by the new decision line. The recorded run printed config lines for batch sizes 1 and 4 only (an older version of the script); `decide` prints one per batch size, so K1 compares the recorded lines and allows exactly `default|tuned bs k config:` for k in 2 3 6 8 12 16 |
+| `b1/` | the merged BF16 config of that night (7 keys, triton 3.8.0) | `phaseB1_kernel_ab/merged_b1_*.json`, renamed to its own file name |
+| `b2_ab/` | the logs of the B2 kernel A/B (the int4 experts, 11 batch sizes) and `expected.txt` | the night of 2026-11-01, `phaseB2/kernel_ab/` and lines 19-53 of `b2_kernel_ab.log`, with the same one edit (the last line becomes the new decision line) |
+| `b2/` | the merged int4 config of that night (13 keys) | `phaseB2/merged_b2_*.json` |
+| `b2_base/` | the 9-key production int4 file of 2026-10-27 (sha256 `072d2506...`) | the config folder of the MoE tuning work of 2026-10-27 |
+
+The chunk files of those nights are not published; a test builds a chunk dir from a merged fixture (the fixture's own file name, its `triton_version` and its entries for the chunk's keys), which is exactly how the merged files were made.
+`config/coarse_candidates.json` is a fixture too: the published 82-config file, pinned by its hash (C3).
 
 ## The runner check, by hand (scenario 46)
 
@@ -168,6 +229,11 @@ Every scenario L1–L22 and G1–G14 of the story is covered. L1, L4 and L5 have
 
 ## What it does not prove
 
+- **The stub's foreground container is listed and stoppable like a detached one.** UNVERIFIED on the real `wslc`: nobody has observed whether a foreground `run --rm` is listed. The guards stop a chunk container by name AND end the worker's session, so the unit is ended either way, but the acceptance run of the MoE story watches a real `wslc list` during a chunk.
+- **The tuning itself never runs.** The stub answers `benchmark_moe.py` with a scripted file; the vendored benchmark, the Triton cache and the real timings are not exercised, and the cache volume is never touched (the clear container is a stub).
+- **The default arm's `Using …` line for a folder without the file is unknown.** It is recorded as `A_CONFIG_LINE` and never judged; the text the fixture shows is `Using default MoE config…`, seen in a server log, not in the benchmark's.
+- **The hung hook is hung by the stub, not by a wedged `wslc.exe`.** T12 and T19 prove the supervisor's window and tree kill against a stub that ignores `TERM` (and one that obeys it); a Windows process that survives `KILL` of its WSL parent is still the E1 UNVERIFIED assumption. Because `_rg_tree_kill` sends the group `KILL` right after `TERM`, the test cannot tell which signal ended a hung call that obeys `TERM`.
+
 - **The stub writes the quality files the container would.** In the series tests the `harness.py` calls (`collect`, `gsm8k`) are answered by the
   `wslc` stub, which writes a 20-result file and a GSM8K summary of n 200 under the work directory; the real `lib/harness.py` runs against a
   real server only in the acceptance run. The same holds for `vllm bench serve`: the stub prints the recorded fixture lines.
@@ -179,6 +245,14 @@ Every scenario L1–L22 and G1–G14 of the story is covered. L1, L4 and L5 have
   serves at those settings.
 - **The time scale shapes the S12 and S13 numbers.** Their margins are measured against a deadline that is whole seconds; a machine slower than
   the one they were tuned on can move an arm-round across one of them.
+
+- **The benchmark never runs under `moe-tune` in CI, and hook 3 is unobserved until a draft chunk runs on the machine.** `moe-tune` is proven with the stub's scripted answers; the foreground-container listing (above) is a stub assumption, and `activate`'s refusal rests on it: a real `wslc list` that does not show a foreground container would let an activation through while a chunk runs (the lock still stops it while a `moe-tune` run holds it).
+- **`activate` cannot see what a container mounts.** It treats every listed server or prefixed container as a reader. A server that is not listed but starts right after the swap reads the new file, as intended; one started by hand under another name with the folder mounted is not seen (`--force` is the operator's word in the other direction).
+- **The vendored benchmark is never run in CI.** `tests/test_vendor.sh` proves it is upstream plus the three marked changes; it does not prove the changes work. Hooks 1 and 2 were observed
+  in the 2026-10 work and hook 3 is known by its effect only (the B1 draft-layer chunks); none is observed through the toolkit until the acceptance run of the MoE story (`vendor/README.md`, *Verified on the machine*).
+- **`merge` and `decide` are proven on the files of the published runs, not on a new chunk.** A chunk file made by a newer vLLM may hold other fields or another key order; `check` accepts extra fields and
+  the merge keeps each config's own order, but only the real run shows the real file.
+- **The atomic write rests on `os.link`.** M17 proves no overwrite and no half file on this filesystem; a results folder on a filesystem without hard links uses the fallback: a `<NAME>.claim` taken with `O_EXCL`, then check and replace. Tests force the fallback (a live claim refuses, a dead one is swept); it is not observed on such a filesystem.
 
 - **No GPU, no real `wslc`, no real vLLM server.** `lib/harness.py` is tested against a Python `http.server` stub on
   `127.0.0.1` that answers the two routes with fixed bodies; the real server's logprobs and chat template are not exercised.

@@ -271,4 +271,51 @@ t_a_child_ended_by_a_signal_is_reported_by_the_signal_name() {
   assert_not_contains "$(cat "$dir/runner.out")" "(exit 128)" "not as exit 128"
 }
 
+# ---- the process cap (2026-11-02: a test shim that exec'd itself forked about 15,900 processes) ----------------------------------------------------------
+
+user_threads() { ps -L -u "$(id -u)" --no-headers | wc -l; }
+
+t_a_file_that_forks_without_end_is_ended_by_the_process_cap_and_leaves_nothing() {
+  local dir="$R9700_TEST_ROOT/cap" before after i
+  mkdir -p "$dir"
+  before="$(user_threads)"
+  R9700_RUNNER_FORKBOMB_OK=1 R9700_TEST_NPROC_HEADROOM=300 R9700_RUNNER_CEILING_MS=60000 R9700_RUNNER_TESTS_DIR="$REPO/tests/fixtures/runner" \
+    timeout 90 node "$REPO/tests/run.mjs" "$REPO/tests/fixtures/runner/test_forks_without_end.sh" > "$dir/runner.out" 2>&1
+  assert_eq "1" "$?" "the runner exits non-zero (1: a file failed)"
+  assert_contains "$(cat "$dir/runner.out")" "process cap reached (" "the runner names the cap"
+  assert_contains "$(cat "$dir/runner.out")" "): a test forks without end" "and the cause"
+  assert_contains "$(cat "$dir/runner.out")" "FAIL " "the file FAILS"
+  assert_not_contains "$(cat "$dir/runner.out")" "ceiling of" "within the cap's own watch, not the file ceiling"
+  for i in $(seq 1 50); do after="$(user_threads)"; [ "$after" -le "$((before + 10))" ] && break; sleep 0.2; done
+  if [ "$after" -le "$((before + 10))" ]; then assert_eq ok ok "the user's thread count is back ($before before, $after after)"; else assert_eq "<= $((before + 10))" "$after" "the user's thread count is back"; fi
+}
+
+t_the_fork_fixture_refuses_to_run_without_the_switch_or_without_a_cap() {
+  local fixture="$REPO/tests/fixtures/runner/test_forks_without_end.sh"
+  # --check stops before any fork, so none of these can start the loop
+  bash "$fixture" --check > /dev/null 2>&1
+  assert_eq "3" "$?" "without R9700_RUNNER_FORKBOMB_OK=1: exit 3"
+  R9700_RUNNER_FORKBOMB_OK=1 R9700_RUNNER_FIXTURE_HARD_LIMIT=unlimited bash "$fixture" --check > /dev/null 2>&1
+  assert_eq "3" "$?" "with the switch and no cap (unlimited): exit 3"
+  R9700_RUNNER_FORKBOMB_OK=1 R9700_RUNNER_FIXTURE_HARD_LIMIT=20001 bash "$fixture" --check > /dev/null 2>&1
+  assert_eq "3" "$?" "with the switch and a cap above 20000: exit 3"
+  R9700_RUNNER_FORKBOMB_OK=1 R9700_RUNNER_FIXTURE_HARD_LIMIT=3000 bash "$fixture" --check > /dev/null 2>&1
+  assert_eq "0" "$?" "with the switch and a cap of 3000: the check passes"
+}
+
+t_a_bad_headroom_is_refused_and_a_normal_file_runs_under_the_cap() {
+  local dir="$R9700_TEST_ROOT/cap-knob"
+  mkdir -p "$dir/tests"
+  printf 'echo capped-ok\n' > "$dir/tests/test_ok.sh"
+  R9700_TEST_NPROC_HEADROOM=abc R9700_RUNNER_TESTS_DIR="$dir/tests" node "$REPO/tests/run.mjs" "$dir/tests/test_ok.sh" > "$dir/bad.out" 2>&1
+  assert_eq "2" "$?" "a headroom that is not a number from 100: exit 2"
+  assert_contains "$(cat "$dir/bad.out")" "R9700_TEST_NPROC_HEADROOM" "naming the knob"
+  printf 'echo "limit:$(ulimit -u)"\n' > "$dir/tests/test_ok.sh"
+  R9700_TEST_NPROC_HEADROOM=500 R9700_RUNNER_TESTS_DIR="$dir/tests" node "$REPO/tests/run.mjs" "$dir/tests/test_ok.sh" > "$dir/ok.out" 2>&1
+  assert_eq "0" "$?" "a normal file passes"
+  assert_contains "$(cat "$dir/ok.out")" "run: process cap " "the runner prints the cap"
+  assert_contains "$(cat "$dir/ok.out")" "limit:" "the file ran"
+  if [[ "$(grep -o 'limit:[0-9]*' "$dir/ok.out")" =~ ^limit:[0-9]+$ ]]; then assert_eq ok ok "and its ulimit -u is a number (the cap)"; else assert_eq "limit:<number>" "$(grep -o 'limit:[a-z0-9]*' "$dir/ok.out")" "the file's ulimit -u"; fi
+}
+
 run_all_tests

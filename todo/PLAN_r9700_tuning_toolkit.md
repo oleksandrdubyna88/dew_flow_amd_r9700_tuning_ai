@@ -231,6 +231,11 @@ in the README and `research/`.
 **Cornerstone areas.** None. The merge validation is the riskiest part, and it is a pure function with unit tests;
 the lifecycle it runs under is E1's.
 
+**Stories.** [PLAN_r9700_tuning_toolkit_E2.md](PLAN_r9700_tuning_toolkit_E2.md): E2.S1 the pure parts (merge and
+check, the A/B table and decision, the candidates, the vendored benchmark); E2.S2 the chunk and the kernel A/B as
+workers under the E1 supervisor, the cache clear in the exit path, the config fields; E2.S3 `bin/r9700 moe-tune`, the
+docs, the acceptance template. Its coverage table assigns every E2 item above to exactly one story.
+
 ### E3 — kernels, prefix check, the unattended driver, publication
 
 **Goal.** A person runs one `bin/r9700 run <plan-file>` overnight: the steps of E1 and E2, plus the linear-kernel

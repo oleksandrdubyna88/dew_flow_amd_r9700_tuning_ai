@@ -121,7 +121,7 @@ t_deadline_compute_sets_whole_second_stop_times_and_exports_the_adapters_stop_ti
   before="$(date +%s)"
   assert_exit 0 "deadline_compute with the fixture's defaults" -- deadline_compute
   deadline_compute
-  assert_eq "$((T_END - T_STOP))" "1500" "T_END - T_STOP is CLEANUP_BUDGET_S (1500)"
+  assert_eq "$((T_END - T_STOP))" "1565" "T_END - T_STOP is CLEANUP_BUDGET_S (1565: E2.S2 decision 6)"
   if [[ $T_END =~ ^[0-9]+$ && $T_STOP =~ ^[0-9]+$ ]]; then assert_eq ok ok "both are whole seconds"; else assert_eq "digits" "$T_END $T_STOP" "both are whole seconds"; fi
   assert_eq "$T_STOP" "$R9700_T_STOP" "R9700_T_STOP is T_STOP, for the adapter"
   assert_exit 0 "and it is exported" -- bash -c 'test -n "$R9700_T_STOP"'

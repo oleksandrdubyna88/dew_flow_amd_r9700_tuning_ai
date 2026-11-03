@@ -11,6 +11,8 @@
 #   mode           `hang` makes every call sleep (to prove the adapter's ceilings); the sleeper is recorded in hung/containers.
 #                  `hang-ignore-term` the same, but the stub and its sleeper ignore TERM (to prove --kill-after).
 #                  `eat-stdin` makes every call read its standard input to the end (to prove the adapter never hands its caller's input on)
+#   moe_clear_mode  the same words, but for the MoE cache-clear container only (a foreground run named ...moe-clear), so a test can hang the
+#                  cleanup hook without hanging the restore
 #   stop-delay-<name>  seconds `wslc stop <name>` sleeps before it stops the container (a slow stop, for a test that interrupts one)
 #   counters/<x>   the call counters
 
@@ -75,15 +77,17 @@ stub_log() {
 # stub_mode_if_asked: the test-scripted misbehaviour of the `mode` file. `hang` sleeps 1000 s; the sleeper is recorded so a test can prove
 # that the caller's ceiling killed it. `eat-stdin` reads standard input to its end.
 stub_hang() {
+  local sleeper
   sleep 1000 > /dev/null 2>&1 &
-  stub_record_pid "$R9700_STUB_DIR/hung/containers/$(stub_next hung || echo 0).pid" "$!"
-  wait "$!"
+  sleeper=$!
+  stub_record_pid "$R9700_STUB_DIR/hung/containers/$(stub_next hung || echo 0).pid" "$sleeper"
+  wait "$sleeper"
 }
 
-stub_mode_if_asked() {
-  local mode=""
-  [ -f "$R9700_STUB_DIR/mode" ] && mode="$(cat "$R9700_STUB_DIR/mode")"
-  case $mode in
+# stub_mode_apply <mode>: the test-scripted misbehaviour for one call: `hang` sleeps 1000 s (the sleeper is recorded so a test can prove that the
+# caller's ceiling killed it); `hang-ignore-term` the same with a stub and a sleeper that ignore TERM; `eat-stdin` reads standard input to its end.
+stub_mode_apply() {
+  case ${1:-} in
     hang) stub_hang ;;
     hang-ignore-term)
       # the stub itself (record 1) and its sleeper (record 2) ignore TERM; an ignored signal stays ignored across exec. `timeout` sends the
@@ -96,6 +100,12 @@ stub_mode_if_asked() {
       ;;
     eat-stdin) cat > /dev/null ;;
   esac
+}
+
+stub_mode_if_asked() {
+  local mode=""
+  [ -f "$R9700_STUB_DIR/mode" ] && mode="$(cat "$R9700_STUB_DIR/mode")"
+  stub_mode_apply "$mode"
 }
 
 # stub_answer <name>: prints the next line of answers/<name> (call k takes line k, the last line repeats) without a trailing CR; exits 99
