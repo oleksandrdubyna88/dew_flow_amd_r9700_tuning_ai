@@ -1,6 +1,6 @@
 # research — the system as it is
 
-Architecture, module deep-dives and records of decisions that shipped. Open work is in `../todo/` (no plan is open).
+Architecture, module deep-dives and records of decisions that shipped. Open work is in `../todo/`: [the items the GPU acceptance left open](../todo/PLAN_r9700_acceptance_followups.md).
 
 | Document | What |
 |---|---|
