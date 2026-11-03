@@ -1286,4 +1286,4 @@ What shipped differently from this document (2026-11-03; the details are in `res
 - **The cache clear** happens BEFORE every unit (a failed clear refuses the unit) and in the exit path by ONE hook of `cleanup_once` under an enforced ceiling; the budget rule became `CLEANUP_BUDGET_S ≥ READY_TIMEOUT_S + 365` (default 1565).
 - **`--dry-run` is not lock-free:** it runs inside `supervise` (the lock, restore-first, a run folder, the placed files).
 - **A test fix after the merge:** T9 accepts the attempt kept in either place (a worker alive after the RAM stop rejects its part; one the session kill reaches first leaves it in `chunks/`): PR #7.
-- **Acceptance:** `research/ACCEPTANCE_moe_tune_2026-11-02.md` is a template marked NOT RUN; its box (and the hook-3 observation) is open and moved to [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md).
+- **Acceptance:** `research/ACCEPTANCE_moe_tune_2026-11-02.md` is a template marked NOT RUN; its box (and the hook-3 observation) is open and moved to [PLAN_r9700_gpu_acceptance.md](PLAN_r9700_gpu_acceptance.md) (IMPLEMENTED 2026-11-03: the record was run; hook 3 stays unobserved).
