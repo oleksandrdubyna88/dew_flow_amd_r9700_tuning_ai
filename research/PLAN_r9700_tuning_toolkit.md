@@ -1,8 +1,9 @@
 # PLAN — a toolkit to tune vLLM on the R9700 without writing scripts
 
-> Status: **plan only, nothing implemented yet, 2026-11-01; `review_plan` proceed (2 reviewers, 8 findings
-> accepted).** Scope: this new repository — the scripts written ad hoc during the 2026-10-25..11-01 tuning
-> work, made model-independent, tested and documented.
+> Status: **IMPLEMENTED, 2026-11-03.** (Approved 2026-11-01: `review_plan` proceed, 2 reviewers, 8 findings
+> accepted.) Scope: this new repository — the scripts written ad hoc during the 2026-10-25..11-01 tuning
+> work, made model-independent, tested and documented. Epics E1, E2 and E3 are merged; the GPU acceptance runs
+> that were not made are the open items of [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md) (see *Deviations*).
 
 ## Plan changes
 
@@ -69,7 +70,7 @@ models/qwen3.6-35b-a3b-gptq.env  models/qwen3.8-27b-awq.env   (examples, from th
 machine.env.example            wslc path, image, work dirs, restore command, RAM limit, quiet load, deadline
 tests/                         pytest (python) + plain-bash tests with stub wslc/powershell
 research/                      architecture.md, module_tests.md, README.md
-todo/                          this plan, README.md
+todo/                          the open plan (the GPU acceptance runs), README.md
 POST_DEPLOY.md  README.md  LICENSE  .github/workflows (family checks, tests)
 ```
 
@@ -144,19 +145,22 @@ Which epic builds each step, and where a step is divided by file, is in *Epics* 
 
 ## Definition of Done
 
-- [ ] Every script listed in *Inputs* has a home in `lib/`, `vendor/` or `bin/`, or is named here as dropped
-      with the reason.
-- [ ] A model needs only `models/<name>.env`; the two example models run through `series` without edits.
-- [ ] The guard tests above pass in CI; the verdict reproduces the three recorded verdicts.
-- [ ] No tracked file holds a personal path, account or machine name (checked in CI).
-- [ ] `README.md` quick start, `research/architecture.md`, `research/module_tests.md`, `POST_DEPLOY.md`.
-- [ ] The acceptance runs on the R9700 passed and are recorded.
-- [ ] The repository is public, its family checks are green, and the conventions consumer list names it.
+- [x] Every script listed in *Inputs* has a home in `lib/`, `vendor/` or `bin/`, or is named here as dropped
+      with the reason. (`INPUTS_homes.md`: 33 names and the 3 inputs outside the folder.)
+- [x] A model needs only `models/<name>.env`; the two example models run through `series` without edits.
+      (The 35B file ran a series; the 27B file ran as a dry run only; see *Deviations*.)
+- [x] The guard tests above pass in CI; the verdict reproduces the three recorded verdicts.
+- [x] No tracked file holds a personal path, account or machine name (checked in CI).
+- [x] `README.md` quick start, `research/architecture.md`, `research/module_tests.md`, `POST_DEPLOY.md`.
+- [ ] The acceptance runs on the R9700 passed and are recorded. **Partly:** the `series` run is done and recorded
+      (`research/ACCEPTANCE_series_2026-11-02.md`); the other four are templates marked NOT RUN, moved to
+      [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md).
+- [x] The repository is public, its family checks are green, and the conventions consumer list names it. (Read 2026-11-03: `PUBLIC`; the consumers row is in `dew_flow_conventions`.)
 
 ## Epics
 
 Three epics, in build order; each becomes two or three stories when it starts
-(`todo/PLAN_r9700_tuning_toolkit_E<n>.md`). Every design item and every build-order step lands in exactly one epic.
+(`PLAN_r9700_tuning_toolkit_E<n>.md`, now beside this file). Every design item and every build-order step lands in exactly one epic.
 Three steps are divided by file (6, 7, 8) and one by run (9); the scope lines below name the file or run, so no item
 is in two epics. Step 1 (skeleton) is done and belongs to no epic.
 
@@ -272,3 +276,17 @@ and closing (every *Inputs* script has a home or is named as dropped, the final 
 acceptance templates NOT RUN, the consumer row). Its coverage table assigns every E3 item above to exactly one story.
 
 Cornerstones: 2 of 2 — E1.S2, E1.S3
+
+## Deviations
+
+What shipped differently from the plan (2026-11-03). The stories documents ([E1](PLAN_r9700_tuning_toolkit_E1.md), [E2](PLAN_r9700_tuning_toolkit_E2.md), [E3](PLAN_r9700_tuning_toolkit_E3.md)) carry the deviations of each story; these are the ones a reader of this plan needs.
+
+- **The Inputs table was not exact.** The harness folder holds 31 files at commit `c466652`, not the names the table lists: `wait_ready.sh` and `e2e_moe.sh` are in no commit of `dew_flow_benchmark` (checked: the folder's tree at that commit, the working tree, `git log --all`, the results document; NOT checked: the operator's session scratchpad). `research/INPUTS_homes.md` has a row for each of the 33 names and for the 3 inputs outside the folder. `prodcheck.sh` is dropped on purpose (it measured the production server).
+- **`lib/linear_bench_graph.py` does not exist.** It became the `--timer graph` option of one `lib/linear_bench.py` (the graph timer is the default; the eager timer stays an option). The shapes are the model file's `LINEAR_SHAPES` and `LINEAR_GROUP_SIZE`; the 27B file leaves them empty and `linear-bench` refuses it.
+- **Two more verbs than the Design lists:** `bin/r9700 step` (one guarded command: the engine every other verb is built on, used by the tests) and `bin/r9700 commands` (the verb list, from which the docs and the catalogue are derived).
+- **One supervisor, several steps (E1 amendment A5).** `lib/run_guarded.sh` became `supervise` plus `step_run` (`lib/step.sh`), so a body of several steps restores once. The worker is stopped by SESSION, not by process group (A8: GNU `timeout` gives every adapter call a group of its own), and the lock descriptor is closed in every child (A1). `run` is `supervise` around several `step_run` calls and adds no exit code.
+- **The stop budget changed twice.** E1 made `MAX_SERVER_STOPS` a per-invocation count of admissions (A20); E3.S2 made it a RUN-WIDE cap on ACTUAL stops of the operator's server (a quiet chain of any length is one stop). After the E3.S2 review a bound on exit-3 repeats was added (3 x `MAX_FAILED_TRIES`, then exit 8; test knob `R9700_MAX_WAIT_REPEATS`), `machine.env` is hashed at the start of a chain (a changed file is refused at the next step), and a signal never overwrites a final step state.
+- **The test base is one Node runner** for Python and bash tests (`tests/run.mjs`, one owned run folder, a process cap added after the shim incident of 2026-11-02), not pytest alone. The document checks live in `tests/test_docs.sh` and the unfinished-work scan is `tests/check_static.sh --unfinished` (a flag named `--planned` would match the phrase it forbids).
+- **`POST_DEPLOY.md`:** items 2 and 3 (the two series dry runs) became one item; the freed slot is item 3, `run --check` over the operator's plan. Twelve items.
+- **Acceptance.** Only `series` was run (2026-11-02, one round, with the quiet gate off by the operator's decision: `ta3` PASS). The three E3 templates and the E2 template are NOT RUN because the operator holds GPU runs. The run template predicts 35 to 40 minutes, not the 12 to 15 the E3 plan said: it left out the quiet waits (three checks 300 s apart before each step).
+- **Not built, on purpose:** an end-to-end A/B of a tile patch (a measurement of a future day, not a toolkit feature); `moe-tune merge` and `activate` as steps of a plan (refused: they change what a server reads).

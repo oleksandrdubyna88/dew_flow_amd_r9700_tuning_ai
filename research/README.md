@@ -1,6 +1,6 @@
 # research — the system as it is
 
-Architecture, module deep-dives and records of decisions that shipped. Open work is in `../todo/`.
+Architecture, module deep-dives and records of decisions that shipped. Open work is in `../todo/` (the GPU acceptance runs that are still NOT RUN).
 
 | Document | What |
 |---|---|
@@ -13,3 +13,7 @@ Architecture, module deep-dives and records of decisions that shipped. Open work
 | [ACCEPTANCE_linear_bench_2026-11-03.md](ACCEPTANCE_linear_bench_2026-11-03.md) | the acceptance run of `linear-bench` on the R9700 (the 35B file's five shapes against results § 12.1): the prediction written before it, NOT RUN yet |
 | [ACCEPTANCE_prefixtest_2026-11-03.md](ACCEPTANCE_prefixtest_2026-11-03.md) | the acceptance run of `prefixtest` on the R9700 (one fresh server, against results § 13.3): the prediction written before it, NOT RUN yet |
 | [ACCEPTANCE_run_2026-11-03.md](ACCEPTANCE_run_2026-11-03.md) | the acceptance run of `run` on the R9700 (a two-step plan, a forced RAM stop and one restore, then the clean chain): the prediction written before it, NOT RUN yet |
+| [PLAN_r9700_tuning_toolkit.md](PLAN_r9700_tuning_toolkit.md) | IMPLEMENTED (2026-11-03): the plan of the whole toolkit (goal, design, inputs, epics) and its deviations |
+| [PLAN_r9700_tuning_toolkit_E1.md](PLAN_r9700_tuning_toolkit_E1.md) | IMPLEMENTED: the stories of E1 (config, verdict, harness, test base; lifecycle and restore; run identity and the series), the amendments A1 to A24 and the deviations |
+| [PLAN_r9700_tuning_toolkit_E2.md](PLAN_r9700_tuning_toolkit_E2.md) | IMPLEMENTED: the stories of E2 (the pure parts of MoE tuning; the chunk and the A/B as workers; `moe-tune`) and the deviations |
+| [PLAN_r9700_tuning_toolkit_E3.md](PLAN_r9700_tuning_toolkit_E3.md) | IMPLEMENTED: the stories of E3 (`linear-bench` and `prefixtest`; the `run` driver; publication) and the deviations |

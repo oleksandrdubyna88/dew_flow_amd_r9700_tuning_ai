@@ -1,6 +1,6 @@
 # PLAN — E3 stories: kernels, prefix check, the unattended driver, publication
 
-> Status: **plan only, nothing implemented yet, 2026-11-03.** Scope: the three stories of epic E3 of
+> Status: **IMPLEMENTED, 2026-11-03.** Scope: the three stories of epic E3 of
 > [PLAN_r9700_tuning_toolkit.md](PLAN_r9700_tuning_toolkit.md) — section
 > [E3 — kernels, prefix check, the unattended driver, publication](PLAN_r9700_tuning_toolkit.md#e3--kernels-prefix-check-the-unattended-driver-publication).
 > No cornerstone (the parent names none for E3); the ledger line stays `Cornerstones: 2 of 2`.
@@ -1230,3 +1230,14 @@ open and say so.
       every new flow is in `research/module_tests.md` with what it does not prove; every test brief carried the
       process-cap and shim rules; `plan-lifecycle.mjs` is clean; the parent's E3 section links this document and
       `todo/README.md` has its row.
+
+## Deviations
+
+What shipped differently from this document (2026-11-03).
+
+- **33 names, not 33 files:** the folder holds 31; `wait_ready.sh` and `e2e_moe.sh` are rows that say what was checked (S3 decision 1). The night8 row says the toolkit has no switch for the quiet gate: the fields are `QUIET_LOAD_MAX` and `QUIET_BUSY_PATTERN`, and `R9700_QUIET_CHECKS` is a test knob only (S3 review).
+- **After the S2 review:** a bound on exit-3 repeats per step (3 x `MAX_FAILED_TRIES`, then exit 8 and `r9700: <step> waited <n> times (worker exit 3), limit <m>`; knob `R9700_MAX_WAIT_REPEATS`), `machine.env` hashed at the start of a chain and a change refused at the next step (exit 2), a signal never overwrites `done` or `stopped`, one read of the plan (its hash is of the bytes parsed). The hold knob `R9700_TEST_RUN_HOLD_AT` takes `<k>` or `<k>-end`.
+- **S3 files:** the document checks are in the new `tests/test_docs.sh` (S3 named `tests/test_static.sh`, which keeps only the unfinished-work scan); that scan is `check_static.sh --unfinished`, covers four documents, and its fixture is `tests/fixtures/static/unfinished.md`. The template check holds a record to its prompts only while its title says NOT RUN, so a filled record does not turn CI red, and then refuses a record that claims a run with a placeholder left.
+- **`POST_DEPLOY.md`:** the freed slot is item 3 (not a renumbered 12), so items 4 to 12 keep their numbers; item 5 reads the container prefix from `machine.env`.
+- **The run template's wall time is 35 to 40 minutes**, not "about 12 to 15": each step waits for three quiet checks 300 s apart.
+- **The acceptance boxes of this document are open** (the three templates and `moe-tune`'s are NOT RUN): they moved to [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md). Everything else was merged (PR #6) and the consumer row (`dew_flow_conventions` PR #110) and the visibility (`PUBLIC`) were read on 2026-11-03.

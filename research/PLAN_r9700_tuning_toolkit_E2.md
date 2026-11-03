@@ -1,6 +1,6 @@
 # PLAN — E2 stories: MoE config tuning on the E1 supervisor
 
-> Status: **plan only, nothing implemented yet, 2026-11-02.** Scope: the three stories of epic E2 of
+> Status: **IMPLEMENTED, 2026-11-03.** Scope: the three stories of epic E2 of
 > [PLAN_r9700_tuning_toolkit.md](PLAN_r9700_tuning_toolkit.md) — section
 > [E2 — MoE config tuning on the E1 supervisor](PLAN_r9700_tuning_toolkit.md#e2--moe-config-tuning-on-the-e1-supervisor).
 > No cornerstone (the parent names none for E2); the ledger line stays `Cornerstones: 2 of 2`.
@@ -1274,3 +1274,16 @@ base), U13's (the swap and the kept previous file) and U14's refusal line.
       config it produced are added there (the parent's done-when; until then this box stays open and says so).
 - [ ] Every story: no tracked file holds a personal path, account or machine name (the static check is green);
       `research/module_tests.md` names every new flow and what it does not prove; `plan-lifecycle.mjs` is clean.
+
+## Deviations
+
+What shipped differently from this document (2026-11-03; the details are in `research/architecture.md`, *MoE tuning* and *MoE verb*).
+
+- **One more module:** `lib/moekeys.py` holds the ONE grammar of a batch-size list (1 to 20 distinct whole numbers from 1 to 65536); `merge_moe.py`, `moe_kernel_ab.py` and the worker's `_moe_keys_problem` use it (code gate).
+- **The A/B decision line:** `decision.txt` is the ONE line of `decide`'s output that starts with `KERNEL:`; zero or two reject the record. A tuned log without `Using configuration from <the activated file>` rejects the record, so a decision can never compare the default config with itself.
+- **The layer of a file is recorded, never guessed:** `merge` writes `LAYER` into `merge.env`, `activate` into `activate.env`, and `ab` reads it there. `merge --base auto` refuses a `TUNED_CONFIG_DIR` that is not under `/work` instead of meaning "no base".
+- **`activate` is atomic and recoverable** (a part file, a rename, the previous file kept in `merged/previous/`, a failed rename put back) and is refused while the operator's server or a test container is listed, unless `--force`; a kill between the swap and the rename of `activate.env` is finished by the next `activate` or `ab`.
+- **The cache clear** happens BEFORE every unit (a failed clear refuses the unit) and in the exit path by ONE hook of `cleanup_once` under an enforced ceiling; the budget rule became `CLEANUP_BUDGET_S ≥ READY_TIMEOUT_S + 365` (default 1565).
+- **`--dry-run` is not lock-free:** it runs inside `supervise` (the lock, restore-first, a run folder, the placed files).
+- **A test fix after the merge:** T9 accepts the attempt kept in either place (a worker alive after the RAM stop rejects its part; one the session kill reaches first leaves it in `chunks/`): PR #7.
+- **Acceptance:** `research/ACCEPTANCE_moe_tune_2026-11-02.md` is a template marked NOT RUN; its box (and the hook-3 observation) is open and moved to [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md).
