@@ -29,7 +29,7 @@ bin/r9700 linear-bench qwen3.6-35b-a3b-gptq --name acceptance --out acceptance-k
 From § 12.1 (the same seed, the same shapes and Ms, random weights; the old run was `linear_bench_graph.py`, the toolkit's `--timer graph` is its port):
 
 - the container runs about 6 minutes after its start (the old run took 00:12 to 00:18, § 12.1 line 514); the first lines are `kernels: outdir …` and `cache clear: running …`, and the record is `recorded linear/acceptance`.
-- `linear_bench.json` holds 50 rows (5 shapes x 10 Ms). `summary.txt` prints the table of § 12.1 within a few percent per cell: M 1 default about 2.48 ms (split about 2.79); M 6 about 4.91 / 4.79 / 5.89 / 4.28 (default, Triton default tile, split HIP, tuned), change about -13 %;
+- `linear_bench.json` holds 50 rows (5 shapes x 10 Ms). `summary.txt` prints the table of § 12.1 within ± 5 % per cell and ± 2 points on the change column: M 1 default about 2.48 ms (split about 2.79); M 6 about 4.91 / 4.79 / 5.89 / 4.28 (default, Triton default tile, split HIP, tuned), change about -13 %;
   M 16 about 6.93 / 6.69 / 11.67 / 5.95, change about -14 %; M 12 about -1 %.
 - `split_ms` is above `default_ms` at every M of 6 and more (the split HIP op is slower than the default, by up to 68 % at M 16, § 12.1 line 531).
 - the tuned tiles of M 6, 8 and 16 are near the recorded ones (`tiles M=<m>:` lines): `16/16/32, 1 warp` for the two QKV input projections and `16/16/128, 4 warps` for `out_proj + o_proj` and the shared-expert `gate_up` (§ 12.1 lines 534-535); the shared-expert `down_proj` varies with M.

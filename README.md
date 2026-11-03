@@ -127,7 +127,7 @@ moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24 32" --coarse --chunk night-24-32
 ```
 
 - **Check before you leave.** `bin/r9700 run night.plan --check` validates every line and every step's config, takes no lock and starts nothing. It prints `run: step <k>: ok (<line>)`
-  per step and the worst case: `run: at most <n> stops of your server if every step is admitted after a busy wait; MAX_SERVER_STOPS=<n>`. `--dry-run` takes the lock and prints
+  per step and the worst case: `run: at most <n> stops of the operator's server if every step is admitted after a busy wait; MAX_SERVER_STOPS=<n>`. `--dry-run` takes the lock and prints
   the dry run of every step.
 - **The steps.** `series`, `moe-tune chunk`, `moe-tune ab`, `linear-bench` and `prefixtest`. Four verbs are refused as steps, each with its reason: `init` (the machine check you run before a night),
   `verdict` (a reading verb: run it in the morning), `moe-tune merge` (it reads chunks that you choose after reading them) and `moe-tune activate` (it changes what your own server reads: a chain at

@@ -196,7 +196,8 @@ t_doc11_post_deploy_has_the_night_plan_item_and_names_the_plan_in_its_target_lin
 
 # template_problems <file>: the title is `# Acceptance of …`; the five headings are there, the first Prediction before the first Observed; while the title says
 # NOT RUN, the first line of every fenced block in an `## Observed` section is a `(paste …)` prompt, and every such section has a block. A record that was run
-# (its title says so) is only held to the headings: a filled-in record must not turn this check red.
+# (its title does not say NOT RUN) must be really filled in: no `(paste …)` prompt, no `<sha>` or `<date>` placeholder, and no `Answer: `(…)`` or
+# `Observed against predicted: `(…)`` placeholder, so a record cannot claim a run with its observed sections empty.
 template_problems() {
   awk '
     function problem(text) { print text; bad = 1 }
@@ -210,6 +211,9 @@ template_problems() {
       next
     }
     /^```/ { if (!infence) { infence = 1; first = 1; hasfence = 1 } else { infence = 0 } next }
+    notrun == 0 && /\(paste/ { problem("line " NR ": a record that was run still holds a (paste ...) prompt") }
+    notrun == 0 && /<sha>|<date>/ { problem("line " NR ": a record that was run still holds the <sha> or <date> placeholder") }
+    notrun == 0 && (/Answer: `\(/ || /Observed against predicted: `\(/) { problem("line " NR ": a record that was run still holds an empty Answer or Observed-against-predicted line") }
     infence && first { first = 0; if (notrun && insect && $0 !~ /^\(paste/) problem("line " NR ": an observed block of a NOT RUN record is not a (paste ...) prompt") }
     BEGIN { nreq = split("## Subject and conditions|## Commands|## Prediction|## Questions the run answers|## What this record does not settle", req, "|") }
     END {
@@ -226,7 +230,7 @@ t_doc12_the_acceptance_templates_exist_say_not_run_and_hold_a_prediction_before_
   for name in linear_bench prefixtest run; do
     assert_exit 0 "ACCEPTANCE_${name}_2026-11-03.md exists" -- test -f "$REPO/research/ACCEPTANCE_${name}_2026-11-03.md"
     assert_exit 0 "...is well formed" -- template_problems "$REPO/research/ACCEPTANCE_${name}_2026-11-03.md"
-    assert_exit 0 "...and its title says NOT RUN, or that it was run" -- bash -c 'head -n 1 "$1" | grep -qE "NOT RUN|RUN 20"' _ "$REPO/research/ACCEPTANCE_${name}_2026-11-03.md"
+    assert_exit 0 "...and its title says NOT RUN, or that it was run (then it is really filled in)" -- bash -c 'head -n 1 "$1" | grep -qE "NOT RUN|RUN 20"' _ "$REPO/research/ACCEPTANCE_${name}_2026-11-03.md"
   done
   assert_exit 0 "the template of moe-tune is well formed too (the model of the others)" -- template_problems "$REPO/research/ACCEPTANCE_moe_tune_2026-11-02.md"
 }
@@ -236,8 +240,16 @@ t_doc13_the_template_check_is_alive_over_planted_records() {
   sed -E '0,/^\(paste the output of bin\/r9700 init\)$/s//The output was: ok/' "$src" > "$bad"
   assert_exit 1 "a NOT RUN record with a pasted output is refused" -- template_problems "$bad"
   assert_contains "$OUT" "not a (paste" "and says why"
-  sed -E '1s/NOT RUN YET/RUN 2026-11-04/' "$bad" > "$bad.run"
-  assert_exit 0 "the same record, once its title says it was run, is held to the headings only" -- template_problems "$bad.run"
+  sed -E '1s/NOT RUN YET/RUN 2026-11-04/' "$src" > "$bad.run"
+  assert_exit 1 "a record whose title says RUN but whose observed blocks are still (paste ...) prompts is refused" -- template_problems "$bad.run"
+  assert_contains "$OUT" "(paste" "and says why"
+  sed -E 's/^\(paste.*\)$/the output was ok/; s/<sha>/abc1234/; s/<date>/2026-11-04/' "$bad.run" > "$bad.half"
+  assert_exit 1 "a record with its prompts filled but an empty Answer or Observed-against-predicted line is refused" -- template_problems "$bad.half"
+  sed -E 's/(Observed against predicted: )`\(.*\)`/\1ok/; s/(Answer: )`\(.*\)`/\1yes/' "$bad.half" > "$bad.full"
+  assert_exit 0 "a record that was really filled in passes" -- template_problems "$bad.full"
+  sed -E 's/abc1234/<sha>/' "$bad.full" > "$bad.sha"
+  assert_exit 1 "a record that was run but still holds the <sha> placeholder is refused" -- template_problems "$bad.sha"
+  assert_contains "$OUT" "<sha>" "and names it"
   sed -E 's/^## Prediction.*$/## Expectation/' "$src" > "$bad"
   assert_exit 1 "a record with no Prediction section is refused" -- template_problems "$bad"
   assert_contains "$OUT" "## Prediction" "and names the heading"
@@ -245,6 +257,16 @@ t_doc13_the_template_check_is_alive_over_planted_records() {
   assert_exit 1 "an Observed section with no block is refused" -- template_problems "$bad"
   sed '1s/^# Acceptance of/# Notes on/' "$src" > "$bad"
   assert_exit 1 "a file that is not an acceptance record is refused" -- template_problems "$bad"
+}
+
+# ---- a line the docs quote from the code is the code's text (E3.S3 review)
+
+t_doc14_the_worst_case_line_of_run_check_is_quoted_as_the_code_prints_it() {
+  local frag
+  frag="$(grep -F 'echo "run: at most' "$REPO/lib/run_verb.sh" | sed -E 's/.*\$\{#_PLAN_TEXT\[@\]\} (.*MAX_SERVER_STOPS=).*/\1/')"
+  assert_contains "$frag" "stops of the operator's server if every step" "the scan is alive: the fragment was read from lib/run_verb.sh"
+  assert_exit 0 "README.md quotes it" -- grep -qF -- "$frag" "$REPO/README.md"
+  assert_exit 0 "the run acceptance template quotes it" -- grep -qF -- "$frag" "$REPO/research/ACCEPTANCE_run_2026-11-03.md"
 }
 
 run_all_tests

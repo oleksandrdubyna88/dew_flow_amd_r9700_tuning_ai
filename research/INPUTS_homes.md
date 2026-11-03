@@ -41,7 +41,7 @@ word that matters when a person asks "where did that go". No old path, account o
 | `night5.sh` | `bin/r9700 run` | the pattern of the later nights: each step in its own process group, the RAM guard and the deadline stopping the group, exit 3 = not quiet (wait, no try counted), 6 failed tries, ONE restore; all of it is built into the supervisor, and the `SERIES` array is the plan file |
 | `night6.sh` | `bin/r9700 run` | one series step |
 | `night7.sh` | `bin/r9700 run` | two series steps; the per-series environment words of its `SERIES` array (model directory, served name, sequences, length, prefill lengths) are the fields of the model file now (`models/qwen3.8-27b-awq.env`) |
-| `night8.sh` | `bin/r9700 run` | as `night7.sh`, without the quiet gate: the gate is the config's (`R9700_QUIET_CHECKS`), never switched off by a script |
+| `night8.sh` | `bin/r9700 run` | as `night7.sh`, with "no quiet gate" (line 22: the operator's decision for that night). **Dropped on purpose:** the toolkit has no switch that turns the quiet gate off. The fields are `QUIET_LOAD_MAX` and `QUIET_BUSY_PATTERN`; the practical way to let a run go on a busier PC is to raise `QUIET_LOAD_MAX` in `machine.env` (the acceptance run of 2026-11-02 used `QUIET_LOAD_MAX=16`, with the test knob `R9700_QUIET_CHECKS=1`, which is environment only and never a gate switch) |
 | `night9.sh` | `bin/r9700 run` | one series step; its `settled()` wait is NOT kept as a gate (below) |
 | `night10.sh` | `bin/r9700 run` | as `night9.sh` |
 | `resume_AC.sh` | `bin/r9700 run` | a resume is the same plan run again: every step skips what it recorded |

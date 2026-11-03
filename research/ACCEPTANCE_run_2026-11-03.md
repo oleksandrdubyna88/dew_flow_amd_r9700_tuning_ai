@@ -33,7 +33,7 @@ bin/r9700 run acceptance.plan
 
 **Run 1, the forced stop.** From the supervisor's rules (`research/architecture.md`, *The step* and *The run driver*):
 
-- `--check` prints `run: step 1: ok (prefixtest …)`, `run: step 2: ok (linear-bench …)` and `run: at most 2 stops of your server if every step is admitted after a busy wait; MAX_SERVER_STOPS=3`, exit 0.
+- `--check` prints `run: step 1: ok (prefixtest …)`, `run: step 2: ok (linear-bench …)` and `run: at most 2 stops of the operator's server if every step is admitted after a busy wait; MAX_SERVER_STOPS=3`, exit 0.
 - the run waits for a quiet PC first. With the default of three quiet checks 300 s apart this is about 10 minutes before `admitted` (the quiet wait runs before every step); the operator's server is stopped once, at the admission of step 1.
 - the RAM guard fires at its first read after admission, within about one guard tick (15 s): exit 7. On stderr: `r9700: step failed 1 times, last: ram_guard available <mb> MB < 65536 MB`, then `r9700: run: stopped at step 1 of 2 (prefixtest …): 7`.
 - `run.txt` of the run folder: `1 stopped 7 …` and `2 not-started - …`; `plan.txt` holds the plan byte for byte.
