@@ -306,7 +306,7 @@ _moe_opt_list() {
     chunk) echo "--keys, --coarse, --layer, --chunk, --out, --dry-run" ;;
     ab) echo "--keys, --rule, --rule-keys, --reps, --layer, --out, --dry-run" ;;
     merge) echo "--layer, --base, --out" ;;
-    activate) echo "--out, --force" ;;
+    activate) echo "--out, --layer, --force" ;;
   esac
 }
 
@@ -334,8 +334,8 @@ _moe_keys_check() {
   local text="$2" line
   local -a words=()
   read -r -a words <<< "$text"
-  if line="$(_moe_keys_problem "${words[@]}" 2>&1)"; then return 0; fi
-  _moe_err "$1: ${line#moe: }"
+  if line="$(_MOE_KEYS_WHAT="$1" _moe_keys_problem "${words[@]}" 2>&1)"; then return 0; fi
+  _moe_err "${line#moe: }"
   return 2
 }
 
@@ -386,6 +386,7 @@ _moe_args_other() {
     _MOE_CHUNKS=("$@")
     return 0
   fi
+  [ -z "$_MOE_LAYER" ] || _moe_enum --layer "$_MOE_LAYER" experts draft || return 2
   [ "$#" -ge 1 ] || { _moe_err "a stamp is needed (the one that merge printed)"; return 2; }
   [ "$#" -eq 1 ] || { _moe_err "unexpected argument \"$2\""; return 2; }
   [[ $1 =~ $_MOE_NAME_RE ]] || { _moe_err "\"$1\" is not a stamp ($_MOE_NAME_RE)"; return 2; }
@@ -406,7 +407,7 @@ moe_tune_args() {
   shift
   _MOE_MODE="$mode" _R9700_MODEL_ARG="" _MOE_KEYS="" _MOE_COARSE=no _MOE_LAYER=experts _MOE_CHUNK="" _MOE_OUT="" _MOE_RULE="" _MOE_RULE_KEYS=""
   _MOE_REPS=3 _MOE_BASE=auto _MOE_CHUNKS=() _MOE_STAMP="" _MOE_FORCE=no _MOE_DRY=no
-  [ "$mode" != merge ] || _MOE_LAYER=""
+  case $mode in merge | activate) _MOE_LAYER="" ;; esac # no default layer: the record says it (merge.env), or --layer
   while [ "$#" -gt 0 ]; do
     case $1 in
       -*)
@@ -487,7 +488,7 @@ moe_ab_body() {
 moe_activate_body() {
   local outdir="$R9700_RESULTS_DIR/$_MOE_OUT"
   echo "moe-tune: outdir $outdir"
-  moe_activate_verb "$outdir" "$_MOE_MODEL" "$_MOE_STAMP" "$_MOE_FORCE"
+  moe_activate_verb "$outdir" "$_MOE_MODEL" "$_MOE_STAMP" "$_MOE_FORCE" "$_MOE_LAYER"
 }
 
 # moe_merge_reading: `merge` is a READING verb (no GPU, no admission): like `verdict` it takes the lock only when a marker exists, to restore first

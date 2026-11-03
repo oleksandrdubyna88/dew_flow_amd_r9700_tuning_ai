@@ -19,6 +19,9 @@
 # own (never appended to), ab.env, summary.txt and decision.txt, final only when every log holds one kernel time per key and every tuned log shows
 # the activated file loaded. The exchange folder $R9700_WORK_DIR/r9700/moe/<model>/tune/<chunk>/ is scratch: deleted and made again before every run.
 #
+# The A/B prints `  ab rep <r>/<n>: <arm>` before each container, a chunk `  chunk <name>: running <m> min` every 5 production minutes (a heartbeat fork, ended
+# when the container call returns; the argv and chunk.log are untouched). A failed cache clear before a unit refuses it (KIND=refused); the hook's stays best-effort.
+#
 # Exit codes: 0 done (recorded, or already recorded); 1 the unit failed (a rejected record, or the disk gate: KIND=disk_gate; or the stop time came:
 # KIND=deadline, and the part stays for the next start's sweep); 2 refused (KIND=refused when the identity check or the layer refuses: the supervisor
 # stops at once; a bad argument is a plain 2 with one `moe:` line). No exit 3 or 4: the supervisor waits for quiet before every admission and a unit is
@@ -39,9 +42,12 @@ _MOE_CLEAR_SH='du -sh /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton
 # the supervisor's window is the enforced, outer one and kills the whole tree; this inner ceiling ends a clear that the worker runs before a unit.
 _MOE_CLEAR_CEILING_S=90
 
-moe_exchange_dir() { printf '%s/r9700/moe/%s\n' "${R9700_WORK_DIR:?}" "$1"; }
-
 moe_container_dir() { printf '%s/moe/%s\n' "$_MOE_CONTAINER_ROOT" "$1"; }
+
+# the host folder of the exchange folder and of the placed files: the container paths through the one translation (container_host_path, lib/serve.sh)
+moe_exchange_dir() { container_host_path "$(moe_container_dir "$1")"; }
+
+moe_placed_dir() { container_host_path "$_MOE_CONTAINER_ROOT"; }
 
 _moe_iso() { date -u +%FT%TZ 9>&-; }
 
@@ -59,6 +65,7 @@ _moe_env_line() {
 moe_cache_clear() {
   local out rc line
   local -a lines=()
+  echo "cache clear: running (ceiling $_MOE_CLEAR_CEILING_S s)" # before the container: a hung clear says what the worker is waiting for
   out="$(wslc_run_once "$_MOE_CLEAR_CEILING_S" --name "$(container_name moe-clear)" -v "$R9700_CACHE_VOLUME:/root/.cache/vllm" "$R9700_IMAGE" sh -c "$_MOE_CLEAR_SH")"
   rc=$?
   while IFS= read -r line; do [ -n "$line" ] && lines+=("${line//$'\t'/ }"); done <<< "$out"
@@ -68,6 +75,14 @@ moe_cache_clear() {
     echo "cache clear failed (code $rc): ${lines[0]:-no output}; going on"
   fi
   return "$rc"
+}
+
+# _moe_clear_before_unit: the cache clear before a unit. A failed clear refuses the unit (KIND=refused, 2): a stale cache would be measured. The exit-path hook
+# (moe_cache_clear called by the supervisor) stays best-effort.
+_moe_clear_before_unit() {
+  moe_cache_clear && return 0
+  _moe_refuse "the Triton cache could not be cleared before the unit (see the line above): a stale cache would be measured"
+  return 2
 }
 
 # ---------- the identity of the placed files (decision 8) ----------
@@ -97,7 +112,7 @@ _moe_refuse() {
 moe_identity_check() {
   local name source need placed want got
   while read -r name source need _; do
-    placed="${R9700_WORK_DIR:?}/r9700/$name"
+    placed="$(moe_placed_dir)/$name"
     want="$(_moe_sha "$_MOE_REPO/$source")"
     if [ ! -f "$placed" ]; then
       [ "$need" = optional ] && continue
@@ -112,7 +127,7 @@ moe_identity_check() {
 moe_asset_hashes() {
   local name source need placed sum
   while read -r name source need _; do
-    placed="${R9700_WORK_DIR:?}/r9700/$name"
+    placed="$(moe_placed_dir)/$name"
     sum=absent
     [ -f "$placed" ] && sum="$(_moe_sha "$placed")"
     printf '%s_SHA256=%s\n' "$(_moe_hash_key "$name")" "$sum"
@@ -122,11 +137,12 @@ moe_asset_hashes() {
 # _moe_assets_unchanged: 0 when every placed asset still has the hash taken right after the identity check (_MOE_HASHES), which is what the record
 # names; else 1 and _MOE_REASON names the asset. An edit during a long unit would otherwise give a record with hashes the container did not run with.
 _moe_assets_unchanged() {
-  local name source need key before after
+  local name source need key before after now
+  now="$(moe_asset_hashes)" # ONE pass over the files, not one per row
   while read -r name source need _; do
     key="$(_moe_hash_key "$name")_SHA256"
     before="$(grep -m 1 "^$key=" <<< "$_MOE_HASHES")"
-    after="$(moe_asset_hashes | grep -m 1 "^$key=")"
+    after="$(grep -m 1 "^$key=" <<< "$now")"
     [ "$before" = "$after" ] && continue
     _MOE_REASON="$name changed during the run (${before#*=} -> ${after#*=})"
     return 1
@@ -262,9 +278,24 @@ _moe_chunk_validate() {
   [ -s "$part/chunk.log" ] || { _MOE_REASON="chunk.log is empty"; return 1; }
 }
 
+# _moe_heartbeat <chunk>: a line every 5 PRODUCTION minutes (t_scale 300) while the chunk container runs, to the worker's own output: a full search is hours long
+# and the log would otherwise say nothing. It is a background fork of the worker, ended by the unit when the container call returns; it touches neither the
+# container's argv nor chunk.log. A TERM ends its sleeper with it.
+_moe_heartbeat() {
+  local minutes=0 sleeper=""
+  trap '[ -z "$sleeper" ] || kill "$sleeper" 2> /dev/null; exit 0' TERM
+  while true; do
+    sleep "$(t_scale 300)" 9>&- &
+    sleeper=$!
+    wait "$sleeper"
+    minutes=$((minutes + 5))
+    echo "  chunk $1: running $minutes min"
+  done
+}
+
 # moe_chunk_unit <outdir> <model> <chunk> <layer> <search> <keys...>
 moe_chunk_unit() {
-  local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc valid
+  local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc valid heartbeat
   local -a keys=() argv=() extra=()
   shift 5
   keys=("$@")
@@ -274,7 +305,7 @@ moe_chunk_unit() {
   moe_identity_check || return 2
   _MOE_HASHES="$(moe_asset_hashes)"
   _moe_disk_gate || return 1
-  moe_cache_clear
+  _moe_clear_before_unit || return 2
   part="$outdir/chunks/$chunk.part-$RUN_ID"
   mkdir -p "$outdir/chunks" && mkdir "$part" || { echo "moe: $part cannot be made"; return 1; }
   tune="$(moe_exchange_dir "$model")/tune/$chunk"
@@ -290,8 +321,12 @@ moe_chunk_unit() {
   name="$(container_name "moe-tune-$chunk")" || return 2
   started="$(_moe_iso)"
   t0="$(date +%s 9>&-)"
+  _moe_heartbeat "$chunk" 9>&- &
+  heartbeat=$!
   wslc_run_once "$R9700_MOE_CHUNK_MAX_S" --name "$name" "${argv[@]}" > "$part/chunk.log"
   rc=$?
+  kill "$heartbeat" 2> /dev/null
+  wait "$heartbeat" 2> /dev/null
   t1="$(date +%s 9>&-)"
   finished="$(_moe_iso)"
   if [ "$rc" -ne 0 ] && _moe_stop_came; then _moe_deadline "chunk $chunk"; return 1; fi
@@ -311,27 +346,46 @@ moe_chunk_unit() {
 }
 
 # ---------- the A/B unit ----------
-# _moe_b_file <outdir> <model> <layer>: the name of the layer's file in merged/, read back and never typed: from the chunk records of that layer, else
-# from merged/ itself when it holds exactly one. Sets _MOE_B_FILE; 2 with the outcome KIND=refused when merged/ holds no such file.
-_moe_b_file() {
-  local outdir="$1" model="$2" layer="$3" merged env dir found=""
-  local -a files=()
-  merged="$(moe_exchange_dir "$model")/merged"
-  for env in "$outdir"/chunks/*/chunk.env; do
-    [ -f "$env" ] || continue
-    [ "$(sed -n 's/^LAYER=//p' "$env" | head -n 1)" = "$layer" ] || continue
-    dir="${env%/chunk.env}"
-    files=("$dir"/E=*.json)
-    [ -f "${files[0]}" ] && { found="${files[0]##*/}"; break; }
+# moe_activate_recover <exchange merged folder>: a hard kill between the swap of the active file and the rename of activate.env leaves activate.env naming the OLD
+# activation. A leftover `activate.env.part-<pid>-<ticks>` of a DEAD owner whose config part is gone (the swap had happened) and whose SHA256 is the active
+# file's is moved into place (`recovered activate.env ...`). Any other leftover (a live owner, no owner, a hash that is not the active file's) is left and named
+# in _MOE_LEFTOVER (1): `activate` sweeps it, an A/B refuses to start on it.
+moe_activate_recover() {
+  local ex="$1" part pid ticks name sha
+  _MOE_LEFTOVER=""
+  for part in "$ex"/activate.env.part-*; do
+    [ -e "$part" ] || continue
+    if ! [[ $part =~ \.part-([0-9]+)-([0-9]+)$ ]]; then _MOE_LEFTOVER="$part"; continue; fi
+    pid="${BASH_REMATCH[1]}" ticks="${BASH_REMATCH[2]}"
+    if [ "$(proc_ticks "$pid")" = "$ticks" ]; then _MOE_LEFTOVER="$part"; continue; fi
+    name="$(_moe_env_value "$part" NAME)"
+    sha="$(_moe_env_value "$part" SHA256)"
+    if [ -n "$name" ] && [[ $name != */* ]] && [ ! -e "$ex/$name.part-$pid-$ticks" ] && [ -f "$ex/$name" ] && [ "$(_moe_sha "$ex/$name")" = "$sha" ] \
+      && mv -T -- "$part" "$ex/activate.env" 9>&- 2> /dev/null; then
+      echo "recovered activate.env from $part (the swap of $name had completed)"
+      continue
+    fi
+    _MOE_LEFTOVER="$part"
   done
-  if [ -z "$found" ]; then
-    files=("$merged"/E=*.json)
-    [ -f "${files[0]}" ] || { _moe_refuse "merged/ holds no E=*.json; run moe-tune activate first"; return 2; }
-    [ "${#files[@]}" -eq 1 ] || { _moe_refuse "merged/ holds ${#files[@]} files E=*.json and no chunk of the layer $layer says which is its"; return 2; }
-    found="${files[0]##*/}"
-  fi
-  [ -f "$merged/$found" ] || { _moe_refuse "merged/ holds no $found (the file of the layer $layer); run moe-tune activate first"; return 2; }
-  _MOE_B_FILE="$found"
+  [ -z "$_MOE_LEFTOVER" ]
+}
+
+# _moe_env_value <file> <KEY>: the first KEY=value line of a file, without the key (a missing file gives nothing)
+_moe_env_value() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -n 1; }
+
+# _moe_b_file <model> <layer>: the name of the layer's activated file, READ from merged/activate.env (written by `activate`: STAMP, NAME, LAYER) and never guessed from
+# the chunk records of this outdir (another --out has none) or from what merged/ happens to hold (it can hold the files of several layers). Sets _MOE_B_FILE;
+# 2 with the outcome KIND=refused and a message that says what to do when activate.env is missing, has no layer, or names another layer.
+_moe_b_file() {
+  local model="$1" layer="$2" merged env got
+  merged="$(moe_exchange_dir "$model")/merged"
+  env="$merged/activate.env"
+  [ -f "$env" ] || { _moe_refuse "merged/ holds no activate.env (nothing was activated for this model); run moe-tune activate first"; return 2; }
+  got="$(_moe_env_value "$env" LAYER)"
+  [ -n "$got" ] || { _moe_refuse "merged/activate.env names no layer (it was written by an older version); run moe-tune activate again for the record of the layer $layer"; return 2; }
+  [ "$got" = "$layer" ] || { _moe_refuse "the file activated last is of the layer $got, not $layer; run moe-tune activate for a record of the layer $layer"; return 2; }
+  _MOE_B_FILE="$(_moe_env_value "$env" NAME)"
+  [ -n "$_MOE_B_FILE" ] && [ -f "$merged/$_MOE_B_FILE" ] || { _moe_refuse "merged/ holds no ${_MOE_B_FILE:-file named by activate.env} (the file of the layer $layer); run moe-tune activate again"; return 2; }
 }
 
 # _moe_config_line <log> <prefer folder/file or "">: the first `Using configuration from <path> for MoE layer` or `Using default MoE config...` of a log
@@ -402,6 +456,7 @@ _moe_ab_containers() {
   shift 6
   for ((rep = 1; rep <= reps; rep++)); do
     for arm in default tuned; do
+      echo "  ab rep $rep/$reps: $arm"
       _moe_disk_gate || return 1
       _moe_ab_arm_envs extra "$arm" "$afolder" "$bfolder"
       moe_argv argv extra ab "$layer" "$model" "" "$@" || return 1
@@ -415,19 +470,20 @@ _moe_ab_containers() {
 
 # moe_ab_unit <outdir> <model> <layer> <rule> <rule keys> <reps> <keys>
 moe_ab_unit() {
-  local outdir="$1" model="$2" layer="$3" rule="$4" rule_keys="$5" reps="$6" keys="$7" stamp part dest n=1 started finished decision rc bfolder bfile bpath bsha valid
+  local outdir="$1" model="$2" layer="$3" rule="$4" rule_keys="$5" reps="$6" keys="$7" stamp part dest n=1 started finished decision rc bfolder bfile bpath bsha valid kernel_lines
   local -a keylist=()
   read -r -a keylist <<< "$keys"
   echo "=== $(_moe_iso) ab ($layer, rule $rule over $rule_keys, $reps reps, keys $keys)"
   if [ "$layer" = experts ] && [ "$R9700_MOE_DTYPE" = none ]; then _moe_refuse "MOE_DTYPE is none: the model has no MoE layers to measure"; return 2; fi
-  _moe_b_file "$outdir" "$model" "$layer" || return 2
+  moe_activate_recover "$(moe_exchange_dir "$model")/merged" || { _moe_refuse "$_MOE_LEFTOVER is left by an activation that died and is not the active file's: run moe-tune activate for the record again (it removes the leftover)"; return 2; }
+  _moe_b_file "$model" "$layer" || return 2
   bfile="$_MOE_B_FILE"
   bfolder="$(moe_container_dir "$model")/merged"
   moe_identity_check || return 2
   _MOE_HASHES="$(moe_asset_hashes)"
   bpath="$(moe_exchange_dir "$model")/merged/$bfile"
   bsha="$(_moe_sha "$bpath")" # the activated file as the containers will read it; checked again after the run
-  moe_cache_clear
+  _moe_clear_before_unit || return 2
   stamp="$(_moe_stamp)"
   while [ -e "$outdir/ab/$stamp" ] || [ -e "$outdir/ab/$stamp.part-$RUN_ID" ]; do n=$((n + 1)); stamp="$(_moe_stamp)-$n"; done
   part="$outdir/ab/$stamp.part-$RUN_ID"
@@ -453,9 +509,16 @@ moe_ab_unit() {
     echo "ab $stamp: rejected, ${_MOE_REJECTED#"$outdir"/}: decide: $(head -n 1 "$part/decide.err")"
     return 1
   fi
+  # the decision is the line that starts with `KERNEL:`, and there must be exactly one (not "the last line": decide may print more after it)
+  kernel_lines="$(grep -c '^KERNEL:' <<< "$decision")"
+  if [ "$kernel_lines" -ne 1 ]; then
+    moe_reject "$outdir" "ab-$stamp" "$part" "decide: expected exactly one KERNEL: line, got $kernel_lines"
+    echo "ab $stamp: rejected, ${_MOE_REJECTED#"$outdir"/}: decide: expected exactly one KERNEL: line, got $kernel_lines"
+    return 1
+  fi
   rm -f "$part/decide.err"
   printf '%s\n' "$decision" > "$part/summary.txt"
-  printf '%s\n' "${decision##*$'\n'}" > "$part/decision.txt"
+  grep '^KERNEL:' <<< "$decision" > "$part/decision.txt"
   dest="$outdir/ab/$stamp"
   mv -T "$part" "$dest" || { echo "moe: $part cannot become ab/$stamp"; return 1; }
   echo "recorded ab/$stamp"
@@ -463,15 +526,13 @@ moe_ab_unit() {
 }
 
 # ---------- the worker ----------
-# _moe_keys_problem <keys...>: 1 with one `moe:` line unless 1..20 distinct positive integers of at most 65536
+# _moe_keys_problem <keys...>: 1 with one `moe:` line unless the words are a valid list of batch sizes. The grammar is lib/moekeys.py's, called here (one python3
+# call): there is no second copy in bash. A caller names the option in _MOE_KEYS_WHAT (default `the batch sizes`) for the message.
 _moe_keys_problem() {
-  local key seen=" "
-  if [ "$#" -lt 1 ] || [ "$#" -gt 20 ]; then echo "moe: 1 to 20 batch sizes are needed (got $#)" >&2; return 1; fi
-  for key in "$@"; do
-    if ! [[ $key =~ ^[1-9][0-9]{0,4}$ ]] || [ "$key" -gt 65536 ]; then echo "moe: the batch size \"$key\" is not a whole number from 1 to 65536" >&2; return 1; fi
-    case $seen in *" $key "*) echo "moe: the batch size $key is given twice" >&2; return 1 ;; esac
-    seen+="$key "
-  done
+  local line
+  if line="$(python3 "$_MOE_LIB/moekeys.py" check "--what=${_MOE_KEYS_WHAT:-the batch sizes}" -- "$*" 2>&1)"; then return 0; fi
+  echo "moe: $line" >&2
+  return 1
 }
 
 _moe_chunk_args() {

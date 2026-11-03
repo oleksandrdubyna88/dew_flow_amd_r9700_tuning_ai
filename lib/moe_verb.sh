@@ -15,9 +15,6 @@
 
 _MOE_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' # an outdir name (--out) and a merge stamp, as the verb takes them
 
-# _moe_env_value <file> <KEY>: the first KEY=value line of a file, without the key (a missing file gives nothing)
-_moe_env_value() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -n 1; }
-
 # _moe_part_tag: `<pid>-<start ticks>` of this process, the owner words of a part file (the bash twin of lib/merge_moe.py's); `$$` is the process that
 # holds the lock, also inside a command substitution
 _moe_part_tag() { printf '%s-%s\n' "$$" "$(proc_ticks "$$")"; }
@@ -30,14 +27,15 @@ _moe_free_stamp() {
   printf '%s\n' "$stamp"
 }
 
-# moe_place: the vendored benchmark and the coarse candidates into $R9700_WORK_DIR/r9700/ (the shape of series_preflight's harness.py: a .part, then a
-# move), where the file is missing or its hash differs; then the hash is checked again. The rows are the `required` ones of moe_assets (harness.py is
-# placed by `series`). 2 and one line when a file cannot be placed: before anything is stopped. A .part left by a kill is replaced by the next call.
+# moe_place: the vendored benchmark and the coarse candidates into the placed folder (the shape of series_preflight's harness.py: a .part, then a move), where
+# the file is missing or its hash differs; then the hash is checked again. A `required` row of moe_assets is placed when missing; an `optional` one (harness.py,
+# placed by `series`) is only REFRESHED when it is present: a copy left by an older series would otherwise fail the identity check of every unit for ever.
+# 2 and one line when a file cannot be placed: before anything is stopped. A .part left by a kill is replaced by the next call.
 moe_place() {
   local name source need dest want
   while read -r name source need _; do
-    [ "$need" = required ] || continue
-    dest="${R9700_WORK_DIR:?}/r9700/$name"
+    dest="$(moe_placed_dir)/$name"
+    [ "$need" = required ] || [ -f "$dest" ] || continue
     want="$(_moe_sha "$_MOE_REPO/$source")"
     [ -n "$want" ] || { echo "moe-tune: $source is missing in the repository" >&2; return 2; }
     [ "$(_moe_sha "$dest")" = "$want" ] && continue
@@ -99,8 +97,9 @@ _moe_merge_layer_check() {
   done
 }
 
-# _moe_merge_base <auto|none|file> <first chunk dir>: sets _MOE_BASE_FILE ("" for none). `auto` is the file of the merged NAME in the model's
-# TUNED_CONFIG_DIR when that folder is under /work (the only container path that can be read from WSL), else a line says why there is no base.
+# _moe_merge_base <auto|none|file> <first chunk dir>: sets _MOE_BASE_FILE ("" for none). `auto` is the file of the merged NAME in the model's TUNED_CONFIG_DIR,
+# translated by container_host_path (the only container path that can be read from WSL is one under /work): a TUNED_CONFIG_DIR that does not translate REFUSES
+# (2; pass --base <file> or --base none), it never silently means "no base". An unset TUNED_CONFIG_DIR is said, and means no base.
 _moe_merge_base() {
   local mode="$1" first="$2" tuned="${R9700_TUNED_CONFIG_DIR:-}" file
   local -a found=()
@@ -115,14 +114,17 @@ _moe_merge_base() {
       ;;
   esac
   if [ -z "$tuned" ]; then echo "base: TUNED_CONFIG_DIR is not set, no base"; return 0; fi
-  if [[ $tuned != /work/* ]]; then echo "base: TUNED_CONFIG_DIR $tuned is not under /work, no base"; return 0; fi
+  file="$(container_host_path "$tuned/x" 2> /dev/null)" || {
+    echo "moe-tune: merge: TUNED_CONFIG_DIR $tuned is not under /work, so the production file cannot be read from here: pass --base <file>, or --base none" >&2
+    return 2
+  }
   found=("$first"/E=*.json)
   [ -f "${found[0]}" ] || return 0 # merge_moe.py names the chunk that holds none
-  file="${R9700_WORK_DIR:?}/${tuned#/work/}/${found[0]##*/}"
+  file="${file%/x}/${found[0]##*/}"
   if [ -f "$file" ]; then _MOE_BASE_FILE="$file"; echo "base: $file"; else echo "base: $file does not exist, no base"; fi
 }
 
-# _moe_merge_env <record dir> <chunk names>: merge.env, written beside and moved (the record's own file is never half there)
+# _moe_merge_env <record dir> <chunk names> <layer>: merge.env, written beside and moved (the record's own file is never half there)
 _moe_merge_env() {
   local dest="$1" bsha=none
   local -a out=()
@@ -130,6 +132,7 @@ _moe_merge_env() {
   [ -z "$_MOE_BASE_FILE" ] || bsha="$(_moe_sha "$_MOE_BASE_FILE")"
   {
     _moe_env_line CHUNKS "$2"
+    _moe_env_line LAYER "${3:-unknown}"
     _moe_env_line BASE "${_MOE_BASE_FILE:-none}"
     _moe_env_line BASE_SHA256 "$bsha"
     _moe_env_line OUTPUT_SHA256 "$(_moe_sha "${out[0]}")"
@@ -151,7 +154,7 @@ moe_merge_verb() {
   python3 "$_MOE_LIB/merge_moe.py" merge --out "$dest" ${_MOE_BASE_FILE:+--base "$_MOE_BASE_FILE"} "${dirs[@]}" 9>&-
   rc=$?
   if [ "$rc" -ne 0 ]; then rmdir "$dest" "$outdir/merged" 2> /dev/null; return "$rc"; fi
-  _moe_merge_env "$dest" "$*" || { echo "moe-tune: merge: merge.env cannot be written in $dest" >&2; return 2; }
+  _moe_merge_env "$dest" "$*" "${layer:-$(_moe_env_value "${dirs[0]}/chunk.env" LAYER)}" || { echo "moe-tune: merge: merge.env cannot be written in $dest" >&2; return 2; }
   [ "${outdir##*/}" = "moe-$model" ] || hint=" --out ${outdir##*/}"
   echo "merged: $stamp (activate it with: moe-tune activate $model $stamp$hint)"
 }
@@ -177,13 +180,14 @@ moe_sweep_part_files() {
   return 0
 }
 
-# _moe_activate_hold: the test knob R9700_TEST_ACTIVATE_HOLD_S (the environment only, never machine.env): a pause between the part write and the move,
-# in short sleeps, so that a test can kill the verb inside the window and no sleeper outlives it
+# _moe_activate_hold <before|after>: the test knobs R9700_TEST_ACTIVATE_HOLD_S (between the part write and the swap) and R9700_TEST_ACTIVATE_HOLD_AFTER_S
+# (between the swap and the rename of activate.env), the environment only, never machine.env: ONE sleep (descriptor 9 closed, A1), so that a test can kill the
+# verb inside the window; the test kills the verb's whole process group, so the sleeper goes with it.
 _moe_activate_hold() {
-  local hold="${R9700_TEST_ACTIVATE_HOLD_S:-0}" end
+  local hold
+  case $1 in before) hold="${R9700_TEST_ACTIVATE_HOLD_S:-0}" ;; *) hold="${R9700_TEST_ACTIVATE_HOLD_AFTER_S:-0}" ;; esac
   [[ $hold =~ ^[0-9]+$ ]] && [ "$hold" -gt 0 ] || return 0
-  end=$(($(date +%s 9>&-) + hold))
-  while [ "$(date +%s 9>&-)" -lt "$end" ]; do sleep 0.1 9>&-; done
+  sleep "$hold" 9>&-
 }
 
 # _moe_activate_record <record dir>: the one E=*.json of a merge record; sets _MOE_REC_FILE. 2 and one line otherwise
@@ -256,34 +260,64 @@ _moe_activate_keep() {
 _moe_activate_swap() {
   local part="$2.part-$(_moe_part_tag)"
   { cp -- "$1" "$part" && sync -- "$part"; } 9>&- || { rm -f -- "$part"; echo "moe-tune: activate: cannot write $part" >&2; return 2; }
-  _moe_activate_hold
+  _moe_activate_hold before
   mv -T -- "$part" "$2" 9>&- || { rm -f -- "$part"; echo "moe-tune: activate: cannot move $part onto $2" >&2; return 2; }
 }
 
-# _moe_activate_env <exchange merged folder> <stamp> <name> <sha256> <previous> <forced>: activate.env, written the same way
-_moe_activate_env() {
-  local env="$1/activate.env" part
-  part="$env.part-$(_moe_part_tag)"
+# _moe_activate_env_part <exchange merged folder> <stamp> <name> <sha256> <previous> <forced> <layer>: activate.env written to a PART beside it (sets _MOE_ENV_PART), BEFORE
+# the swap, so that the record of the swap is ready and only a rename is left after it. 1 when it cannot be written.
+_moe_activate_env_part() {
+  _MOE_ENV_PART="$1/activate.env.part-$(_moe_part_tag)"
   {
     _moe_env_line STAMP "$2"
     _moe_env_line NAME "$3"
+    _moe_env_line LAYER "$7"
     _moe_env_line SHA256 "$4"
     _moe_env_line PREVIOUS "$5"
     _moe_env_line ACTIVATED_AT "$(_moe_iso)"
     _moe_env_line FORCED "$6"
-  } > "$part" && mv -T -- "$part" "$env"
+  } > "$_MOE_ENV_PART" 2> /dev/null || { rm -f -- "$_MOE_ENV_PART"; return 1; }
 }
 
-# moe_activate_verb <outdir> <model> <stamp> <force: yes|no>: the activate mode. The record merged/<stamp>/ must hold one E=*.json; a listed server is a
-# reader and the swap is refused unless forced; stale parts are swept; the active file is kept under previous/; the new one is swapped in atomically;
-# activate.env says what is active. The stamp already active is a no-op. 0, or 2 with one line.
+# _moe_activate_undo <active file>: the swap is done and the record of it cannot be put in place: the state before is restored. The previous file (kept in
+# previous/) goes back by the same part-and-rename; with no previous file the new one is removed (it is the one this call made). 0 when restored.
+_moe_activate_undo() {
+  local part
+  if [ "$_MOE_PREVIOUS" = none ]; then rm -f -- "$1"; return $?; fi
+  part="$1.part-$(_moe_part_tag)"
+  { cp -p -- "$_MOE_PREVIOUS" "$part" && mv -T -- "$part" "$1"; } 9>&- 2> /dev/null || { rm -f -- "$part"; return 1; }
+}
+
+# _moe_activate_layer <record dir> <layer argument or "">: the layer of the file to activate, from merge.env (written by `merge`) or from --layer; sets _MOE_ACT_LAYER.
+# 2 and one line when none is known, or when the two differ: `ab` finds the file of a layer by this word, so it is never guessed.
+_moe_activate_layer() {
+  local rec_layer
+  rec_layer="$(_moe_env_value "$1/merge.env" LAYER)"
+  case $rec_layer in experts | draft) ;; *) rec_layer="" ;; esac
+  if [ -n "$2" ] && [ -n "$rec_layer" ] && [ "$2" != "$rec_layer" ]; then
+    echo "moe-tune: activate: $1 is a record of the layer $rec_layer, not $2" >&2
+    return 2
+  fi
+  _MOE_ACT_LAYER="${2:-$rec_layer}"
+  [ -n "$_MOE_ACT_LAYER" ] || { echo "moe-tune: activate: the layer of $1 is not known (no LAYER in its merge.env): pass --layer experts|draft" >&2; return 2; }
+}
+
+# moe_activate_verb <outdir> <model> <stamp> <force: yes|no> [<layer>]: the activate mode. The record merged/<stamp>/ must hold one E=*.json and a known layer; a
+# listed server is a reader and the swap is refused unless forced; a leftover activate.env.part of a dead owner whose swap had completed is finished first; stale
+# parts are swept; the active file is kept under previous/; activate.env (with the layer: `ab` reads it) is written to a part; the new file is swapped in
+# atomically; then activate.env is renamed into place. Recoverable: a failed swap removes the parts and changes nothing; a failed rename of activate.env puts
+# the previous file back (or removes the new one when none was active), so the state never says one thing and holds another; a hard kill between the swap and
+# the rename is finished by the next activate (or by the start of an A/B). 0, or 2 with one line.
 moe_activate_verb() {
-  local outdir="$1" model="$2" stamp="$3" force="$4" ex name active sha
+  local outdir="$1" model="$2" stamp="$3" force="$4" layer="${5:-}" ex name active sha
   _moe_activate_record "$outdir/merged/$stamp" || return 2
+  _moe_activate_layer "$outdir/merged/$stamp" "$layer" || return 2
+  layer="$_MOE_ACT_LAYER"
   name="${_MOE_REC_FILE##*/}"
   ex="$(moe_exchange_dir "$model")/merged"
   active="$ex/$name"
-  if [ "$(_moe_env_value "$ex/activate.env" STAMP)" = "$stamp" ] && cmp -s "$_MOE_REC_FILE" "$active" 2> /dev/null; then
+  moe_activate_recover "$ex" || true # a leftover that does not match is removed by the sweep below
+  if [ "$(_moe_env_value "$ex/activate.env" STAMP)" = "$stamp" ] && [ "$(_moe_env_value "$ex/activate.env" LAYER)" = "$layer" ] && cmp -s "$_MOE_REC_FILE" "$active" 2> /dev/null; then
     echo "activate: $stamp is already active ($active)"
     return 0
   fi
@@ -292,8 +326,18 @@ moe_activate_verb() {
   moe_sweep_part_files "$ex" || return 2
   moe_sweep_part_files "$ex/previous" || return 2
   _moe_activate_keep "$ex" "$name" || { echo "moe-tune: activate: the previous file cannot be kept under $ex/previous" >&2; return 2; }
-  _moe_activate_swap "$_MOE_REC_FILE" "$active" || return 2
-  sha="$(_moe_sha "$active")"
-  _moe_activate_env "$ex" "$stamp" "$name" "$sha" "$_MOE_PREVIOUS" "$_MOE_FORCED" || { echo "moe-tune: activate: activate.env cannot be written" >&2; return 2; }
+  sha="$(_moe_sha "$_MOE_REC_FILE")"
+  _moe_activate_env_part "$ex" "$stamp" "$name" "$sha" "$_MOE_PREVIOUS" "$_MOE_FORCED" "$layer" || { echo "moe-tune: activate: activate.env cannot be written in $ex" >&2; return 2; }
+  _moe_activate_swap "$_MOE_REC_FILE" "$active" || { rm -f -- "$_MOE_ENV_PART"; return 2; } # a failed swap removes its own part; nothing was changed
+  _moe_activate_hold after
+  if ! mv -T -- "$_MOE_ENV_PART" "$ex/activate.env" 9>&- 2> /dev/null; then
+    rm -f -- "$_MOE_ENV_PART"
+    if _moe_activate_undo "$active"; then
+      echo "moe-tune: activate: activate.env cannot be written in $ex; the previous file was put back (${_MOE_PREVIOUS})" >&2
+    else
+      echo "moe-tune: activate: activate.env cannot be written in $ex AND the previous file could not be put back: copy ${_MOE_PREVIOUS} over $active by hand" >&2
+    fi
+    return 2
+  fi
   echo "activated: $active ($stamp, sha256 ${sha:0:12}; previous kept as $_MOE_PREVIOUS)"
 }

@@ -102,6 +102,7 @@ t_t4_the_cache_is_cleared_before_the_unit_by_a_prefixed_container_with_only_the_
   assert_not_contains "$got" "--gpus" "no GPU"
   assert_contains "$got" "rm -rf /root/.cache/vllm/triton-moe-tune /root/.cache/vllm/triton-moe-ab" "the program removes both cache folders"
   assert_contains "$(worker_log 1)" "cache before clear: 1.3G" "the worker log keeps what the cache held"
+  assert_eq "1" "$([ "$(worker_log 1 | grep -n '^cache clear: running (ceiling 90 s)' | head -n 1 | cut -d: -f1)" -lt "$(worker_log 1 | grep -n '^cache before clear' | head -n 1 | cut -d: -f1)" ] && echo 1 || echo 0)" "a start line names the ceiling BEFORE the clear container ends"
 }
 
 # ---- T5-T8: what is not recorded, and what is not run again ------------------------------------------------------------------------------------
@@ -264,7 +265,7 @@ t_t16_an_ab_without_a_merged_file_is_refused_before_any_container_and_step_stops
   run="$(last_run_dir)"
   outcome_read "$run/steps/1.outcome"
   assert_eq "refused" "$O_KIND" "the worker's outcome is KIND=refused"
-  assert_contains "$O_DETAIL" "merged/ holds no E=*.json" "its detail"
+  assert_contains "$O_DETAIL" "merged/ holds no activate.env" "its detail"
   assert_eq "0" "$(run_lines_ab | wc -l | tr -d ' ')" "no moe-ab container ran"
   assert_eq "0" "$(run_lines moe-clear | wc -l | tr -d ' ')" "and no container of any kind (the identity check comes before the cache clear)"
   assert_eq "1" "$(prod_stops)" "one admission: the server was stopped once, no retry"
@@ -435,6 +436,7 @@ t_t13_the_deadline_ends_a_chunk_and_the_part_becomes_evidence() {
   assert_eq "6" "$SRC" "exit 6"
   outcome_read "$run/steps/1.outcome"
   assert_eq "deadline" "$O_KIND" "KIND=deadline"
+  for _w in $(seq 1 30); do [ -e "$STUB/containers/${R9700_CONTAINER_PREFIX}moe-tune-int4-24.pid" ] || break; sleep 0.1; done # the stub removes its record on its own TERM trap: a loaded machine may be a moment late
   assert_missing "$STUB/containers/${R9700_CONTAINER_PREFIX}moe-tune-int4-24.pid" "the chunk container is stopped (its record is gone)"
   assert_eq "2" "$(run_lines moe-clear | wc -l | tr -d ' ')" "the exit-path clear ran: the one before the unit and one more"
   assert_eq "1" "$(find "$RECS/chunks" -maxdepth 1 -name '*.part-*' | wc -l | tr -d ' ')" "the part stays"
@@ -630,6 +632,118 @@ t_t25_a_hook_registered_for_an_invocation_that_returned_early_is_not_run_by_the_
   assert_eq "first=2 second=0" "$(grep -E '^(first|second)=' "$CASE/two.out" | tr '\n' ' ' | sed 's/ $//')" "the first invocation is refused at prepare, the second runs its chunk"
   assert_eq "0" "$(sup_log | grep -c 'cleanup hook:')" "the second invocation registered no hook and ran none"
   assert_eq "1" "$(run_lines moe-clear | wc -l | tr -d ' ')" "one clear in all: the worker's, before its unit"
+}
+
+# ---- the E2 code gate: the decision line, the progress lines, one hashing pass, the clear before a unit, the heartbeat ----------------------------------
+
+# decide_shim <tail|none|two>: a python3 in front of PATH that changes ONLY the stdout of `moe_kernel_ab.py decide`: `tail` adds a trailing line, `none`
+# drops the KERNEL line, `two` adds a second one
+decide_shim() {
+  local real
+  # The real python3, never an earlier shim: on a second call the shim is first on PATH, and a shim that execs itself forks without end
+  # (2026-11-02: about 15,900 processes). Look it up with the shim directory removed, and refuse anything inside it.
+  real="$(PATH="${PATH//"$CASE/shim:"/}" command -v python3)"
+  case $real in "$CASE/shim/"* | "") echo "decide_shim: no real python3 outside $CASE/shim (got \"$real\")" >&2; return 1 ;; esac
+  mkdir -p "$CASE/shim"
+  {
+    echo '#!/usr/bin/env bash'
+    echo "case \" \$* \" in *moe_kernel_ab.py*decide*) ;; *) exec \"$real\" \"\$@\" ;; esac"
+    echo "out=\"\$(\"$real\" \"\$@\")\"; rc=\$?"
+    case $1 in
+      tail) echo "printf '%s\\n' \"\$out\" 'note: a trailing line that is not the decision'" ;;
+      none) echo "printf '%s\\n' \"\$out\" | grep -v '^KERNEL:'" ;;
+      two) echo "printf '%s\\n' \"\$out\" 'KERNEL: not faster (a second decision line)'" ;;
+    esac
+    echo 'exit $rc'
+  } > "$CASE/shim/python3"
+  chmod +x "$CASE/shim/python3"
+  case :$PATH: in *":$CASE/shim:"*) ;; *) PATH="$CASE/shim:$PATH" ;; esac # once on PATH, however often the shim is rewritten
+  export PATH
+}
+
+t_t26_decision_txt_is_the_kernel_line_even_when_decide_prints_more_and_zero_or_two_kernel_lines_are_rejected() {
+  moe_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1
+  moe_merged_place b1
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  decide_shim tail
+  assert_exit 0 "an A/B whose decide prints a trailing line" -- moe_ab "${AB_ARGS[@]}"
+  local ab
+  ab="$(ls -d "$RECS"/ab/*/ | head -n 1)"
+  ab="${ab%/}"
+  assert_eq "KERNEL: faster (each of 1 4 is faster by more than 3 %)" "$(cat "$ab/decision.txt")" "decision.txt is the KERNEL line, not the last line"
+  assert_contains "$(cat "$ab/summary.txt")" "note: a trailing line" "summary.txt keeps everything decide printed"
+  rm -rf "$RECS/ab"
+  decide_shim none
+  assert_exit 7 "decide prints no KERNEL line" -- moe_ab "${AB_ARGS[@]}"
+  assert_contains "$(cat "$(ls -d "$RECS"/rejected/ab-* | head -n 1)/reason")" "exactly one KERNEL: line, got 0" "rejected, and the reason says why"
+  assert_eq "0" "$(ls "$RECS/ab" | wc -l | tr -d ' ')" "no A/B record"
+  rm -rf "$RECS/rejected"
+  decide_shim two
+  assert_exit 7 "decide prints two KERNEL lines" -- moe_ab "${AB_ARGS[@]}"
+  assert_contains "$(cat "$(ls -d "$RECS"/rejected/ab-* | head -n 1)/reason")" "exactly one KERNEL: line, got 2" "rejected, and the reason says why"
+}
+
+t_t27_the_ab_prints_one_progress_line_before_each_container() {
+  moe_setup "$FUNCNAME"
+  moe_merged_place b1
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  assert_exit 0 "a stub A/B" -- moe_ab "${AB_ARGS[@]}"
+  assert_eq "  ab rep 1/3: default|  ab rep 1/3: tuned|  ab rep 2/3: default|  ab rep 2/3: tuned|  ab rep 3/3: default|  ab rep 3/3: tuned" \
+    "$(worker_log 1 | grep '^  ab rep ' | paste -sd'|')" "six progress lines, rep by rep, default then tuned"
+}
+
+t_t28_the_current_hashes_are_computed_once_not_once_per_asset() {
+  moe_setup "$FUNCNAME"
+  local placed=0 name source need
+  while read -r name source need _; do [ -f "$R9700_WORK_DIR/r9700/$name" ] && placed=$((placed + 1)); done < <(moe_assets)
+  _MOE_HASHES="$(moe_asset_hashes)"
+  : > "$CASE/sha.count"
+  sha256sum() { echo x >> "$CASE/sha.count"; command sha256sum "$@"; }
+  _moe_assets_unchanged
+  unset -f sha256sum
+  assert_eq "$placed" "$(wc -l < "$CASE/sha.count" | tr -d ' ')" "one sha256sum per placed asset ($placed), not one pass per asset row"
+}
+
+t_t29_a_failed_cache_clear_before_a_unit_refuses_the_unit_for_a_chunk_and_for_an_ab() {
+  moe_setup "$FUNCNAME"
+  printf '1\n' > "$STUB/answers/moe_clear_rc"
+  assert_exit 2 "a stub chunk whose clear fails" -- moe_chunk int4-24 experts full 24
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused: no stale cache is ever measured"
+  assert_contains "$O_DETAIL" "cache could not be cleared" "the detail says why"
+  assert_eq "0" "$(run_lines moe-tune-int4-24 | wc -l | tr -d ' ')" "no chunk container ran"
+  assert_missing "$RECS/chunks/int4-24" "no record"
+  moe_merged_place b1
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B1_NAME"
+  assert_exit 2 "a stub A/B whose clear fails" -- moe_ab "${AB_ARGS[@]}"
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused"
+  assert_eq "0" "$(run_lines_ab | wc -l | tr -d ' ')" "no A/B container ran"
+  assert_missing "$RECS/ab" "no A/B record"
+}
+
+t_t30_a_failed_clear_in_the_exit_path_stays_best_effort() {
+  moe_setup "$FUNCNAME"
+  printf 'printf "1\\n" > "%s/answers/moe_clear_rc"\n' "$STUB" > "$STUB/on-start-${R9700_CONTAINER_PREFIX}moe-tune-int4-24"
+  body_args int4-24 experts full 24
+  moe_sup_bg body_chunk
+  step_end
+  assert_eq "0" "$SRC" "the invocation still ends 0: the unit was good"
+  assert_contains "$(sup_log)" "cleanup hook: moe_cache_clear rc=1" "the hook's failed clear is logged"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "and the restore still ran"
+  assert_exit 0 "the record exists" -- test -s "$RECS/chunks/int4-24/$FIX_B2_NAME"
+}
+
+t_t31_a_long_chunk_prints_a_heartbeat_and_the_log_and_argv_are_untouched() {
+  moe_setup "$FUNCNAME"
+  printf '7\n' > "$STUB/answers/moe_tune_seconds" # the time scale is 100: a "5 min" beat is 3 s
+  assert_exit 0 "a stub chunk that runs 7 s" -- moe_chunk int4-24 experts full 24
+  assert_contains "$(worker_log 1)" "  chunk int4-24: running 5 min" "the first heartbeat"
+  assert_contains "$(worker_log 1)" "  chunk int4-24: running 10 min" "the second"
+  assert_not_contains "$(cat "$RECS/chunks/int4-24/chunk.log")" "running 5 min" "chunk.log does not hold it"
+  run_argv moe-tune-int4-24
+  assert_not_contains "${ARGV[*]}" "heartbeat" "and nor does the argv"
 }
 
 run_all_tests

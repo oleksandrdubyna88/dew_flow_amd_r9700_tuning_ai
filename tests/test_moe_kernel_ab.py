@@ -231,7 +231,7 @@ def test_the_config_lines_follow_the_table_in_arm_then_batch_size_order():
 
 def test_the_rule_and_arguments_are_checked_before_any_log_is_read(tmp_path):
     code, out, err = run(["decide", tmp_path / "nowhere", "--keys", "1 x", "--rule", "each", "--rule-keys", "1"])
-    assert code == 2 and '--keys "1 x" is not a list of positive integers' in err
+    assert code == 2 and '--keys "1 x" is not a list of whitespace-separated batch sizes, e.g. "8 16 24"' in err
     code, out, err = decide(AB1, KEYS1, "each", "1", "--reps", "0")
     assert code == 2 and "--reps must be at least 1" in err
     code, out, err = decide(AB1, KEYS1, "each", "1", "--threshold", "abc")
