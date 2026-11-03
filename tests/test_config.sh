@@ -469,6 +469,7 @@ TYPE_CASES=(
   'ints|model|PREFILL_LENS|PREFILL_LENS=8192|PREFILL_LENS=0'
   'mounts|model|MOUNTS|MOUNTS=C/auto_gptq.py:/opt/x.py|MOUNTS=C/auto_gptq.py'
   'args|model|EXTRA_SERVE_ARGS|EXTRA_SERVE_ARGS="--a b"|EXTRA_SERVE_ARGS="--a *"'
+  'shapes?|model|LINEAR_SHAPES|LINEAR_SHAPES="a:2048:16:1 b:128:16:1"|LINEAR_SHAPES=a:2048:17:1'
 )
 
 t_every_field_type_has_a_refusal_and_a_boundary_good_value_and_the_loader_applies_them() {
@@ -493,7 +494,7 @@ t_every_field_type_has_a_refusal_and_a_boundary_good_value_and_the_loader_applie
     else model "$MODEL_35B" "$root" "$key" "$bad"; assert_exit 2 "$type: bad $key line is refused" -- config_load "$root/machine.env" "$root/model.env"; fi
     assert_contains "$ERR" "$key:" "$type: the refusal names $key"
   done
-  assert_eq "1" "$([ "$n" -ge 17 ] && echo 1)" "the table has a row per type"
+  assert_eq "1" "$([ "$n" -ge 18 ] && echo 1)" "the table has a row per type"
 }
 
 t_restore_args_is_an_args_field_that_refuses_globs_tabs_and_a_blank_value() {

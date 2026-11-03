@@ -22,7 +22,7 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 - Every error names the file, the line, the field and the legal values (`config: <file>:<line>: <KEY>: <problem>; legal:
   <legal>`). All errors are printed in one pass; the exit status is 2. Nothing is stopped or started before the config is valid.
 - After the single-field checks, the cross-field checks run (also when a single field is wrong; a field that failed its own check is skipped): every `PREFILL_LENS` value + 128 ≤ `MAX_MODEL_LEN`; every
-  `MOUNTS` source exists under `PATCH_DIR`; `PROD_CONTAINER` does not start with `CONTAINER_PREFIX` (the toolkit stops every container with that prefix, so the operator's own server must stay outside it); `CLEANUP_BUDGET_S` ≥ `READY_TIMEOUT_S` + 300 (the budget must hold the restore
+  `MOUNTS` source exists under `PATCH_DIR`; every `LINEAR_SHAPES` K is a multiple of `LINEAR_GROUP_SIZE` (E3.S1); `PROD_CONTAINER` does not start with `CONTAINER_PREFIX` (the toolkit stops every container with that prefix, so the operator's own server must stay outside it); `CLEANUP_BUDGET_S` ≥ `READY_TIMEOUT_S` + 300 (the budget must hold the restore
   and its readiness wait); `MAX_FAILED_TRIES` ≤ `MAX_SERVER_STOPS` (every try is an admission, and every admission stops the operator's server, so more tries than stops could never all happen; E1 amendment A20).
 
 ## `machine.env`
@@ -73,6 +73,8 @@ check by hand: `bash -c 'source lib/config.sh; config_load machine.env models/<n
 | `TUNED_CONFIG_DIR` | container path `^/`, or empty | empty | the folder of tuned MoE configs, as a path inside the container; empty means none | `speed_A.sh` line 58 |
 | `MOUNTS` | list of `<relative source>:<container path>[:ro]` words; the source is relative to `PATCH_DIR`, has no `..`, no leading `/`, and must exist | empty | extra mounts: <source relative to PATCH_DIR>:<container path>[:ro], separated by spaces | `serve.sh` lines 13–16 |
 | `EXTRA_SERVE_ARGS` | string, split on spaces; quotes, tabs and `*` `?` `[` are refused | empty | extra arguments of the serve command, split on spaces; quotes are refused | `serve.sh` line 21 |
+| `LINEAR_SHAPES` | list of `<name>:<K>:<N>:<layers>` words separated by spaces, or empty: a name of letters, digits and `. _ + -` (no space; `+` joins layers that share a shape) and once; K, N, layers positive integers of at most 9 digits; K a multiple of 8 and of `LINEAR_GROUP_SIZE`, N a multiple of 16 (cross-field for the group size). The same grammar as `parse_shapes` in `lib/linear_bench.py`; `tests/fixtures/kernels/shapes_cases.txt` feeds both | empty | the hybrid W4A16 linear shapes for linear-bench: <name>:<K>:<N>:<layers> words separated by spaces; empty means none known | `linear_bench.py` lines 22–28 |
+| `LINEAR_GROUP_SIZE` | integer 32..1024 | `128` | the quantization group size of the linear shapes (every K must be a multiple of it) | `linear_bench.py` line 20 (`GS`) |
 
 Two examples ship from the measured runs: `models/qwen3.6-35b-a3b-gptq.env` and `models/qwen3.8-27b-awq.env`. The 27B file
 keeps the 35B file's `MOUNTS` and `TUNED_CONFIG_DIR` because that is how it was measured.
