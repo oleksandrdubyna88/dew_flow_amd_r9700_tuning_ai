@@ -14,6 +14,9 @@
 #   moe_clear_mode  the same words, but for the MoE cache-clear container only (a foreground run named ...moe-clear), so a test can hang the
 #                  cleanup hook without hanging the restore
 #   stop-delay-<name>  seconds `wslc stop <name>` sleeps before it stops the container (a slow stop, for a test that interrupts one)
+#   stop-fail-<name>   a count: that many `wslc stop <name>` calls fail (code 1) and leave the container running, then stops work again
+#   stop-gone-<name>   a count: that many `wslc stop <name>` calls return 1 AND remove the container (the stop worked, the call said it did not)
+#   stop-lines-<name>  a number: `wslc stop <name>` prints that many noise lines before it stops the container
 #   counters/<x>   the call counters
 
 STUB_HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"

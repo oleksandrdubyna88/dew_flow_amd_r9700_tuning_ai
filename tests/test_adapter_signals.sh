@@ -284,7 +284,7 @@ t_the_commands_on_the_right_of_a_pipe_do_not_hold_the_lock_descriptor() {
     wslc_logs r9700tune-a > /dev/null
     restore_start > /dev/null
     bench_run r9700tune-a t > /dev/null
-    wslc_stop r9700tune-a )
+    wslc_stop r9700tune-a > /dev/null )
   assert_exit 0 "every shim ran" -- test -f "$CASE/fd9"
   assert_eq "" "$(grep ' open$' "$CASE/fd9" | sort | uniq -c | tr '\n' ';')" "no right-hand command held descriptor 9"
   assert_exit 0 "tr, tail, awk, grep and sed were all seen" -- test "$(awk '{ print $1 }' "$CASE/fd9" | sort -u | tr '\n' ' ')" = "awk grep sed tail tr "

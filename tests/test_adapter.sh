@@ -28,6 +28,49 @@ t_wslc_run_starts_a_detached_process_that_outlives_its_caller() {
   assert_eq "run -d --rm --name r9700tune-a img sleep" "$(sed -n 1p "$STUB/calls.log" | cut -d' ' -f3- | sed 's/^wslc //')" "the run line is run -d --rm --name <name> <args>"
 }
 
+# The step logs what a failed stop of the operator's server printed (2026-11-03: a stop returned 1 and nothing said why, because the output was discarded).
+t_wslc_stop_keeps_what_wslc_printed_stdout_and_stderr_without_carriage_returns() {
+  setup_case "$FUNCNAME"
+  wslc_run r9700tune-a img > /dev/null
+  assert_exit 0 "wslc_stop of a running container" -- wslc_stop r9700tune-a
+  assert_eq "r9700tune-a" "$OUT" "it prints the stub's answer (the container's name) and keeps nothing back"
+  assert_not_contains "$OUT" "$CR" "without the carriage return of the Windows executable"
+  wslc_run r9700tune-b img > /dev/null
+  printf '1\n' > "$STUB/stop-fail-r9700tune-b"
+  assert_exit 1 "a stop that fails returns wslc's own code" -- wslc_stop r9700tune-b
+  assert_contains "$OUT" "stub: stop failed (scripted): r9700tune-b" "and prints the error text of wslc (its stderr is merged into the output)"
+  assert_exit 1 "stopping an unknown container" -- wslc_stop r9700tune-zzz
+  assert_contains "$OUT" "stub: no such running container: r9700tune-zzz" "the error text is kept for this failure too"
+  kill_recorded_pids "$CASE"
+}
+
+t_wslc_stop_keeps_only_the_last_twenty_lines_of_a_verbose_answer() {
+  setup_case "$FUNCNAME"
+  wslc_run r9700tune-a img > /dev/null
+  printf '100\n' > "$STUB/stop-lines-r9700tune-a"
+  assert_exit 0 "a verbose stop" -- wslc_stop r9700tune-a
+  assert_eq "20" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "twenty lines, not a hundred and one"
+  assert_contains "$OUT" "stub stop noise 100" "the last noise line is kept"
+  assert_not_contains "$OUT" "stub stop noise 80" "an early one is not"
+  kill_recorded_pids "$CASE"
+}
+
+# The descriptor that carries the text of a stop must not reach the child: a process the stop leaves running (the operator starts a server by hand, a helper
+# of wslc) would hold the pipe open and the function would wait for it (found by tests/test_run.sh R18b: the stub's hook starts a container during the stop).
+t_wslc_stop_does_not_wait_for_a_process_that_the_stop_leaves_running_with_the_pipe() {
+  setup_case "$FUNCNAME"
+  local i
+  wslc_run r9700tune-a img > /dev/null
+  printf 'wslc run -d --rm --name r9700tune-b img > /dev/null\n' > "$STUB/on-stop-r9700tune-a" # a container starts while the stop runs, and lives on
+  ( wslc_stop r9700tune-a > "$CASE/stop.out" 2>&1; echo "$?" > "$CASE/stop.rc" ) &
+  disown
+  for i in $(seq 1 100); do [ -f "$CASE/stop.rc" ] && break; sleep 0.1; done # bounded: a leaked descriptor would hold the call for the life of the container
+  if [ -f "$CASE/stop.rc" ]; then assert_eq "0" "$(cat "$CASE/stop.rc")" "the stop returned, and returned 0"; else assert_eq "returned" "(still waiting after 10 s)" "the stop returned: it does not wait for the container that started during it"; fi
+  assert_eq "r9700tune-a" "$(cat "$CASE/stop.out" 2> /dev/null)" "and kept its text"
+  assert_eq "r9700tune-b" "$(wslc_list)" "the container that the hook started is running"
+  kill_recorded_pids "$CASE"
+}
+
 t_wslc_run_prints_the_last_two_lines_without_carriage_returns() {
   setup_case "$FUNCNAME"
   assert_exit 0 "wslc_run returns 0" -- wslc_run r9700tune-a img
@@ -209,7 +252,7 @@ t_the_ceiling_is_the_documented_one_for_each_function() {
   wslc_exec 33 r9700tune-a true > /dev/null
   wslc_list > /dev/null
   wslc_logs r9700tune-a > /dev/null
-  wslc_stop r9700tune-a
+  wslc_stop r9700tune-a > /dev/null
   win_ram_mb > /dev/null
   win_disk_newest > /dev/null
   restore_start > /dev/null
