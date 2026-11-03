@@ -14,7 +14,7 @@ A toolkit to tune and measure vLLM on an AMD Radeon AI PRO R9700 (gfx1201, RDNA4
 where containers run with `wslc`: fused-MoE config tuning, server-flag A/B series with a ship test,
 kernel micro-benchmarks, and the guards that make an unattended night run safe (RAM, quiet PC,
 deadline, restore of the operator's own server). A new model is tuned by writing one model config and
-running the commands — not by writing scripts. The plan is in `todo/`; the measurements that produced
+running the commands — not by writing scripts. The implemented plans are in `research/` (`PLAN_r9700_tuning_toolkit*.md`) and the open one, the GPU acceptance runs, in `todo/`; the measurements that produced
 these scripts are in `dew_flow_benchmark · research/RESULTS_vllm_029_r9700_*.md`.
 
 ## Non-negotiables

@@ -1,6 +1,6 @@
 # PLAN — E1 stories: a usable, trustworthy server-flag comparison
 
-> Status: **plan only, nothing implemented yet, 2026-11-01.** Scope: the three stories of epic E1 of
+> Status: **IMPLEMENTED, 2026-11-03.** Scope: the three stories of epic E1 of
 > [PLAN_r9700_tuning_toolkit.md](PLAN_r9700_tuning_toolkit.md) — section
 > [E1 — a usable, trustworthy server-flag comparison](PLAN_r9700_tuning_toolkit.md#e1--a-usable-trustworthy-server-flag-comparison).
 > Cornerstones: E1.S2 and E1.S3 (`model: fable`), recorded in the parent's ledger line.
@@ -426,7 +426,7 @@ returns (exit code, stdout, stderr). `AB = fixtures/ship_test/bench_final_ab.txt
 
 ### Brief for the Sonnet coder
 
-Read first: this section; `todo/PLAN_r9700_tuning_toolkit.md` sections *Design*, *Config contract*, the "kept exactly"
+Read first: this section; `research/PLAN_r9700_tuning_toolkit.md` sections *Design*, *Config contract*, the "kept exactly"
 paragraph; `.agents/conventions/common/test-leftovers.md` §2–§4; the header comments of
 `.agents/conventions/tools/lib/owned.mjs` and `leftovers-sweep.mjs`. Do not read or change anything about the
 lifecycle (S2) or the series (S3).
@@ -1877,3 +1877,15 @@ pasted, so a reviewer sees the 2026-10-31 case refused and the recorded verdict 
       the README quick start covers `init`, `series`, `verdict` (spec by Fable).
 - [ ] Every story: no tracked file holds a personal path, account or machine name; `research/architecture.md` and
       `research/module_tests.md` describe what exists.
+
+## Deviations
+
+What shipped differently from this document (2026-11-03). Most of it is already in the document as the amendments A1 to A24 (the cadence consultation, the reviews of parts (a) and (b), the S3 review, the epic code gate); the list is the ones that changed a contract. The acceptance of this epic (`series`, `base` against `ta3`, one round) was run on 2026-11-02 and is recorded in `research/ACCEPTANCE_series_2026-11-02.md`; nothing of E1 is open.
+
+- **The stop is by session, not by process group** (A8, A12): GNU `timeout` calls `setpgid`, so every adapter call has a group of its own inside the worker's session. The lock descriptor is closed in every child (A1) and the worker starts only as `setsid lib/worker_gate.sh <gate> …` (A2). Adapter calls are cut at `T_STOP` (A9) and readiness ends at its own deadline (A13).
+- **`step_run` and `supervise` (A5)** are the contract E2 and E3 build on: one supervisor, several steps, one restore. `bin/r9700 step` is a verb of its own (not in the parent's verb list), used by the tests.
+- **Test knobs:** `R9700_QUIET_CHECKS` (A3), `R9700_CEILING_SCALE` (A10); stub containers are cleaned by their owner (A4); the runner runs only the `t_*` functions of the file itself (A11). The runner got a process cap after the shim incident of 2026-11-02 (`research/module_tests.md`).
+- **Series:** more rounds extend a series and fewer are refused (A15); each unit re-checks the cheap fingerprint components (A16) and the fingerprint covers every module a unit runs (A24); a dry run never changes the identity (A17); no fingerprint is built over old records (A18); the default `--out` has no date so the same command resumes on another day (A23).
+- **Limits:** the stop limit and the try limit agree (A20; replaced by the run-wide cap of E3.S2); the worker gate's own timeout is exit 5, a failed try, and 4 stays "nothing more fits" (A21); the restore retries its preparation (A22).
+- **A hosted remote before S1 merged (A7):** CI needed the GitHub repository, so it was created and the first push was approved by the operator.
+- **The `series` acceptance** ran with the quiet gate off, by the operator's decision, and the 27B file ran as a dry run, not as a measurement.
