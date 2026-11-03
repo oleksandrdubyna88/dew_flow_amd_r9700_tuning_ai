@@ -19,6 +19,17 @@ same way). E1 is merged on `main`; E2 is PR #3, nearly done; this branch (`feat/
 | E3.S2 | The `run` driver: a declarative plan file of steps, run as ONE supervisor (one lock, one stop, one restore); exit 3 waits and repeats the step; the deadline ends the chain; the exit code is the stopped step's and the line names the step; `--check` and `--dry-run` | Opus (this document) | Sonnet | E3.S1 (the plan file names its verbs) | no |
 | E3.S3 | Publication and closing: every *Inputs* script has a home or is named as dropped with its reason, the final `README.md`, `research/architecture.md`, `research/module_tests.md`, `POST_DEPLOY.md`, the three acceptance templates (NOT RUN, with predictions), the family consumer row (already merged) and the visibility check | Opus (this document) | Sonnet | E3.S1, E3.S2 | no |
 
+Review (coai plan gate, 2026-11-03, verdict proceed, 7 findings accepted, written into the sections they name; and a
+risk consultation on the stop budget of S2, verified against `lib/step.sh`): a reused `--name` is compared with the
+record's identity before it skips work (S1 decision 6); every shape/M pair exactly once (S1 decision 4); exactly one
+line per requested length (S1 decision 7); a prefix server whose readiness fails is stopped before the worker exits
+(S1 decision 7); `LINEAR_GROUP_SIZE > 0` asserted before any `%` (S1 decision 1); `run_record_write` reachable from
+the signal handler, `_RG_RUN_STEP` set before the traps, a signal before the first step and between steps tested (S2
+decisions 6 and 10); the chain's exit code is the NORMALIZED step result, with the supervisor's own codes kept and a
+mapping table (S2 decision 5); `MAX_SERVER_STOPS` is a run-wide cap on ACTUAL production stops, charged right before
+the stop and only when the server is listed, never reset by a step — the per-step reset of the first draft is
+replaced (S2 decision 4).
+
 Order: S1, then S2, then S3. S2 is the riskiest part (sequencing under one lifecycle, the budgets, one restore,
 the exit code of a chain) and it needs S1's verbs to have something to chain, so S1 goes first and alone, with its
 pure parts first inside it. Every story is reviewed by Opus and fixed by Sonnet (subagent-models, per-story pipeline).
@@ -261,7 +272,9 @@ default empty): words `<name>:<K>:<N>:<layers>` separated by spaces, name `^[A-Z
 positive integers, K a multiple of 8 and of `LINEAR_GROUP_SIZE` (the kernel call reads `k // 8` and `k // GS`,
 line 52), N a multiple of 16 (the smallest `BLOCK_N` of the sweep, line 31); the loader prints the usual
 `config: <file>:<line>: LINEAR_SHAPES: <problem>; legal: …` line. `LINEAR_GROUP_SIZE` (model, `int:32:1024`,
-default 128, line 20). The 35B file carries the five shapes of lines 22–28 with the second name written
+default 128, line 20); its type already keeps it above 0 in the config, and `parse_shapes` asserts `group_size > 0`
+itself before any `%` (gate finding 6: the function is also called from the container with an argument, where no
+loader stands before it; a zero would be a `ZeroDivisionError` instead of a named refusal). The 35B file carries the five shapes of lines 22–28 with the second name written
 `linear_attn.out_proj+self_attn.o_proj` (a name has no space; `+` joins the two layers that share the shape). An
 empty `LINEAR_SHAPES` is legal and means "no hybrid W4A16 linear shapes known for this model": `linear-bench`
 refuses it before anything is stopped (`r9700: linear-bench: <model>: LINEAR_SHAPES is empty: no shapes to time`,
@@ -312,8 +325,10 @@ rule for a chunk). The record `<outdir>/linear/<name>/` is built as `<outdir>/li
 `linear_bench.json` copied from the exchange folder, `linear.log`, `summary.txt` (the `summarize` output),
 `linear.env` (`NAME`, `MODEL`, `IMAGE`, `MODEL_DIR`, `SHAPES`, `GROUP_SIZE`, `MS`, `SWEEP_MS`, `TIMER`, `CONTAINER`,
 `STARTED_AT`, `ENDED_AT`, `RC`, the hashes). Validation before the ONE rename: `RC=0`; the JSON passes
-`summarize`; the row count is `len(shapes) × len(ms)`; every sweep M has `tuned_us` in every row of that M; every
-`*_maxdiff` is finite. A failed validation moves the part to `rejected/linear-<name>-<stamp>/` with a `reason`
+`summarize`; **every expected (shape, M) pair appears EXACTLY once** — the set of `(shape, M)` of the rows equals the
+product of the requested shapes and `--ms`, with no missing, duplicate or unexpected pair (gate finding 1: a row
+count alone would accept a duplicate row standing in for a missing one; the reason names the first pair that is
+missing, doubled or unexpected); every sweep M has `tuned_us` in every row of that M; every `*_maxdiff` is finite. A failed validation moves the part to `rejected/linear-<name>-<stamp>/` with a `reason`
 and the worker exits 1 (a failed try). A part a killed worker left is moved to `rejected/` with `INTERRUPTED` at the
 next start of any kernels unit (`moe_sweep_parts`' shape). `<outdir>` defaults to `kernels-<model>` (one folder
 for both record kinds; no date, so a `--name` resumes on another day, A23). The container name's label is
@@ -330,7 +345,14 @@ the clear bounds it to one invocation. The clear container's label stays `moe-cl
 **6. `--name` makes a kernels record resumable.** Both verbs take `--name <name>` (`^[a-z0-9][a-z0-9-]{0,30}$`,
 the chunk grammar); the default is the UTC stamp, a new record every run. With a name, a final record of that name
 under `<outdir>/linear/` (or `prefix/`) is "recorded, nothing to do" — counted before admission, exit 0, nothing
-stopped — exactly as a recorded chunk (`moe_chunk_body`, `bin/r9700` lines 458–461). This is what the night
+stopped — exactly as a recorded chunk (`moe_chunk_body`, `bin/r9700` lines 458–461), **but only when the record is
+the same experiment** (gate finding 0): before it skips, the body reads the record's env file and compares its
+`MODEL`, `IMAGE`, `MODEL_DIR`, the asset hashes, and the run parameters (`SHAPES`, `GROUP_SIZE`, `MS`, `SWEEP_MS`,
+`TIMER` for linear; `ARM`, `ARM_ARGS`, `ARM_ENV`, `ARM_MOUNTS`, `SERVED_NAME`, `LENS`, `TAIL` for prefix) with the
+request's resolved values; a difference is refused with exit 2 and one line per differing key, `r9700: <verb>: the
+record <kind>/<name> is another experiment: <KEY> <recorded> -> <requested>; use another --name`, before anything
+is stopped. A reused name never silently stands for a different measurement — the fingerprint rule of the series
+(E1.S3 decision 7) in its cheapest form. This is what the night
 drivers did with `[ -s linear_bench.json ]` (`speed_CB.sh` 14, `night3.sh` 45), and it is what lets a plan file
 (S2) be run again after a stop without repeating a 6-minute benchmark and a server start.
 
@@ -339,14 +361,21 @@ drivers did with `[ -s linear_bench.json ]` (`speed_CB.sh` 14, `night3.sh` 45), 
 <part>/server.log -e … -v … -- <the arm's serve args>` with the arm's words from `arms_load`/`arm_args`/`arm_env`/
 `arm_mounts` exactly as the series builds them (`_series_serve_options`, `lib/series.sh` line 185 — S1 calls the
 same functions; a refused arm is refused before admission by `kernels_prepare` through `arms_check`); readiness is
-`serve_start`'s own (`wait_ready`, `READY_TIMEOUT_S`); then `wslc_exec 1800 <name> python3 /work/r9700/prefixtest.py
+`serve_start`'s own (`wait_ready`, `READY_TIMEOUT_S`). **When `serve_start` returns non-zero (the container did not
+start, or `wait_ready` failed or timed out), the worker stops its container by name (`wslc_stop <name>`, with
+`R9700_T_STOP` unset for that one call, as the cleanup phase does) BEFORE it exits 1** (gate finding 5): a server a
+failed try leaves running is the `ERROR_ALREADY_EXISTS` of § 14.4 lines 786–788 at the next try, and in a chain it
+is also the container the next step finds on the GPU; the series worker does the same (`lib/series.sh` lines 333
+and 343). Then `wslc_exec 1800 <name> python3 /work/r9700/prefixtest.py
 run http://127.0.0.1:8000 <SERVED_NAME> <name> --lens "<lens>" --tail <tail>` (the ceiling of a bench run,
 `lib/bench.sh`; the script's own per-request timeout of line 21 stays 900 s and the exec ceiling bounds the whole:
 every wait has a ceiling); the lines (CRs removed by the adapter) go to `<part>/prefixtest.txt`; then
 `wslc_stop <name>` (the series stops its server at the end of an arm-round the same way, `lib/series.sh` line 382).
 `prefix.env` holds `NAME`, `MODEL`, `ARM`, `ARM_ARGS`, `ARM_ENV`, `ARM_MOUNTS`, `IMAGE`, `MODEL_DIR`, `SERVED_NAME`,
 `LENS`, `TAIL`, `CONTAINER`, the times, `RC`, the hashes; `summary.txt` is the `summarize` output. Validation before
-the rename: `RC=0`; exactly one line per length, each passing `parse_line`; the container was still listed before
+the rename: `RC=0`; **exactly one line per requested length and no other line** — the multiset of `len=` values of
+the lines equals the requested lengths, so a duplicate, a missing or an unexpected length is rejected naming it
+(gate finding 2); each line passing `parse_line`; the container was still listed before
 the stop (a lost server leaves no record — the series' rule, E1.S3 decision 3). Defaults: `--arm base` (the first
 row of `config/arms.conf`, the base of every measured series), `--lens "8192 1024"` (line 29), `--tail 64`
 (line 31); every length must satisfy `len + 1 ≤ MAX_MODEL_LEN` (one output token) and `tail < min(lens)`, checked
@@ -457,7 +486,10 @@ Test names state the guarantee. Every bash test sets `R9700_TIME_SCALE=100`, `R9
 2. *A JSON that fails `summarize` is a rejected record and a failed try.* `answers/linear` holds a row without
    `layers`: no `linear/n1/`, `rejected/linear-n1-<stamp>/reason` names the row, the worker exited 1; with
    `MAX_FAILED_TRIES=1` the step exits 7.
-3. *A short JSON is rejected.* 10 rows for 3 shapes × 4 M: `reason` says `rows 10 != 12`.
+3. *Every shape/M pair exactly once.* (a) 10 rows for 3 shapes × 4 M: `reason` names the first missing pair
+   (`missing (<shape>, M 6)`). (b) 12 rows where one pair is doubled and one is missing (the count is right): `reason`
+   names the duplicate — the positive that a bare count would have passed, named for the refuted approach. (c) 13
+   rows with an extra pair for an M that was not asked: `reason` names `unexpected (<shape>, M 7)`.
 4. *A placed file edited between placement and the unit is refused.* The test changes
    `<WORK_DIR>/r9700/linear_bench.py` after `kernels_prepare` placed it (the step verb places it; the test edits it
    through an `on-stop` hook or before the gate): `KIND=refused`, exit 2, no record, one restore (T21's shape).
@@ -475,10 +507,21 @@ Test names state the guarantee. Every bash test sets `R9700_TIME_SCALE=100`, `R9
    is the two answer lines; `summary.txt` their ratios; `prefix.env` names the arm's words.
 8. *A server lost during the exec leaves no record.* `lose_server_after` (seriescase) ends the container during the
    exec: `rejected/prefix-p1-<stamp>/reason` says the server was not listed; no `prefix/p1/`.
-9. *A line count that is not the length count is rejected.* `answers/prefix` with one line for two lengths:
-   rejected, `reason` says `1 line for 2 lengths`.
-10. *A recorded name is not run again.* After KW1, the same unit with `n1`: the worker prints `recorded
-    linear/n1, nothing to do` and the call log has no new `run`.
+9. *Exactly one line per requested length.* `answers/prefix` with one line for two lengths: rejected, `reason`
+   says `missing len=1024`; two lines both `len=8192`: `duplicate len=8192`; a third line `len=512`: `unexpected
+   len=512` (a count of 2 would have passed the duplicate: the positive case).
+10. *A recorded name is not run again when it is the same experiment, and is refused when it is not.* After KW1,
+    the same unit with `n1`: `recorded linear/n1, nothing to do` and no new `run` in the call log. Then `n1` with
+    `--ms "1 2"` (another parameter): exit 2, `the record linear/n1 is another experiment: MS "1 2 6" -> "1 2"`, no
+    admission; the same with the 27B model file (another `MODEL_DIR`) and with `linear.env`'s `LINEAR_BENCH_SHA256`
+    edited (another asset): each refused naming the key. The prefix twin: `p1` with `--arm ta3` is refused naming
+    `ARM`.
+13. *A server that does not become ready is stopped before the worker exits.* `answers/ready.r9700tune-prefix-base-1`
+    says not ready (S11's knob): the worker exits 1; the call log holds `stop r9700tune-prefix-base-1` AFTER the last
+    readiness probe and BEFORE the outcome is written (the stub's `containers/` record of that name is gone when
+    `steps/1.outcome` exists); `rejected/prefix-p1-<stamp>/reason` says `not ready`; with `MAX_FAILED_TRIES=2` the
+    retry starts a second container of the same name without `ERROR_ALREADY_EXISTS` (the stub refuses a duplicate
+    name as the real `wslc` does, E1 decision 12).
 11. *The unit's identity check covers every kernels asset, derived.* For every line of `kernels_assets` (never a
     typed list) a corrupted placed file makes the unit refuse naming that file (T17's shape).
 12. *`moe_place` and `moe_identity_check` without an argument still read `moe_assets`.* E2's T17 and U1 pass
@@ -548,7 +591,7 @@ runs through `wslc_argv_text` and `serve_start --print`. `bin/r9700`: two thin v
 test's `WORK_DIR`, prints the log answer; the `exec` branch recognises `prefixtest.py` and prints `answers/prefix`
 with the tag replaced. A stub reads only under `$R9700_STUB_DIR` and never resolves a program.
 
-**7. Tests** — LB1–LB7, PT1–PT9, KW1–KW12, KV1–KV8; `tests/lib/kernelcase.sh`; the three fixtures copied with
+**7. Tests** — LB1–LB7, PT1–PT9, KW1–KW13, KV1–KV8; `tests/lib/kernelcase.sh`; the three fixtures copied with
 `git show`. The HTTP test server of PT1–PT5 is the class of `tests/test_harness.py` (import it; do not copy it).
 Every chain through `step` uses the E1 preamble and `stop_in`; nothing sleeps for a fixed time waiting for a
 state. **The process cap and the shim rule of *Facts* apply to every test you write**: run every test command under
@@ -603,8 +646,10 @@ every step's dry run under one supervisor. The eleven night drivers become one v
 |---|---|
 | `lib/run_plan.sh` | sourced: `plan_parse <file>` (the lines into steps, the refusals), `plan_words <line>` (the config grammar's split), `plan_step_kind <words…>` (the verb and mode, and whether it is a legal step), `run_record_write` (`run.txt`), `run_plan_copy` |
 | `bin/r9700` | `verb_run`: the argument grammar, the validation of every step (`--check`), `run_prepare` (every step's config and prepare), `run_body` (the chain), the step dispatch table (`series`, `moe-tune chunk`, `moe-tune ab`, `linear-bench`, `prefixtest`) |
-| `lib/step.sh` | `step_budget_reset`: `_RG_STOPS=0` (decision 4), called by `run_body` before every step; nothing else changes |
-| `tests/test_run.sh`, `tests/lib/runcase.sh` | the scenarios R1–R16 (bash, the stubs of E1, E2 and S1) |
+| `lib/step.sh` | `_step_admit`: the stop budget charged right before `wslc_stop` of the operator's server and only when it is listed, the cap checked there, before the marker, the stop and the worker (decision 4); `step_budget_reset`: the per-step failed-try count only; nothing else changes |
+| `lib/run_guarded.sh` | `_RG_RUN_STEP=""` in `_rg_state_reset`; `run_record_write` defined HERE (decision 6), so the signal handler always reaches it |
+| `tests/test_run.sh`, `tests/lib/runcase.sh` | the scenarios R1–R21 (bash, the stubs of E1, E2 and S1) |
+| `tests/test_lifecycle.sh`, `tests/test_guards.sh` | E1's L12 and the exit-8 guard test rewritten to the new charge rule (decision 4) |
 | `tests/fixtures/plans/*.plan` | the plan files of the scenarios (model names of the fixture model files, nothing else) |
 | `research/module_tests.md`, `research/architecture.md`, `README.md` | the rows and sections of `run` (S3 makes them final) |
 
@@ -612,7 +657,8 @@ every step's dry run under one supervisor. The eleven night drivers become one v
 
 - In: the plan grammar, the chain, the budgets, the record of a run, `--check`, `--dry-run`, the stub tests.
 - Out: any new worker (the steps are S1's, E1's and E2's verbs as they are); any change of `supervise`,
-  `cleanup_once`, the guards, the restore or the adapter; a fit check for the kernels steps (decision 7).
+  `cleanup_once`, the guards, the restore or the adapter; a fit check for the kernels steps (decision 7). In
+  `_step_admit` only the place and the condition of the stop charge change (decision 4).
 - `bin/r9700` stays under 800 lines (`research/module_tests.md`'s limit); the parser lives in `lib/run_plan.sh`
   so it is tested as functions.
 
@@ -663,16 +709,33 @@ is not in the table: `r9700: run: <file>:<line>: "<verb>" is not a step; legal: 
 linear-bench, prefixtest`. All problems of the file are printed in one pass (the loader's rule), exit 2, before the
 lock.
 
-**4. The budgets are per step; the deadline is per run.** `MAX_FAILED_TRIES` is per `step_run` already
-(`_RG_TRIES=0` at its start). `MAX_SERVER_STOPS` counts admissions per invocation (`_RG_STOPS`), and a chain of
-three steps admits at least three times — with the default 3, the third step's first retry and a fourth step would
-be refused by construction (exit 8), while the server was in fact stopped once, at the first admission, and stayed
-down. So `run_body` calls `step_budget_reset` before every step: the stop budget bounds the retries of ONE step
-(what it was written for: a step that bounces the server three times stops, A20), and the number of steps is the
-plan's. Named for the refuted approach in scenario R8. The night's budget of `night5.sh` (6 failed tries over two
-series, line 36) becomes `MAX_FAILED_TRIES` per step (default 3) — the same figure per series. The deadline is
-computed ONCE by `supervise` for the whole chain (`T_END`, `T_STOP`): a step that ends with 6 ends the chain, and
-every later step is `not-started`.
+**4. `MAX_SERVER_STOPS` is a run-wide cap on ACTUAL production stops; the failed tries are per step; the deadline
+is per run.** (The risk consultation of 2026-11-03, verified against `lib/step.sh`; it replaces the first draft's
+per-step reset of the stop count.) Today `_step_admit` counts `_RG_STOPS` at every admission once the container
+list answered, also when the operator's server is already down (lines 99–105), and refuses at the cap before the
+list (lines 94–97). A chain of three steps would therefore be charged three stops while the server was stopped
+once, at the first admission, and stayed down; and a per-step reset would let a chain bounce the server once per
+step without any cap. So the count becomes what its name says: **`_RG_STOPS` is charged in `_step_admit` right
+BEFORE the `wslc_stop` of the operator's server (lines 113–117), and only when the server is listed; the cap is
+checked at that same place, and an admission that WOULD stop the server past the cap is refused there — before the
+marker is written, before the stop, before any worker is started — with the existing exit-8 meaning (`r9700:
+admitted <n> times (each admission stops the operator's server), limit MAX_SERVER_STOPS=<n>` reworded to `stopped
+the operator's server <n> times, limit MAX_SERVER_STOPS=<n>`); an admission that finds the server already down
+charges nothing. Nothing resets `_RG_STOPS` inside an invocation; `step_budget_reset` resets only the per-step
+failed-try count (`_RG_TRIES`, which `step_run` zeroes already — the function exists so `run_body` says what it
+resets).** Consequences, all tested: a quiet chain costs ONE stop and ONE restore however many steps it has (L22
+proves two steps, one restore; R8 proves four); only the busy-wait restore (`_step_restore`, "restoring the
+operator's server while the PC is not quiet", decision 15 — kept: it gives the operator the server back while the PC
+is in use) followed by a new admission costs another stop; when the cap is reached, the chain ends with 8 and
+`run.txt` names the step, and a refused admission never prevents the final restore (the marker of the earlier stop
+stands, `cleanup_once` restores). E1's L12 ("after an exit 3 the server is already down and the admission still
+counts") and A20's wording follow the new rule: S2 rewrites that scenario's assertion to "charges nothing"; the
+cross-field rule `MAX_FAILED_TRIES ≤ MAX_SERVER_STOPS` stays (a retry after a busy-wait restore is a stop again).
+`run --check` does NOT refuse `steps × MAX_SERVER_STOPS`; it prints the worst case as one line (`run: at most
+<n> stops of the operator's server if every step is admitted after a busy wait; MAX_SERVER_STOPS=<cap>`). The
+night's budget of `night5.sh` (6 failed tries over two series, line 36) becomes `MAX_FAILED_TRIES` per step
+(default 3) — the same figure per series. The deadline is computed ONCE by `supervise` for the whole chain
+(`T_END`, `T_STOP`): a step that ends with 6 ends the chain, and every later step is `not-started`.
 
 **5. Validate everything, then run; re-check each step at its start.** `verb_run`: the arguments (`run <file>
 [--check] [--dry-run]`; the file must exist and be readable); `plan_parse` (decisions 1–3, every line); then for
@@ -682,23 +745,48 @@ exit 2 on any. `--check` then also runs every step's config and prepare without 
 nothing is written) and prints `run: step <k>: ok (<line>)` per step, exit 0 — the thing to run before leaving the
 PC. Without `--check`: `supervise run run_prepare run_body`. `run_prepare` = the same per-step prepare for EVERY step
 (so a typo in step 3 is refused before step 1 stops anything), including each kernels and MoE step's placement.
-`run_body`: for each step: `step_budget_reset`; re-parse the line (`<verb>_args`, cheap, sets the verb's globals);
+`run_body`: for each step: `step_budget_reset` (the failed tries); re-parse the line (`<verb>_args`, cheap, sets the verb's globals);
 `config_load` for the step's model again (the files are re-read: a model file edited since the validation is
 refused here with exit 2 and the chain ends — the identity re-check at a unit start is the worker's own, A16); the
 step's prepare again; `run_record_write k running`; the body; its code. Code 0 → `done`, next step. Any other code →
 `stopped`, the chain ends, the remaining steps `not-started`, and `run_body` returns that code. The stderr line:
 `r9700: run: stopped at step <k> of <n> (<the line>): <code>` after the step's own line (so the operator sees both
-the cause and the place). **The exit code is the stopped step's code, from the ONE table; `run` adds no code.** The
-status file of the run folder is `supervise`'s (`done`, `deadline`, `failed`, `not-quiet`, `disk-gate`,
-`restore-failed`, `interrupted`).
+the cause and the place). **The exit code is the stopped step's NORMALIZED code — the body's result after
+`_step_settle` (lib/step.sh lines 177–191) and the verb's own refusals — never a raw worker code; `run` adds no
+code, and the supervisor's own codes keep their meaning** (gate finding 4). The mapping, which the code carries as
+a comment at the dispatch and R17 tests row by row:
+
+| What happened in the step | Step body returns | `run.txt` state and code | `run` exits |
+|---|---|---|---|
+| the worker ended 0 | 0 | `done 0` | goes on; 0 at the end |
+| the worker ended 3 (not quiet) | (not returned: the step waits and repeats) | stays `running` | — |
+| the worker ended 4 (nothing more fits) or `KIND=deadline` | 6 | `stopped 6` | 6 |
+| the worker ended 5 (the gate never opened, A21) or any other code; `KIND=ram_guard` | a failed try; after `MAX_FAILED_TRIES`: 7 | `stopped 7` | 7 |
+| `KIND=refused` (identity, A16), a refused argument or config, a fingerprint difference, a record of another experiment | 2 | `stopped 2` | 2 |
+| `KIND=disk_gate` | 9 | `stopped 9` | 9 |
+| not quiet before the deadline; the stop cap reached (decision 4) | 8 | `stopped 8` | 8 |
+| a busy-wait restore that did not become ready | 5 | `stopped 5` | 5 |
+| INT, TERM, HUP | (the handler exits) | `interrupted -` | 130, 143, 129 |
+| the lock held (before any step) | — | no run folder | 4 |
+| the FINAL restore did not become ready (`cleanup_once` returns 5) | the step's own code stays in `run.txt` | unchanged (`done 0` on a chain that finished, or the stopped step's code) | **5 overrides** (`supervise` line 451: a cleanup code replaces the body's) |
+
+A raw worker 4 or 5 therefore never surfaces as a lock or restore failure: 4 and 5 at the `run` level mean only what
+E1's table says. The status file of the run folder is `supervise`'s (`done`, `deadline`, `failed`, `not-quiet`,
+`disk-gate`, `restore-failed`, `interrupted`).
 
 **6. The run folder records the plan and the chain.** `run_dir_new` makes `<RESULTS_DIR>/runs/<id>/` as for every
 invocation; `run` adds `plan.txt` (the plan file copied byte for byte, its sha256 in `run.txt`'s header) and
 `run.txt`: `PLAN=<path> SHA256=<hash> STEPS=<n>` then one line per step `<k> <state> <code|-> <the line>`, rewritten
 atomically (part + `mv`) at every state change (`not-started` → `running` → `done|stopped|interrupted`). The signal
-handler's cleanup marks the running step `interrupted` (an `_RG_RUN_STEP` the handler reads; `run_body` sets it; the
-handler is E1's, extended by one call that is a no-op when no run is active). The per-step records (`steps/<n>.*`)
-are the supervisor's as before: `run.txt` maps a step to its worker starts by the `STEP_N` range it writes.
+handler's cleanup marks the running step `interrupted` (an `_RG_RUN_STEP` the handler reads; `run_body` sets it to
+the step number before the step and to `""` after it). **`run_record_write` is defined in `lib/run_guarded.sh`
+itself, beside the handler, and `_RG_RUN_STEP=""` is set in `_rg_state_reset` — before `_rg_traps_on` registers
+the handler** (gate finding 3): the handler must never call a function that exists only when another file was
+sourced, and a signal before the first step (between the traps and the first `run_record_write k running`) or
+between two steps (after `done` and before the next `running`) finds `_RG_RUN_STEP` empty and writes nothing extra
+— `run.txt` then shows every step as `done` or `not-started`, and the exit is 130/143/129 as always (R20). The
+per-step records (`steps/<n>.*`) are the supervisor's as before: `run.txt` maps a step to its worker starts by
+the `STEP_N` range it writes.
 
 **7. No fit check for the kernels steps; the series keeps its own.** The series worker refuses to start an
 arm-round that does not fit before `T_STOP` (exit 4 → `deadline`, `lib/series.sh` line 24); a chunk is bounded by
@@ -761,10 +849,41 @@ the two fixture model files, the stub answers of a one-round stub series (`serie
 7. *`run --dry-run` prints every step's dry run under one supervisor and writes nothing.* The call log holds `list`
    calls only; no file under any outdir; `fingerprint.json` absent after a dry run of a series step (S19); the
    lock was taken (a second verb gets 4 meanwhile, bounded by `wait_for` on the run folder).
-8. *Named for the refuted approach:* `t_a_per_invocation_stop_budget_would_refuse_the_fourth_step_and_that_is_the_point`
-   — a four-step plan (the three above plus `prefixtest <35B> --name p2`) with `MAX_SERVER_STOPS=3` runs to the end
-   (exit 0, four `done`); the test also asserts that `_RG_STOPS` after step 3 was 1, read from the supervisor log's
-   `admitted` lines per step (the companion that shows the reset happened, not that the limit was never reached).
+8. *Four continuously quiet steps cost exactly one production stop and one restore.* Named for the refuted
+   approach: `t_charging_every_admission_would_refuse_the_fourth_step_and_that_is_the_point` — a four-step plan (the
+   three above plus `prefixtest <35B> --name p2`) with `MAX_SERVER_STOPS=3`: exit 0, four `done`; `stop_lines` 1
+   (one `wslc stop vllm`); `log_count pwsh.exe -Detach` 1; the supervisor log shows four `admitted` lines and ONE
+   `stopped the operator's server` charge line; the test also asserts, through the stub's call log, that the server
+   was never listed at admissions 2–4.
+17. *The exit code of a chain is the normalized step result, row by row.* For every row of the mapping table of
+    decision 5 that a stub can produce: a worker that exits 4 (`worker.sh exit4` as the series' stand-in) ends the
+    chain with 6 and `run.txt` `stopped 6` — never 4; a worker whose gate never opens (A21's exit 5, by killing the
+    gate file's directory permission before the gate: the L21 knob) is a failed try and, with `MAX_FAILED_TRIES=1`,
+    7 — never 5; a `KIND=refused` worker gives 2; the disk gate 9; `run` exits with exactly the code `run.txt`
+    records for the stopped step. The companion: the mapping comment at the dispatch names every row of this test
+    (a scan asserts the two agree).
+18. *The stop cap is reached only by real stops, and a refused admission launches nothing and never prevents the
+    final restore.* `MAX_SERVER_STOPS=3`, a four-step plan, and a busy interval longer than the 900 s quiet phase
+    (scaled) between every two steps (the on-stop hook of each step's container turns the load busy; a later
+    bounded write turns it quiet after the supervisor log shows `restoring the operator's server while the PC is
+    not quiet`): steps 1–3 each stop the server after a busy-wait restore (three `stop vllm` calls, three charge
+    lines); the fourth admission is refused BEFORE any stop or worker start — the call log shows no fourth `stop
+    vllm`, no fourth worker start, no marker write after the refusal — with exit 8, stderr `stopped the operator's
+    server 3 times, limit MAX_SERVER_STOPS=3` then `r9700: run: stopped at step 4 of 4 (…): 8`, `run.txt` `4 stopped
+    8`; the final restore ran (`restored` in the log, `pwsh.exe -Detach` count 4: three busy-wait restores and the
+    final one) and the operator's server is listed at the end.
+19. *A genuine final restore failure returns 5 while `run.txt` keeps the step's own outcome.* `fail-list` makes the
+    restore's lists fail past A22's retries after a chain that finished: exit 5; `run.txt` three `done 0`;
+    `status` `restore-failed`; the marker stays. The same after a RAM stop at step 2 with `MAX_FAILED_TRIES=1`:
+    exit 5, `run.txt` `2 stopped 7`.
+20. *A signal before the first step and between steps is clean.* (a) `TERM` sent as soon as the run folder exists
+    and before `steps/1.ready` (bounded `wait_for` on the folder): exit 143, `run.txt` every step `not-started`, no
+    `interrupted` line, no marker, no restore call (nothing was stopped), the lock free. (b) `TERM` sent after step
+    1's record is final and before step 2's `admitted` (the on-stop hook of step 1's container sends it): exit 143,
+    `run.txt` `1 done 0`, `2 not-started -`, `3 not-started -`, one restore. (c) R10 stays the during-a-step case.
+21. *`--check` prints the worst case and refuses nothing for it.* A ten-step plan with `MAX_SERVER_STOPS=3`: exit 0,
+    one line `run: at most 10 stops of the operator's server if every step is admitted after a busy wait;
+    MAX_SERVER_STOPS=3`.
 9. *A step refused by its identity ends the chain with 2 after the earlier records are final.* Step 2's
    `fingerprint.json` is made stale (a patch file edited before `run`): exit 2; `run.txt`: `1 done 0`, `2 stopped
    2`, `3 not-started -`; `prefix/p1` final; `fingerprint differs` on stderr; one restore. The same edit before step
@@ -792,9 +911,9 @@ the two fixture model files, the stub answers of a one-round stub series (`serie
 
 Read first: this section; *Facts every story uses* (the `night5.sh` table, the incidents, the test-safety rules);
 `lib/run_guarded.sh` lines 427–567 (`supervise`, the signal handler, `cleanup_once`) and `lib/step.sh` whole;
-`bin/r9700` whole (the triplets you dispatch to); the E1 document's A5 and L22; S1's `lib/kernels_verb.sh`. Do not
-change `supervise`, `cleanup_once`, `_step_admit`, the guards, the restore or the adapter; `lib/step.sh` gains only
-`step_budget_reset`.
+`bin/r9700` whole (the triplets you dispatch to); the E1 document's A5, A20, A21 and L22; S1's `lib/kernels_verb.sh`.
+Do not change `supervise`, `cleanup_once`, the guards, the restore or the adapter; in `_step_admit` change only the
+place and the condition of the stop charge (decision 4); `lib/step.sh` gains only `step_budget_reset`.
 
 **1. `lib/run_plan.sh`** — `plan_words <line> <array name>`: the split of decision 1 (reuse the config loader's
 value parser for the quoted form; refuse the listed characters with the character named); `plan_parse <file>`:
@@ -807,17 +926,27 @@ return 2 after the whole file; `run_record_write <k> <state> [<code>]` and `run_
 `run_validate` (every step's `<verb>_args` with the words; `--check` adds the per-step prepare without the lock and
 without placement — add a `_R9700_NO_PLACE=yes` that `kernels_prepare` and `moe_prepare` honour, or call the
 prepare's parts without `moe_place`; say which in the code comment); `run_prepare` and `run_body` of decision 5
-with the dispatch `case`; `_RG_RUN_STEP` for the handler; the stderr line of decision 5. The dry run of decision 9.
-The header's verb list and exit codes (no new code).
+with the dispatch `case`; `_RG_RUN_STEP` set to the step number before each step's body and to `""` after it; the
+stderr line of decision 5 and the mapping table as a comment at the dispatch (the companion of R17 reads it); the
+worst-case line of `--check` (decision 4). The dry run of decision 9. The header's verb list and exit codes (no new
+code).
 
-**3. `lib/step.sh`** — `step_budget_reset() { _RG_STOPS=0; }` with the comment of decision 4 (why a chain resets
-it; `MAX_FAILED_TRIES` is per `step_run` already).
+**3. `lib/step.sh`** — decision 4: in `_step_admit`, move the `_RG_STOPS` increment from after the list (line 102)
+to directly before `wslc_stop "$R9700_PROD_CONTAINER"` (line 114), inside the `listed = yes` branch, and move the
+cap check (lines 94–97) to that same place, before `marker_write_base`: the order becomes list → (listed? cap check
+→ refuse 8 with nothing written) → marker → charge → stop → worker. Reword the exit-8 line as decision 4 says, and
+the header comment of lines 99–101. `step_budget_reset() { _RG_TRIES=0; }` with a comment that the stop count is
+run-wide and never reset. Rewrite E1's scenario L12 so it asserts that an admission with the server already down
+charges nothing (and the exit-8 test of `tests/test_guards.sh` so it reaches the cap through real stops, with a
+busy-wait restore between tries); keep every other E1 assertion.
 
-**4. `lib/run_guarded.sh`** — ONE line in `_rg_on_signal`: `[ -z "${_RG_RUN_STEP:-}" ] || run_record_write
-"$_RG_RUN_STEP" interrupted` before `cleanup_once` (a no-op outside `run`; `run_record_write` is defined only when
-`lib/run_plan.sh` is sourced, so guard with `declare -F`).
+**4. `lib/run_guarded.sh`** — `run_record_write <k> <state> [<code>]` defined here (it writes `${RUN_DIR}/run.txt`
+atomically from the arrays `_PLAN_*` when `_RUN_PLAN_ACTIVE=1`, and returns 0 at once otherwise, so it is a no-op in
+every other verb); `_RG_RUN_STEP=""` added to `_rg_state_reset`; ONE line in `_rg_on_signal`, before
+`cleanup_once`: `[ -z "${_RG_RUN_STEP:-}" ] || run_record_write "$_RG_RUN_STEP" interrupted`. `lib/run_plan.sh`
+keeps the parser only.
 
-**5. Tests** — R1–R16 in `tests/test_run.sh` with `tests/lib/runcase.sh`; the plan fixtures under
+**5. Tests** — R1–R21 in `tests/test_run.sh` with `tests/lib/runcase.sh`; the plan fixtures under
 `tests/fixtures/plans/` name only the fixture model files. Every wait is `wait_for` on a file or a log line, bounded;
 every deadline test uses `stop_in` and the time scale 25; nothing sleeps for a fixed time. **The process cap and the
 shim rule of *Facts* apply**: run every test command under the outer `ulimit -u` guard; a chain test starts many
@@ -825,7 +954,7 @@ processes (a supervisor, workers, guards, stub containers), so watch the runner'
 default headroom; no test writes a shim.
 
 **6. Docs** — `research/module_tests.md`: `tests/test_run.sh` in *Where it is*, the catalogue row `bin/r9700 run`
-(R1–R16), and under *what it does not prove*: a chain over real containers (the acceptance of S3).
+(R1–R21), and under *what it does not prove*: a chain over real containers (the acceptance of S3).
 `research/architecture.md`: the verb `run` in the verb table (its order of operations: parse → validate every step →
 lock → restore-first → every step's prepare → the deadline → the run folder → the chain → the one cleanup), the plan
 grammar, the dispatch table as the ONE list of steps, the budgets rule, `run.txt`. `README.md`: a section *A night:
@@ -1074,15 +1203,21 @@ open and say so.
 
 ## Definition of Done (E3, by story)
 
-- [ ] S1: LB1–LB7, PT1–PT9, KW1–KW12 and KV1–KV8 pass in CI through `node tests/run.mjs`; LB1 reproduces the § 12.1
-      table from the published JSON; PT6 reproduces the ratios of the raw file; KW6 shows a RAM stop during a linear
-      unit leaves no prefixed container and the hook clears three folders; the two fields are in the loader, the
-      example, both model files and `research/module_config.md`; `linear-bench` refuses the 27B file with the reason;
-      E2's T17 and U1 pass unchanged.
-- [ ] S2: R1–R16 pass; R2 is the parent's done-when (a RAM stop in step two: the worker group killed, every prefixed
+- [ ] S1: LB1–LB7, PT1–PT9, KW1–KW13 and KV1–KV8 pass in CI through `node tests/run.mjs`; LB1 reproduces the § 12.1
+      table from the published JSON; PT6 reproduces the ratios of the raw file; KW3 and KW9 reject a duplicate pair or
+      line that a bare count would pass; KW6 shows a RAM stop during a linear unit leaves no prefixed container and
+      the hook clears three folders; KW10 refuses a reused `--name` of another experiment; KW13 stops a server that
+      did not become ready before the worker exits; the two fields are in the loader, the example, both model files
+      and `research/module_config.md`; `linear-bench` refuses the 27B file with the reason; E2's T17 and U1 pass
+      unchanged.
+- [ ] S2: R1–R21 pass; R2 is the parent's done-when (a RAM stop in step two: the worker group killed, every prefixed
       container stopped, one restore, the exit code is the stopped step's and the line names it); R3 is the parent's
-      second done-when (exit 3 waited out, not counted); R8 shows a four-step plan runs under the default stop budget;
-      `run` adds no exit code (L-430 unchanged).
+      second done-when (exit 3 waited out, not counted); R8 shows four quiet steps cost one stop and one restore; R18
+      shows the cap is reached only by real stops and a refused admission launches nothing and never prevents the
+      final restore; R17 shows a raw worker 4 or 5 never surfaces as a lock or restore failure; R19 shows a final
+      restore failure returns 5 with the step's own outcome kept; R20 shows a signal before the first step and
+      between steps; E1's L12 and the exit-8 guard test were rewritten to the new charge rule and pass; `run` adds no
+      exit code (L-430 unchanged).
 - [ ] S3: every file of the old harness folder is in `research/INPUTS_homes.md` with a home or a reason (the static
       test); the three acceptance templates exist in `research/`, marked NOT RUN, with their predictions; `README.md`,
       `research/architecture.md`, `research/module_tests.md` and `POST_DEPLOY.md` are complete and describe nothing
