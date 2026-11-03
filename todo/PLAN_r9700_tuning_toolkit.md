@@ -264,4 +264,11 @@ RAM-guard limit, the `prefixtest` and `linear-bench` runs, publication and the f
 
 **Cornerstone areas.** None. The driver reuses E1's protocol; its own logic is sequencing.
 
+**Stories.** [PLAN_r9700_tuning_toolkit_E3.md](PLAN_r9700_tuning_toolkit_E3.md): E3.S1 the linear-kernel
+micro-benchmark and the prefix-cache check (the pure parts first, then the two workers and the verbs `linear-bench` and
+`prefixtest`, the shapes from the model config); E3.S2 the `run` driver over a plan file (one supervisor, exit 3 waits
+and repeats, the deadline ends the chain, the exit code is the stopped step's and the line names it); E3.S3 publication
+and closing (every *Inputs* script has a home or is named as dropped, the final docs, `POST_DEPLOY.md`, the three
+acceptance templates NOT RUN, the consumer row). Its coverage table assigns every E3 item above to exactly one story.
+
 Cornerstones: 2 of 2 — E1.S2, E1.S3

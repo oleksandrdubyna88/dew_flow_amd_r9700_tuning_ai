@@ -1,0 +1,20 @@
+# The words of LINEAR_SHAPES that both implementations of the grammar must judge alike: lib/linear_bench.py parse_shapes and the loader's check in
+# lib/config.sh (tests/test_linear_bench.py and tests/test_kernels.sh read this file; neither types the list). Format: <good|bad>|<LINEAR_GROUP_SIZE>|<words>
+good|128|a:2048:16:1
+good|128|linear_attn.in_proj_qkvz:2048:12288:30 linear_attn.out_proj+self_attn.o_proj:4096:2048:40 self_attn.qkv_proj:2048:9216:10 shared_expert.gate_up_proj:2048:1024:40 shared_expert.down_proj:512:2048:40
+good|64|a:64:16:1 b-2_x.y+z:1024:32:7
+good|32|a:32:16:999999999
+bad|128|a:2048:16
+bad|128|a:2048:16:0
+bad|128|a:0:16:1
+bad|128|a:2048:16:x
+bad|128|a:2047:16:1
+bad|128|a:2048:17:1
+bad|128|a:2048:16:1:2
+bad|128|a:2048:16:1 a:2048:32:2
+bad|128|a:2056:16:1
+bad|64|a:2056:16:1
+bad|128|:2048:16:1
+bad|128|a/b:2048:16:1
+bad|128|a:2048:16:-1
+bad|128|a:2048:16:1234567890

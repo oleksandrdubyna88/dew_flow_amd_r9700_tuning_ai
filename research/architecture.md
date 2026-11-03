@@ -1,12 +1,8 @@
 # Architecture — the R9700 vLLM tuning toolkit
 
-Tune and measure vLLM on an AMD Radeon AI PRO R9700. This file describes what EXISTS. E1.S1 built the config layer, the ship-test verdict, the
-quality harness and the test base. E1.S2 built the adapter seam (part (a)), the lock, the recovery marker, the worker gate and the restore (part (b)), and
-the guards, the admission and the supervisor, `step`, `supervise`, `step_run` (part (c)). E1.S3 built the series: `bin/r9700 series` (arm-rounds recorded
-only when complete, a run identity that a resume must match) and `bin/r9700 verdict` (the ship test read back from the records). E2.S1 built the pure
-parts of MoE config tuning: the merge and check of chunk files, the kernel A/B table and decision, the coarse candidates and the vendored benchmark; they
-have no command of their own yet. E2.S2 built the chunk and the A/B as workers, E2.S3 the verb `bin/r9700 moe-tune chunk|merge|activate|ab` that drives them
-(with the merge record, the activation and the placed benchmark). What is still planned (E3) is in `todo/PLAN_r9700_tuning_toolkit.md`.
+Tune and measure vLLM on an AMD Radeon AI PRO R9700 under Windows + WSL2, where containers run with `wslc`. This file describes what EXISTS, by module: the module map is the entry point, the verb table says what each command of `bin/r9700` does and which module serves it, and the sections after them go into each module. Nothing in it describes something that does not run: the config reference is `research/module_config.md`, the tests and what they do not prove are `research/module_tests.md`, the place of every script of the old harness folder is `research/INPUTS_homes.md`, and the records of the runs on the GPU are the `research/ACCEPTANCE_*.md` files.
+
+The toolkit has nine verbs in four groups. A series of server-flag arms with a ship test (`series`, `verdict`). MoE config tuning (`moe-tune`). Two kernel measurements (`linear-bench`, `prefixtest`). A driver that chains the steps of a night under one supervisor (`run`). And the machine verbs (`init`, `step`, `commands`). Every verb that can change the machine runs under the same lifecycle: one lock, the restore of the operator's server first when a marker is left, ONE stop of the operator's server for the run, the guards (RAM, quiet PC, disk, deadline), ONE restore at the end.
 
 ## Modules
 
@@ -22,7 +18,25 @@ have no command of their own yet. E2.S2 built the chunk and the A/B as workers, 
 | MoE pure parts (E2.S1) | `lib/merge_moe.py`, `lib/moe_kernel_ab.py`, `config/coarse_candidates.json`, `vendor/` | no container, no GPU. `merge_moe.py check` is the one definition of a valid chunk file; `merge` joins chunk dirs (and a base file) into a NEW file under `--out` and never replaces one. `moe_kernel_ab.py decide` turns the six logs of a kernel A/B into a table and one decision line. `vendor/benchmark_moe.py` is upstream vLLM plus three marked hooks, proven by its diff |
 | MoE tuning (E2.S2) | `lib/moe.sh` (the chunk unit, the A/B unit, the cache clear), `lib/run_guarded.sh` (`cleanup_hook_set`, `_rg_cleanup_hook_run`), `config/coarse_candidates.json`, `vendor/benchmark_moe.py` | the two units of `tune_chunk.sh` and `moe_kernel_ab.sh` as WORKERS of one `step_run` each (`bash lib/moe.sh chunk …` / `ab …`); they take no lock, set no trap and never stop the operator's server. A record is made only when complete and valid. The Triton caches are cleared before every unit and in the exit path of the invocation by ONE hook of `cleanup_once`. The verb is E2.S3 (the next row) |
 | MoE verb (E2.S3) | `bin/r9700` (`moe-tune`), `lib/moe_verb.sh` (`moe_place`, `moe_merge_verb`, `moe_activate_verb`, `moe_dry_run`), `lib/moe.sh` (the units it starts) | `moe-tune chunk\|merge\|activate\|ab <model> [options]`: the argument grammar is checked before the lock; `chunk` and `ab` are `supervise` around ONE `step_run`; `merge` is a reading verb (the lock only to restore first) that writes a new record `merged/<stamp>/` and replaces nothing; `activate` is `supervise` without a step (no admission) around an atomic swap of the exchange copy, refused while a server is listed. `vendor/benchmark_moe.py` and `config/coarse_candidates.json` are placed in `$WORK_DIR/r9700/` with their hashes checked before anything is stopped. Section *MoE verb* below |
-| Tests | `tests/`, `.github/workflows/tests.yml` | one runner for Python and bash tests, an owned run folder, the static checks. `research/module_tests.md` |
+| Kernels (E3.S1) | `bin/r9700` (`linear-bench`, `prefixtest`), `lib/kernels.sh` (the two units and their records), `lib/kernels_verb.sh` (the grammar, the bodies, the dry runs), `lib/linear_bench.py`, `lib/prefixtest.py`, `lib/moe.sh` and `lib/moe_verb.sh` (the placement, the identity check and the cache clear it imports), `lib/series.sh` (the arm's serve options it reuses), `models/*.env` (`LINEAR_SHAPES`, `LINEAR_GROUP_SIZE`) | `linear-bench` times the model's hybrid W4A16 linear shapes in one foreground container; `prefixtest` starts one measured server for one arm and sends the twelve prefix-cache requests; each records only a validated result, under one supervisor |
+| Run driver (E3.S2) | `bin/r9700` (`run`), `lib/run_plan.sh` (the plan grammar), `lib/run_verb.sh` (the table of steps, the validation, `--check`, the chain), `lib/run_guarded.sh` (`run_record_init`, `run_record_write`), `lib/step.sh` (`step_budget_reset`, the stop charge) | `run <plan> [--check] [--dry-run]`: a plan file of steps (one verb command line each) under ONE supervisor: one lock, restore first, the operator's server stopped at the first admission and restored once at the end; the exit code is the normalized code of the step that stopped the chain; `run.txt` records every step. Below (*The run driver*) |
+| Tests | `tests/`, `.github/workflows/tests.yml` | one runner for Python and bash tests, an owned run folder, the static checks (`tests/check_static.sh`, which also refuses a document that carries one of three phrases of unfinished work), the document checks (`tests/test_docs.sh`: the old-script home table, the verb tables, the acceptance templates, `POST_DEPLOY.md`). `research/module_tests.md` |
+
+## Verbs
+
+One row per verb of `bin/r9700 commands` (a test derives the rows from that output). "One supervisor" means `supervise <verb> <prepare> <body>` of `lib/run_guarded.sh`: the lock, restore-first, the config, the deadline, the run folder, the body, the one cleanup.
+
+| Verb | Lifecycle | What it does | Where it is described |
+|---|---|---|---|
+| `bin/r9700 commands` | none | prints the verbs, derived from the `verb_*` functions of `bin/r9700` | Ownership and recovery |
+| `bin/r9700 init` | restore-first, then the checks | loads the config, checks the folders, `wslc`, the RAM and disk telemetry, and stops every leftover test container; exit 10 when a check failed | Ownership and recovery |
+| `bin/r9700 step` | one supervisor, ONE `step_run` | runs one command as a guarded step (the engine under every other verb; used by the tests and by hand) | *The step* |
+| `bin/r9700 series` | one supervisor, ONE `step_run` for the whole series | arm-rounds of server arms in alternating order, each recorded only when complete, resumable, refused when the identity changed | *Series (E1.S3)* |
+| `bin/r9700 verdict` | restore-first only (the lock only when a marker exists) | the ship test over the final arm-round records; no GPU | *The verdict* |
+| `bin/r9700 moe-tune` | `chunk` and `ab`: one supervisor, ONE `step_run`; `merge`: reading verb; `activate`: one supervisor without a step | MoE config tuning in four modes with one merge policy | *MoE verb (E2.S3)* |
+| `bin/r9700 linear-bench` | one supervisor, ONE `step_run` | times the model's hybrid W4A16 linear shapes in one container | *Kernels and the prefix check (E3.S1)* |
+| `bin/r9700 prefixtest` | one supervisor, ONE `step_run` | starts one measured server for one arm and sends twelve prefix-cache requests | *Kernels and the prefix check (E3.S1)* |
+| `bin/r9700 run` | one supervisor, one `step_run` per plan line | a plan file of steps (one verb command line each) as one night; `--check` and `--dry-run` | *The run driver (E3.S2)* |
 
 **Config.** `config_load <machine.env> <model.env>` parses both files line by line, applies the defaults of the field table,
 checks every field and the three cross-field rules, and exports `R9700_<KEY>`. It prints every error in one pass
@@ -46,7 +60,7 @@ runs the six measured `vllm bench serve` runs and prints the tagged metric lines
 
 **The step (E1.S2 part (c)).** `bin/r9700 step [--show-deadline] [--model <file or name>] <label> -- <command...>` is `supervise step prepare_run step_run <label> -- <command...>`. The label is checked against `^[a-z0-9][a-z0-9-]{0,39}$` with the other arguments, before the lock. `supervise <verb> <prepare> <body> [args]` takes the lock, restores from a marker (restore-first), calls `<prepare>` (the config; refused: exit 2), computes the deadline (`T_END = min(next DEADLINE, now + MAX_RUN_MINUTES·60)`, `T_STOP = T_END − CLEANUP_BUDGET_S`, whole seconds rounded down, refused when `T_STOP` is under 60 s away), makes the run folder, installs the `INT`, `TERM` and `HUP` traps, runs the body and ends with the ONE `cleanup_once`. `step_run` runs one step and neither restores nor releases the lock, so a body of several `step_run` calls restores once at the end. `--show-deadline` prints `T_END`, `T_STOP` and `START=ok|refused (<why>)` and takes no lock.
 
-`step_run` is a loop. (1) A quiet wait of at most 900 s and at most the time to `T_STOP` (`quiet_wait`: `R9700_QUIET_CHECKS` quiet checks in a row, 300 s apart; an unreadable load, or a missing `pgrep` while a busy pattern is set, is "not quiet"; every check line in the supervisor log ends with `quiet-checks=<k>/<n>` and, when another check will follow, `next check in <s> s`, in production seconds). A wait that ends not quiet restores the server first when we stopped it (decision 15) and waits again. (2) The disk gate: a baseline at the first admission of the invocation, a check at every later one; a stop is exit 9. (3) Admission: at most `MAX_SERVER_STOPS` per invocation (exit 8 beyond), the recovery marker written BEFORE the stop (copied to `steps/<n>.marker` at once, as evidence if the supervisor dies before the worker starts), the stop of the operator's server when it is listed, the worker started as `setsid lib/worker_gate.sh steps/<n>.gate <command...>` (the supervisor checks that it is its own session leader), the worker keys added to the marker, the evidence copy `steps/<n>.marker` replaced by a copy WITH the worker keys that keeps the time of the first write (before the stop), the RAM guard and the deadline watcher started, the gate file made. An admission counts against `MAX_SERVER_STOPS` once the container list answered (a failed list is a failed try, not a stop). (4) wait for the worker (a loop with its own ceiling: the worker's session is stopped a minute after `T_STOP` if the watcher is gone); the guards are stopped, as whole process trees, and the descendants that lead a process group of their own get the group `KILL`; after a guard or the deadline stopped the step, every prefixed container is stopped AGAIN (the guard may have been killed in the middle of its second container, and a retry must not start next to a live one); whatever is left of the worker's SESSION is stopped; the typed outcome `steps/<n>.outcome` (`KIND` one of `worker`, `ram_guard`, `disk_gate`, `deadline`, `interrupted`, `refused`; `RC`, `DETAIL`, `ENDED_AT`) is created exclusively, so the first writer — the RAM guard, the deadline watcher, the worker itself for the disk gate, or the supervisor after `wait` — wins. (5) The outcome decides: `worker 0` done; `worker 3` waits (not a failed try) with the server kept down for one quiet wait; `worker 4` and `deadline` exit 6; `refused` (the typed outcome a worker writes when it refuses to go on, E1.S3) exit 2 without a retry; `disk_gate` exit 9; anything else is a failed try, and `MAX_FAILED_TRIES` of them are exit 7.
+`step_run` is a loop. (1) A quiet wait of at most 900 s and at most the time to `T_STOP` (`quiet_wait`: `R9700_QUIET_CHECKS` quiet checks in a row, 300 s apart; an unreadable load, or a missing `pgrep` while a busy pattern is set, is "not quiet"; every check line in the supervisor log ends with `quiet-checks=<k>/<n>` and, when another check will follow, `next check in <s> s`, in production seconds). A wait that ends not quiet restores the server first when we stopped it (decision 15) and waits again. (2) The disk gate: a baseline at the first admission of the invocation, a check at every later one; a stop is exit 9. (3) Admission: at most `MAX_SERVER_STOPS` per invocation (exit 8 beyond), the recovery marker written BEFORE the stop (copied to `steps/<n>.marker` at once, as evidence if the supervisor dies before the worker starts), the stop of the operator's server when it is listed, the worker started as `setsid lib/worker_gate.sh steps/<n>.gate <command...>` (the supervisor checks that it is its own session leader), the worker keys added to the marker, the evidence copy `steps/<n>.marker` replaced by a copy WITH the worker keys that keeps the time of the first write (before the stop), the RAM guard and the deadline watcher started, the gate file made. `MAX_SERVER_STOPS` is a RUN-WIDE cap on ACTUAL stops of the operator's server (E3.S2 decision 4): `_RG_STOPS` is charged right before `wslc_stop` of the server and only when the server is listed, an admission that finds it already down charges nothing, and an admission that would stop it past the cap is refused (exit 8) before the marker, the stop and any worker; nothing resets the count inside an invocation (`step_budget_reset` resets only the failed tries of the next step). A failed list is a failed try, not a stop. (4) wait for the worker (a loop with its own ceiling: the worker's session is stopped a minute after `T_STOP` if the watcher is gone); the guards are stopped, as whole process trees, and the descendants that lead a process group of their own get the group `KILL`; after a guard or the deadline stopped the step, every prefixed container is stopped AGAIN (the guard may have been killed in the middle of its second container, and a retry must not start next to a live one); whatever is left of the worker's SESSION is stopped; the typed outcome `steps/<n>.outcome` (`KIND` one of `worker`, `ram_guard`, `disk_gate`, `deadline`, `interrupted`, `refused`; `RC`, `DETAIL`, `ENDED_AT`) is created exclusively, so the first writer — the RAM guard, the deadline watcher, the worker itself for the disk gate, or the supervisor after `wait` — wins. (5) The outcome decides: `worker 0` done; `worker 3` waits (not a failed try) with the server kept down for one quiet wait; `worker 4` and `deadline` exit 6; `refused` (the typed outcome a worker writes when it refuses to go on, E1.S3) exit 2 without a retry; `disk_gate` exit 9; anything else is a failed try, and `MAX_FAILED_TRIES` of them are exit 7.
 
 A guard is a background fork of the supervisor with descriptor 9 closed. It writes the outcome FIRST, then stops every prefixed container (log tail saved before the stop) and then the worker's whole session by session id (`TERM`, the grace, `KILL`): GNU `timeout` gives every adapter call a process group of its own inside the worker's session, so a group kill would miss a call in flight (amendment A8). A guard ends by itself when the worker's leader (same start ticks) is gone, and runs without `R9700_T_STOP`: its work is cleanup-phase work. The RAM guard reads every 15 s; below `RAM_MIN_MB` is a stop, exactly at it is fine; a read that is not an integer is a miss, and three in a row are a stop (`telemetry unreadable 3 times`). The supervisor's step-phase adapter calls and the worker's run with `R9700_T_STOP` set (amendment A9); the cleanup phase runs without it (decision 8).
 
@@ -97,7 +111,7 @@ sequenceDiagram
 | 6 | the deadline or `MAX_RUN_MINUTES` stopped the step, or the worker said nothing more fits (worker 4) | `r9700: deadline: step stopped at <time>, <n> units done` (n: steps of this invocation that ended done) |
 | 2 (series) | the series worker refused to go on (outcome `KIND=refused`): the identity of the series changed between two arm-rounds or start tries | `r9700: the worker refused to go on: fingerprint differs: <path>: <old> -> <new>` |
 | 7 | the step failed `MAX_FAILED_TRIES` times | `r9700: step failed <n> times, last: <KIND> <DETAIL>` |
-| 8 | not quiet before the deadline, or the server-stop budget is used | `r9700: not quiet before the deadline` / `r9700: admitted <n> times (each admission stops the operator's server), limit MAX_SERVER_STOPS=<n>` |
+| 8 | not quiet before the deadline, or the server-stop budget is used (E3.S2: the budget counts ACTUAL stops of the operator's server), or a worker exited 3 more often than the repeat bound | `r9700: not quiet before the deadline` / `r9700: stopped the operator's server <n> times, limit MAX_SERVER_STOPS=<n>` / `r9700: <step> waited <n> times (worker exit 3), limit <m>` |
 | 9 | the disk gate stopped the run | `r9700: disk gate: <its line>` |
 | 10 | `init` found a problem | `init: <check>: <problem>` |
 | 11 | the recovery marker cannot be read | `marker: <file>:<line>: …`, then `r9700: recovery marker <file> is unreadable: check the operator's server by hand, then remove <file>` |
@@ -212,6 +226,95 @@ reused). `<WORK_DIR>/r9700/moe/<model>/merged/` holds the active file and `activ
 part file of an activation killed in its window is removed by the next `activate` when its owner is dead. `<WORK_DIR>/r9700/benchmark_moe.py` (41 KB) and `coarse_candidates.json` (11 KB) are
 replaced when `vendor/` changes.
 
+## Kernels and the prefix check (E3.S1)
+
+**Two verbs, two units, one lifecycle.** `bin/r9700 linear-bench <model> [--name <name>] [--ms "…"] [--sweep-ms "…"] [--timer graph|eager] [--out <name>] [--dry-run]` and
+`bin/r9700 prefixtest <model> [--name <name>] [--arm <arm>] [--lens "…"] [--tail <n>] [--out <name>] [--dry-run]` (`verb_linear_bench`, `verb_prefixtest`). Both are
+`supervise <verb> kernels_prepare kernels_<linear|prefix>_body`: the grammar is checked before the lock, then the lock, the restore-first, the config, and ONE `step_run`.
+The exit table above is unchanged: the verbs add no code. Exit 2 also covers a model with no `LINEAR_SHAPES` (`linear-bench`), a length that does not fit
+`MAX_MODEL_LEN`, an arm that is not in the table and a `--name` that names the record of another experiment.
+
+| Verb | Body order | The worker |
+|---|---|---|
+| `linear-bench` | `kernels: outdir …`, `moe_place kernels_assets` (hash-checked, before any stop), the dry run, the same-experiment check and the count of a recorded name (both before admission), `cleanup_hook_set moe_cache_clear`, `step_run linear-bench -- bash lib/kernels.sh linear …`, then the record's name and `summary.txt` | the identity check of every placed asset, the disk gate, the cache clear (a failed one refuses the unit), the exchange folder `<WORK_DIR>/r9700/linear/<name>/` made again, ONE foreground container (`wslc_run_once`, ceiling 5400 s cut at `T_STOP`), validation, ONE rename |
+| `prefixtest` | the same order without the cache hook | the same checks, `serve_start` of the arm's server with the series' own option builder (`_series_serve_options`), `wslc_exec` of `prefixtest.py run` inside it (ceiling 1800 s), the server's logs saved and the server stopped by name, validation, ONE rename |
+
+```mermaid
+flowchart LR
+  LB["linear-bench"] --> LU["lib/kernels.sh linear: ONE container, python3 linear_bench.py run"]
+  LU --> LV{"RC=0, linear_bench.py check: every (shape, M) pair exactly once, tuned at every sweep M"}
+  LV -->|yes| LR["kernels-&lt;model&gt;/linear/&lt;name&gt;/ (linear_bench.json, linear.log, summary.txt, linear.env)"]
+  LV -->|no| RJ["rejected/linear-&lt;name&gt;-&lt;stamp&gt;/ + reason"]
+  PT["prefixtest"] --> PU["lib/kernels.sh prefix: the arm's server, python3 prefixtest.py run inside it, the stop"]
+  PU --> PV{"RC=0, the server still listed, prefixtest.py check: exactly one line per length"}
+  PV -->|yes| PR["kernels-&lt;model&gt;/prefix/&lt;name&gt;/ (prefixtest.txt, summary.txt, server.log, prefix.env)"]
+  PV -->|no| RJ2["rejected/prefix-&lt;name&gt;-&lt;stamp&gt;/ + reason"]
+```
+
+**Reuse, not copies.** `moe_place`, `moe_identity_check`, `moe_asset_hashes` and `_moe_assets_unchanged` take the NAME of an assets function (default `moe_assets`, so the MoE
+callers and tests are unchanged); `kernels_assets` lists `linear_bench.py` and `prefixtest.py`. `_MOE_WHO` and `_MOE_PLACED_BY` name the caller in a refusal. The cache clear is the ONE
+hook: `_MOE_CLEAR_SH` clears `triton-linear` besides the two MoE folders, whichever units an invocation ran.
+
+**Records.** `<RESULTS_DIR>/kernels-<model>/linear/<name>/` and `prefix/<name>/` are final; while built they are `<name>.part-<run id>/`. A record becomes final by ONE rename after the
+validation; a failed one moves to `rejected/<kind>-<name>-<stamp>/` with a `reason`; a part a killed worker left moves there as `INTERRUPTED` at the next start of any kernels unit. A server
+that does not start or become ready is stopped by name before the worker exits (so the next try does not meet it). `moe_stop_by_name` (`lib/moe.sh`, never fatal, no stop time) is the one stop-by-name of a container a cut call left running: the linear and chunk units call it when a foreground call ended non-zero. `--name` defaults to the UTC stamp (a new record every run); with a name
+the record is "recorded, nothing to do" only when its env file names the same experiment (`MODEL`, `IMAGE`, `MODEL_DIR`, the asset hashes and the run parameters): a difference is
+exit 2 with one line per key (`<KEY> "<recorded>" -> "<requested>"`) before anything is stopped.
+
+**Growth surfaces.** `kernels-<model>/linear/<name>/` ≈ 35 KB per run and `prefix/<name>/` ≈ 0.3 MB (the server log), kept forever; `rejected/` ≈ 35 KB (linear) or ≈ 0.3 MB (prefix) per
+rejected attempt, at most `MAX_FAILED_TRIES` per invocation; `<WORK_DIR>/r9700/linear/<name>/` (the JSON, ≈ 20 KB) is deleted and made again before every run of that name; the placed
+`linear_bench.py` and `prefixtest.py` (≈ 10 KB together) are replaced when `lib/` changes; the Triton cache `triton-linear` in the cache volume (size not measured) is cleared before every
+linear unit and in the exit path of every invocation that ran one.
+
+## The run driver (E3.S2)
+
+**One verb, one lifecycle.** `bin/r9700 run <plan> [--check] [--dry-run]` (`verb_run`). Order: the arguments (syntax) -> the plan is READ and parsed (`plan_parse`: every line is a step or a refusal,
+all problems in one pass) -> every step's own `<verb>_args` (`run_validate`, each line `r9700: run: <file>:<line>: <the verb's own line>`) -> `--check` stops here after every step's config and
+prepare (no lock, nothing placed, one `run: step <k>: ok (<line>)` per step and the worst case as one line) -> `supervise run run_prepare run_body`: the lock, the restore-first, every step's
+args, prepare and placement (`run_prepare`: a typo in step 3 is refused before step 1 stops anything), the deadline (ONE `T_END` and `T_STOP` for the chain), the run folder, the chain
+(`run_body`), the ONE cleanup. Nothing in `run` is a second lifecycle: no lock, trap, restore or guard of its own.
+
+**The plan grammar** (`lib/run_plan.sh`): blank lines and lines starting with `#` are skipped; every other line is ONE step, the words a person types after `bin/r9700`, split as the config grammar
+splits a value (bare words, or one pair of double quotes around a word with spaces). `$`, a backtick, a single quote, `;`, `|`, `&`, `<`, `>`, `(`, `)`, a carriage return and a tab are refused
+anywhere in a step line: the file is never given to a shell. **The ONE list of steps** is `_RUN_STEPS` in `lib/run_verb.sh` (`series`, `moe-tune chunk`, `moe-tune ab`, `linear-bench`, `prefixtest`:
+the words, the kind, the `args`, `prepare` and `body` functions, the dry variable); the parser reads it through `run_step_kind`. Four verbs are refused as steps, each with its reason: `init`, `verdict`,
+`moe-tune merge` and `moe-tune activate`; a `--dry-run` inside a plan line is refused too.
+
+**The chain.** For every step: `step_budget_reset` (the failed tries), the verb's own `<verb>_args` on the line (it sets the verb's variables), a check of the step's config in a subshell (a failed
+`config_load` leaves the loaded config unset and the cleanup still needs it), `<verb>_prepare` again (the files of the step's model are re-read: a model file edited since the validation is refused here,
+exit 2), `run_record_write <k> running`, the verb's `<verb>_body` (the dry run, the recorded count, ONE `step_run`). Code 0: `done`, next step. Any other code: `stopped`, the chain ends, the rest are
+`not-started`, and `run` exits with that code after `r9700: run: stopped at step <k> of <n> (<line>): <code>`.
+
+**The exit code is the normalized result of the stopped step**, never a raw worker code; `run` adds none. The rows (the comment at the top of `lib/run_verb.sh` carries them; `tests/test_run.sh` R17 has one
+case per row and fails on a row without a case):
+
+| What happened in the step | Step body returns | `run.txt` | `run` exits |
+|---|---|---|---|
+| the worker ended 0 | 0 | `done 0` | goes on; 0 at the end |
+| the worker ended 3 (not quiet) | not returned: the step waits and repeats, not a failed try | stays `running` | — |
+| the worker ended 4, or `KIND=deadline` | 6 | `stopped 6` | 6 |
+| the worker ended 5 (its gate never opened) or any other code; `KIND=ram_guard` | a failed try; after `MAX_FAILED_TRIES`: 7 | `stopped 7` | 7 |
+| `KIND=refused`, a refused argument or config, a differing fingerprint, a record of another experiment | 2 | `stopped 2` | 2 |
+| `KIND=disk_gate` | 9 | `stopped 9` | 9 |
+| not quiet before the deadline; the stop cap reached | 8 | `stopped 8` | 8 |
+| a busy-wait restore that did not become ready | 5 | `stopped 5` | 5 |
+| a body that returns any other non-zero code | normalized to 7 | `stopped 7` | 7 |
+| `INT`, `TERM`, `HUP` | the handler exits | `interrupted -` | 130, 143, 129 |
+| the lock is held | before any step | no run folder | 4 |
+| the FINAL restore did not become ready | the step's own code stays in `run.txt` | unchanged | 5 overrides (`supervise`: a cleanup code replaces the body's) |
+
+**The budgets.** `MAX_SERVER_STOPS` is run-wide and counts real stops (see the supervisor section): a quiet chain of any length is ONE stop and ONE restore; only the busy-wait restore of decision 15
+followed by a new admission costs another stop; an admission that would pass the cap is refused before any marker, stop or worker, and never prevents the final restore. `MAX_FAILED_TRIES` is per step. Each step allows 3 x `MAX_FAILED_TRIES` exit-3 repeats (the quiet-wait loop of a worker that keeps saying "not quiet"); past it the step ends with exit 8 and `r9700: <step> waited <n> times (worker exit 3), limit <m>`. `machine.env` is hashed at the start of a chain, and a changed file is refused at the next step (exit 2), because it holds the stop cap, the operator's container and the restore command the final restore uses.
+The deadline is per run. `--check` does not refuse `steps x MAX_SERVER_STOPS`; it prints the worst case.
+
+**The run record.** The run folder of `run` also holds `plan.txt` (the plan file byte for byte; it must be the file that was read) and `run.txt`: `PLAN=<path> SHA256=<hash> STEPS=<n>`, then one line per step
+`<k> <state> <code|-> <the line>` (`not-started`, `running`, `done`, `stopped`, `interrupted`), rewritten whole beside its name and moved over at every state change. `run_record_write` lives in
+`lib/run_guarded.sh` so the signal handler always reaches it; a signal before the first step or between two steps finds no running step and marks none. Both files are under 2 KB per invocation and
+are kept with the run folder (collected data: the toolkit never removes or trims it).
+
+**Resume** is running the same plan again: every step verb skips its recorded work before admission (a series' final arm-rounds, a recorded chunk, a kernels record by `--name`), and a step whose
+identity changed is refused by its own fingerprint. Give every kernels step a `--name`, or it runs again.
+
 ## Flow
 
 ```mermaid
@@ -221,9 +324,15 @@ flowchart LR
   ARMS["config/arms.conf"] --> ARMLOAD["lib/config.sh: arms_load"]
   LOAD --> RES["R9700_* variables, config_resolved"]
   ARMLOAD --> RES
+  PLAN["the operator's plan file (outside the repository)"] --> RUN["bin/r9700 run: lib/run_plan.sh, lib/run_verb.sh"]
   RES --> SUP["supervisor: lib/run_guarded.sh, lib/step.sh"]
+  RUN --> SUP
   SUP --> SER["lib/series.sh worker: one arm-round at a time"]
+  SUP --> MOE["lib/moe.sh worker: a chunk or a kernel A/B"]
+  SUP --> KER["lib/kernels.sh worker: linear-bench or prefixtest"]
   SER --> REC["rounds/ARM-N/ (bench.txt, quality files, record.env)"]
+  MOE --> MREC["moe-MODEL/chunks, merged, ab"]
+  KER --> KREC["kernels-MODEL/linear, prefix"]
   FP["lib/fingerprint.py: fingerprint.json"] --> SER
   REC --> VER["lib/verdict.py ship / check-block"]
   HAR["lib/harness.py"] --> QUAL["quality/gsm8k_ARM.json"]
@@ -231,3 +340,11 @@ flowchart LR
   QUAL --> VER
   VER --> OUT["verdict text and JSON"]
 ```
+
+## Across repositories
+
+- **The shared rules.** `.agents/conventions` is the `dew_flow_conventions` repository, mounted as a submodule that follows its `release` branch; the rules, the leftovers guard, the plan check and the post-deploy check come from it, and CI runs them (`.github/workflows/tests.yml`). This repository is a row of that repository's consumers table (token `r9700`; read at the pinned release on 2026-11-03).
+  `tools/lib/` holds three helper files that must equal the mounted ones (`tests/check_static.sh --vendored`).
+- **The results and the old scripts.** `dew_flow_benchmark · research/vllm-r9700-speed-options/` holds the scripts and the nights this toolkit was made from, and `dew_flow_benchmark · research/RESULTS_vllm_029_r9700_speed_options.md` the measurements. They are cited by path, never linked, and the data a test needs
+  is copied byte for byte into `tests/fixtures/` with the commit it was read at (`c466652`). `research/INPUTS_homes.md` says where every old script went.
+- **Public.** The repository is public: no personal path, account name, token or machine name in a tracked file (`tests/check_static.sh`); the machine's values live in the untracked `machine.env`.

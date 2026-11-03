@@ -1,0 +1,5 @@
+# The three-step plan of the scenarios R1-R3: a prefix check, a one-round series, a linear micro-benchmark, all on the 35B model file.
+prefixtest qwen3.6-35b-a3b-gptq --name p1
+
+series qwen3.6-35b-a3b-gptq base --rounds 1
+linear-bench qwen3.6-35b-a3b-gptq --name n1 --ms "1 2 6" --sweep-ms 6

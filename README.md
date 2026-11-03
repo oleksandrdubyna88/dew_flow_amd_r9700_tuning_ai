@@ -1,9 +1,26 @@
 # dew_flow_amd_r9700_tuning_ai
 
 Tune and measure vLLM on an AMD Radeon AI PRO R9700 under Windows + WSL2, where containers run with `wslc`. A series compares server
-configurations ("arms") against a base arm and ends with a ship test. (Work in progress — see `todo/`; the system as it is lives in `research/`.)
+configurations ("arms") against a base arm and ends with a ship test; the toolkit also tunes the fused-MoE kernel config, times the linear kernels, checks the prefix cache,
+and runs a whole night of those steps from one plan file. A new model is one file in `models/`, not a new script. The system as it is lives in `research/` (start with `research/architecture.md`).
 
 A run stops the operator's own vLLM server for its own duration and restores it once, at the end. Run it on a PC nobody is using.
+
+## The commands
+
+| Command | What it does |
+|---|---|
+| `bin/r9700 init` | checks the machine file, the folders, `wslc` and the telemetry; stops every leftover test container |
+| `bin/r9700 series <model> <arm>...` | the arms of a comparison, alternating, resumable, each arm-round recorded only when complete |
+| `bin/r9700 verdict <results folder>` | the ship test over the finished arm-rounds |
+| `bin/r9700 moe-tune <mode> <model>` | MoE config tuning: `chunk`, `merge`, `activate`, `ab` |
+| `bin/r9700 linear-bench <model>` | times the model's linear shapes (the hybrid W4A16 kernel) |
+| `bin/r9700 prefixtest <model>` | twelve prefix-cache requests against one measured server |
+| `bin/r9700 run <plan>` | a night: the steps of a plan file under ONE supervisor |
+| `bin/r9700 step <label> -- <command...>` | one command as a guarded step (the engine under the other verbs; for tests and by hand) |
+| `bin/r9700 commands` | prints the verbs |
+
+The sections below go through them in this order. Where every script of the old harness folder went is in `research/INPUTS_homes.md`.
 
 ## Quick start
 
@@ -66,6 +83,65 @@ Where things are:
 To resume, run the same `chunk` command: a recorded chunk is skipped before anything is stopped. Name another `--chunk` for a second search. For a long search
 set `MAX_RUN_MINUTES` (up to 2880) and `MOE_CHUNK_MAX_S` in `machine.env`.
 
+## Kernels and the prefix check
+
+Two more single steps, each one supervised run (one lock, ONE stop of your server, ONE restore), each recorded only when its result is complete and valid:
+
+- `bin/r9700 linear-bench <model>` times the model's hybrid W4A16 linear shapes (the model file's `LINEAR_SHAPES`, no shape is typed in a script) in one foreground container with
+  the CUDA-graph timer: per shape and M the vLLM default dispatch, the HIP op split into chunks of at most five rows, and the best of a 144-tile Triton sweep at the sweep Ms. It records the
+  rows and prints the table of the results document (§ 12.1: per M, the sum over the shapes in ms, and the change of the tuned kernel against the default). The recorded graph-timer run took about 6 minutes (00:12 to 00:18 of the night of 2026-10-30); the eager run took 11.
+- `bin/r9700 prefixtest <model>` starts one measured server for one arm (`--arm`, default `base`) and sends twelve prefix-cache requests (per length: A cold, A hit twice, B cold, B hit, A
+  with its last 64 tokens changed). It records the two lines and prints their cold/hit ratios. It applies no threshold: it is the measurement behind the § 6.1 question.
+
+```bash
+bin/r9700 linear-bench qwen3.6-35b-a3b-gptq --name first
+bin/r9700 prefixtest qwen3.6-35b-a3b-gptq --name first --arm base
+```
+
+Options: `linear-bench` takes `--ms "…"` (default `1 2 3 4 5 6 8 10 12 16`), `--sweep-ms "…"` (default `6 8 12 16`, each also in `--ms`) and `--timer graph|eager` (default `graph`;
+the eager timer includes launch overhead and its sum is not a decode time). `prefixtest` takes `--lens "…"` (default `8192 1024`; each plus one must fit `MAX_MODEL_LEN`) and `--tail <n>`
+(default 64, below the shortest length). Both take `--name <name>` (default the UTC stamp: a new record every run), `--out <name>` (default `kernels-<model name>`) and `--dry-run`, which
+prints the resolved container lines and starts nothing (like `moe-tune --dry-run` it takes the lock and restores first).
+
+The records are `<RESULTS_DIR>/kernels-<model>/linear/<name>/` (`linear_bench.json`, `linear.log`, `summary.txt`, `linear.env`) and `prefix/<name>/` (`prefixtest.txt`, `summary.txt`,
+`server.log`, `prefix.env`); a failed attempt is kept in `rejected/` with a `reason`. Nothing there is deleted. With `--name`, the same command again skips a recorded name before anything is
+stopped, but only when it is the same experiment: when the model, the image, a parameter or a placed file differs, the command refuses and names the key (`the record linear/first is
+another experiment: MS "1 2 6" -> "1 2"`).
+
+`linear-bench` refuses a model whose `LINEAR_SHAPES` is empty: the 27B AWQ file leaves it empty because nobody has measured whether that model takes the hybrid W4A16 kernel. The 35B file
+carries the five shapes of the speed-options runs. A new model gets its shapes in its model file (`LINEAR_SHAPES`, `LINEAR_GROUP_SIZE`; `research/module_config.md`).
+
+## A night: `run`
+
+`bin/r9700 run <plan>` runs a whole night from a text file: one step per line, each line the command line of a toolkit verb. The steps run in order under ONE supervisor: one lock, the
+restore of your own server first when a marker is left, your server stopped once at the first step and restored once at the end, one deadline for the whole chain. Blank lines and lines
+starting with `#` are skipped. A line is what you would type after `bin/r9700`, with words split on spaces (put a word that holds spaces in one pair of double quotes). The characters
+`$`, a backtick, `'`, `;`, `|`, `&`, `<`, `>`, `(`, `)` and a tab are refused: the file is never given to a shell. The plan is YOUR file; keep it outside the repository.
+
+```
+# night.plan
+prefixtest qwen3.6-35b-a3b-gptq --name p1
+series qwen3.6-35b-a3b-gptq base --rounds 1
+linear-bench qwen3.6-35b-a3b-gptq --name n1
+moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24 32" --coarse --chunk night-24-32
+```
+
+- **Check before you leave.** `bin/r9700 run night.plan --check` validates every line and every step's config, takes no lock and starts nothing. It prints `run: step <k>: ok (<line>)`
+  per step and the worst case: `run: at most <n> stops of the operator's server if every step is admitted after a busy wait; MAX_SERVER_STOPS=<n>`. `--dry-run` takes the lock and prints
+  the dry run of every step.
+- **The steps.** `series`, `moe-tune chunk`, `moe-tune ab`, `linear-bench` and `prefixtest`. Four verbs are refused as steps, each with its reason: `init` (the machine check you run before a night),
+  `verdict` (a reading verb: run it in the morning), `moe-tune merge` (it reads chunks that you choose after reading them) and `moe-tune activate` (it changes what your own server reads: a chain at
+  night must not decide that). `--dry-run` inside a plan line is refused.
+- **Stops and budgets.** A quiet chain stops your server ONCE and restores it ONCE, however many steps it has. `MAX_SERVER_STOPS` is the cap for the whole run and counts real stops: the only
+  other stop is after your server was given back while the PC was busy (a step that exits 3 waits for a quiet PC; it is not a failed try). A step that would pass the cap is refused before it starts
+  anything, and your server is still restored. `MAX_FAILED_TRIES` is per step. A step whose worker exits 3 more than 3 x `MAX_FAILED_TRIES` times ends with exit 8. Do not edit `machine.env` during a night: the next step is refused (exit 2). The deadline is per run: a step that ends with 6 ends the chain, and the later steps are not started.
+- **How a stop reads.** The exit code is the code of the step that stopped the chain (the table below; `run` adds no code), and stderr says where: `r9700: run: stopped at step 2 of 3 (<the line>): 7`.
+  `<RESULTS_DIR>/runs/<id>/run.txt` has the plan's path and hash and one line per step: `<k> <state> <code> <line>`, the state one of `not-started`, `running`, `done`, `stopped`, `interrupted`;
+  `plan.txt` beside it is the plan as it was run.
+- **Resume.** Run the same command again: every step skips what it recorded. Give every `linear-bench` and `prefixtest` step a `--name`, or it runs again (without a name the record is named by the time).
+  A step whose model, image or patch changed since its records is refused by its own identity check (exit 2).
+- **Each step has its own model file.** The files are read again when the step starts: a model file edited after the check is refused at its step (exit 2), after the earlier steps' records are final.
+
 Where the records of a series are: `<RESULTS_DIR>/<name>/rounds/<arm>-<round>/` is one arm-round and exists only when it is complete; an attempt that failed
 its checks is kept, with a `reason`, in `rejected/`; an arm that did not start twice is in `unsupported/`; `fingerprint.json` is the identity of the
 series; `<RESULTS_DIR>/runs/` has one folder per invocation (the supervisor's log, the guards' logs). Nothing under `<RESULTS_DIR>` is ever deleted
@@ -75,12 +151,12 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 
 - `0` done.
 - `1` `verdict`: at least one arm is INCOMPLETE (a round is missing).
-- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused.
+- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment; `run`: a refused plan (a line that is not a step, a refused character, a refused argument, no step), or a step whose config or identity is refused when it starts.
 - `4` another run holds the lock.
 - `5` the restore of your own server did not become ready: look at the server by hand; the recovery marker stays.
 - `6` the deadline stopped the run (or the next arm-round no longer fits before it): run the same command again.
 - `7` the step failed `MAX_FAILED_TRIES` times.
-- `8` the PC was not quiet before the deadline, or the server was stopped `MAX_SERVER_STOPS` times.
+- `8` the PC was not quiet before the deadline, your server was already stopped `MAX_SERVER_STOPS` times in this run (the next stop is refused), or a worker exited 3 more often than the repeat bound.
 - `9` the disk gate stopped the run (a new disk event in the Windows log).
 - `10` `init` found a problem.
 - `11` the recovery marker cannot be read: check the server by hand, then remove the marker.
@@ -88,4 +164,18 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 - `130` interrupted by `INT` (Ctrl-C); the server was restored.
 - `143` interrupted by `TERM`; the server was restored.
 
-Tests: `node tests/run.mjs` (stubs only: no container and no GPU) and `bash tests/check_static.sh`; `research/module_tests.md` says what they prove.
+Tests: `node tests/run.mjs` (stubs only: no container and no GPU) and `bash tests/check_static.sh`; `research/module_tests.md` says what they prove and what they do not. Run every test command under a process cap, as that file says
+(`bash -c 'ulimit -u $(( $(ps -L -u $(id -u) --no-headers | wc -l) + 3000 )); exec nice -n 19 node tests/run.mjs'`).
+
+## Acceptance on the GPU
+
+CI uses stubs, so every flow that needs the GPU, the real `wslc` and the real image has a record in `research/`, made by the operator's session on the R9700 PC before a release: the prediction is written first, the observed sections are filled after the run,
+and a record that was not run says NOT RUN in its title and keeps its observed sections empty. `research/ACCEPTANCE_series_2026-11-02.md` has been run. `research/ACCEPTANCE_moe_tune_2026-11-02.md`, `research/ACCEPTANCE_linear_bench_2026-11-03.md`,
+`research/ACCEPTANCE_prefixtest_2026-11-03.md` and `research/ACCEPTANCE_run_2026-11-03.md` are NOT RUN: the operator holds GPU runs for now. `POST_DEPLOY.md` is the short list to run on the PC after every install or update.
+
+## The family
+
+This repository is public and a consumer of the shared rules of `dew_flow_conventions`: they are mounted at `.agents/conventions` (the `release` branch; fresh clone: `git submodule update --init .agents/conventions` and
+`npm ci --ignore-scripts --prefix .agents/conventions`), and the consumers table in that repository's README lists this repository (test-leftovers token `r9700`). Both facts were read on 2026-11-03: the row at the pinned release of the rules, and the visibility
+with `gh repo view <owner>/dew_flow_amd_r9700_tuning_ai --json visibility` (PUBLIC). Machine specifics are never committed: they live in the untracked `machine.env` made from `machine.env.example`, and `bash tests/check_static.sh` fails when a tracked file holds a personal path.
+CI (`.github/workflows/tests.yml`) runs the tests, the static checks, the leftovers guard, the plan check and the shape check of `POST_DEPLOY.md`.

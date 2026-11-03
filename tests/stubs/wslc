@@ -10,13 +10,15 @@ stub_mode_if_asked
 CRLF=$'\r'
 
 # ---- the MoE foreground runs (E2.S2 decision 9) -----------------------------------------------------------------------------------------------
-# moe_kind <argv...>: sets MOE_KIND to `bench` (a benchmark_moe.py run: `--tune` is a chunk, else a kernel A/B container), `clear` (the cache-clear
+# moe_kind <argv...>: sets MOE_KIND to `bench` (a benchmark_moe.py run: `--tune` is a chunk, else a kernel A/B container), `linear` (a linear_bench.py
+# run, E3.S1: the kernels worker's foreground container), `clear` (the cache-clear
 # program: `sh -c` with a program that names triton-moe-tune) or "" and returns 1 when the run is none of them (the fingerprint's throwaway run).
 moe_kind() {
   local arg prev=""
   MOE_KIND=""
   for arg in "$@"; do
     [ "$arg" = benchmark_moe.py ] && MOE_KIND=bench
+    [[ $arg == */linear_bench.py ]] && MOE_KIND=linear
     [ "$prev" = -c ] && [[ $arg == *triton-moe-tune* ]] && MOE_KIND=clear
     prev="$arg"
   done
@@ -31,6 +33,7 @@ moe_kind() {
 #       save dir (the path /work/ read as $R9700_WORK_DIR/; no folder: nothing is written, the half-written chunk), prints the log, exits with the rc
 #   answers/moe_ab_seconds, moe_ab.<arm>[.<rep>]          a kernel A/B container (the arm is the word after `moe-ab-` in the name, the rep its number): sleeps, prints
 #   answers/moe_cache                                     the clear: prints it (default one `du` line)
+#   answers/fault.<name>                                  a chunk, A/B or linear container: exits with the code in the file (once) and stays listed (foreground_fault)
 moe_foreground() {
   local name="$1" file="$R9700_STUB_DIR/containers/$1.pid"
   shift
@@ -47,7 +50,54 @@ moe_foreground() {
     if [ -f "$R9700_STUB_DIR/answers/moe_cache" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/moe_cache"; else printf '1.3G\t/root/.cache/vllm/triton-moe-tune%s\n' "$CRLF"; fi
     return "$(moe_answer moe_clear_rc 0)" # answers/moe_clear_rc: the exit code of the clear container (default 0)
   fi
-  moe_bench "$name" "$@"
+  local rc
+  if [ "$MOE_KIND" = linear ]; then linear_bench "$name" "$@"; rc=$?; else moe_bench "$name" "$@"; rc=$?; fi
+  foreground_fault "$name" rc
+  return "$rc"
+}
+
+# foreground_fault <name> <rc variable>: answers/fault.<name> holds an exit code (a ceiling that cut the call: 124): the foreground run returns it AND leaves its
+# container running and listed, as a `wslc run` cut by the adapter's ceiling can; the file is used once, so a retry starts clean (E3.S1 review)
+foreground_fault() {
+  local file="$R9700_STUB_DIR/answers/fault.$1"
+  [ -f "$file" ] || return 0
+  printf -v "$2" '%s' "$(head -n 1 "$file")"
+  rm -f "$file"
+  MOE_PIDFILE=/nonexistent/none # the exit trap must not remove the record of the container that stays
+  stub_container_start "$1"
+}
+
+# linear_bench <name> <argv...>: a linear_bench.py container (E3.S1). Every answer file is read from $R9700_STUB_DIR only; the stub never runs a program:
+#   answers/linear_seconds   how long the container runs (default 0)
+#   answers/linear           a file: copied to the path of `--out` (a path under /work, which is $R9700_WORK_DIR here); without it nothing is written
+#   answers/linear.log       the container's output (default one line)
+#   answers/linear_rc        the exit code (default 0)
+linear_bench() {
+  local arg prev="" out=""
+  shift
+  for arg in "$@"; do
+    [ "$prev" = --out ] && out="$arg"
+    prev="$arg"
+  done
+  sleep "$(moe_answer linear_seconds 0)" < /dev/null > /dev/null 2>&1 &
+  MOE_SLEEPER=$!
+  wait "$MOE_SLEEPER"
+  if [ -f "$R9700_STUB_DIR/answers/linear" ] && [ -n "$out" ]; then cp "$R9700_STUB_DIR/answers/linear" "${R9700_WORK_DIR:?}/${out#/work/}"; fi
+  if [ -f "$R9700_STUB_DIR/answers/linear.log" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/linear.log"; else printf 'stub linear bench%s\n' "$CRLF"; fi
+  return "$(moe_answer linear_rc 0)"
+}
+
+# prefix_call <name> python3 <script> run <url> <model> <tag> ... (the first word is the container's name): what prefixtest.py would print (E3.S1): answers/prefix with its first word replaced by the asked
+# tag, else the two recorded lines of fcombo-1 (results § 13.3). answers/prefix_rc is the exit code; R9700_STUB_DELAY_S holds the call first.
+prefix_call() {
+  local tag="${7:-t}"
+  [ -n "${R9700_STUB_DELAY_S:-}" ] && sleep "$R9700_STUB_DELAY_S"
+  if [ -f "$R9700_STUB_DIR/answers/prefix" ]; then sed -e "s/^[^ ]* /$tag /" -e "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/prefix"
+  else
+    printf '%s prefixtest len=8192 A cold=2.1s A hit=0.5s A hit=0.51s B cold=2.15s B hit=0.48s A partial=0.49s%s\n' "$tag" "$CRLF"
+    printf '%s prefixtest len=1024 A cold=0.22s A hit=0.22s A hit=0.2s B cold=0.19s B hit=0.2s A partial=0.19s%s\n' "$tag" "$CRLF"
+  fi
+  return "$(moe_answer prefix_rc 0)"
 }
 
 # moe_answer <file name> <default>: the content of answers/<file name> (first line), else the default
@@ -207,6 +257,8 @@ exec_in() {
     done
     [ -n "${R9700_STUB_DELAY_S:-}" ] && sleep "$R9700_STUB_DELAY_S"
     bench_lines "$c" "$seed" "$len" "$outlen"
+  elif [ "${1:-}" = python3 ] && [[ ${2:-} == */prefixtest.py ]]; then
+    prefix_call "$name" "$@"
   elif [ "${1:-}" = python3 ] && [[ ${2:-} == */harness.py ]]; then
     harness_call "$2" "${3:-}" "${@:4}"
   elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *urlopen*/metrics* ]]; then
@@ -232,6 +284,15 @@ case "${1:-}" in
   list) list_containers ;;
   stop)
     [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"
+    # stop-fail-<name>: a count; that many `stop <name>` calls fail and leave the container running (a stop that does not work), then stops work again
+    if [ -f "$R9700_STUB_DIR/stop-fail-${2:-}" ]; then
+      read -r _left < "$R9700_STUB_DIR/stop-fail-${2:-}"
+      if [ "${_left:-0}" -gt 0 ]; then
+        printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/stop-fail-${2:-}"
+        echo "stub: stop failed (scripted): ${2:-}" >&2
+        exit 1
+      fi
+    fi
     # on-stop-<name>: a script of the test (E1.S3), run once that container is stopped: the way a test changes the world at a unit's end
     if stub_container_stop "${2:-}"; then
       printf '%s%s\n' "$2" "$CRLF"
@@ -240,7 +301,7 @@ case "${1:-}" in
       exit 1
     fi
     ;;
-  logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
+  logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/on-logs-${2:-}" ] && bash "$R9700_STUB_DIR/on-logs-${2:-}"; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
   exec) stub_require_running "${2:-}" || exit 1; shift; exec_in "$@" ;;
   *) echo "stub: wslc: unknown subcommand \"${1:-}\"" >&2; exit 2 ;;
 esac

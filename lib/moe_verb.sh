@@ -3,7 +3,8 @@
 # bin/r9700 after lib/moe.sh (the units of E2.S2 live there and run as workers; this file holds what the verb itself does, in the supervisor). Bash >= 4.4,
 # `set -u` safe, no `set -e`. Nothing here takes the lock or sets a trap: the lock, the restore-first and the one cleanup belong to `supervise`.
 #
-#   moe_place                                          vendor/benchmark_moe.py and config/coarse_candidates.json into $R9700_WORK_DIR/r9700/, hash-checked
+#   moe_place [<assets fn>]                            vendor/benchmark_moe.py and config/coarse_candidates.json (or the files of another assets function: E3.S1's
+#                                                      kernels_assets) into $R9700_WORK_DIR/r9700/, hash-checked
 #   moe_dry_run chunk|ab ...                           the resolved container lines (through the worker's own argument builder) and the clear's line
 #   moe_merge_verb <outdir> <model> <layer> <base> <chunk>...   a new record merged/<stamp>/ (merge_moe.py), merge.env; nothing replaced
 #   moe_activate_verb <outdir> <model> <stamp> <yes|no force>   the one step that changes what a server reads: refused while a server is listed
@@ -32,19 +33,19 @@ _moe_free_stamp() {
 # placed by `series`) is only REFRESHED when it is present: a copy left by an older series would otherwise fail the identity check of every unit for ever.
 # 2 and one line when a file cannot be placed: before anything is stopped. A .part left by a kill is replaced by the next call.
 moe_place() {
-  local name source need dest want
+  local name source need dest want assets="${1:-moe_assets}" by="${_MOE_PLACED_BY:-moe-tune}"
   while read -r name source need _; do
     dest="$(moe_placed_dir)/$name"
     [ "$need" = required ] || [ -f "$dest" ] || continue
     want="$(_moe_sha "$_MOE_REPO/$source")"
-    [ -n "$want" ] || { echo "moe-tune: $source is missing in the repository" >&2; return 2; }
+    [ -n "$want" ] || { echo "$by: $source is missing in the repository" >&2; return 2; }
     [ "$(_moe_sha "$dest")" = "$want" ] && continue
     if ! { mkdir -p "${dest%/*}" && cp -- "$_MOE_REPO/$source" "$dest.part" && mv -f -- "$dest.part" "$dest"; } 2> /dev/null; then
-      echo "moe-tune: $name cannot be placed in ${dest%/*}" >&2
+      echo "$by: $name cannot be placed in ${dest%/*}" >&2
       return 2
     fi
-    [ "$(_moe_sha "$dest")" = "$want" ] || { echo "moe-tune: $name in ${dest%/*} is not $source after it was placed" >&2; return 2; }
-  done < <(moe_assets)
+    [ "$(_moe_sha "$dest")" = "$want" ] || { echo "$by: $name in ${dest%/*} is not $source after it was placed" >&2; return 2; }
+  done < <("$assets")
 }
 
 # _moe_dry_clear: the line of the cache-clear container, the words of moe_cache_clear

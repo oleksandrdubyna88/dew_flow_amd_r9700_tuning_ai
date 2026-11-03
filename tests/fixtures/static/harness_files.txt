@@ -1,0 +1,35 @@
+# The names of the old harness folder: dew_flow_benchmark, research/vllm-r9700-speed-options/harness/, commit c466652 (31 files, listed with git ls-tree).
+# Two more names are listed because the plans name them but the folder does not hold them (checked 2026-11-03: neither is in that commit's tree).
+b2.sh
+bench.sh
+disk_gate.sh
+harness.py
+linear_bench.py
+linear_bench_graph.py
+merge_b1.py
+merge_b2.py
+moe_kernel_ab.py
+moe_kernel_ab.sh
+night.sh
+night10.sh
+night2.sh
+night3.sh
+night4.sh
+night4_extra.sh
+night5.sh
+night6.sh
+night7.sh
+night8.sh
+night9.sh
+prefixtest.py
+prodcheck.sh
+ram_guard_all.sh
+restore_server.sh
+resume_AC.sh
+serve.sh
+speed_A.sh
+speed_CB.sh
+tune_chunk.sh
+wait_quiet.sh
+wait_ready.sh  # named by the plan's Inputs table; serve.sh calls it; not in the folder
+e2e_moe.sh  # named by the E3 brief; not in the folder, not in the history

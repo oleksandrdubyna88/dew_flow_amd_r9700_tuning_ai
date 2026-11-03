@@ -458,6 +458,54 @@ _rg_state_reset() {
   _RG_CLEANED=0 _RG_CLEANUP_RC=0 _RG_RESTORE_RC=0 _RG_STEP_N=0 _RG_STOPS=0 _RG_PROD_STOPPED=no _RG_PROD_WAS=no _RG_UNITS_DONE=0
   _RG_DISK_BASED=no _RG_WORKER_SID="" _RG_OUTCOME="" _RG_TRIES=0 _RG_FAIL="" _RG_SLEEPER="" _RG_BG="" _RG_CALLS=0
   _RG_WATCHERS=()
+  _RG_RUN_STEP="" _RUN_PLAN_ACTIVE=0 # the plan step a signal marks `interrupted` (lib/run_verb.sh sets it; empty between steps and before the first one)
+}
+
+# ---------- run.txt, the record of a plan (E3.S2 decision 6) ----------
+# Defined HERE, beside the signal handler: the handler must never call a function that exists only when another file was sourced. A no-op while no plan is active (every
+# other verb). The state arrays are _RUN_STATE and _RUN_CODE (one slot per step); the lines of the plan are _PLAN_TEXT (lib/run_plan.sh).
+#   run_record_init <plan path> <steps>   every step `not-started`, the header `PLAN=<path> SHA256=<hash> STEPS=<n>`; run.txt is written; 0, or 2 when it cannot be
+#   run_record_interrupt <k>              the handler's call: `interrupted`, unless step <k> already has its final state (done, stopped)
+#   run_record_write <k> <state> [<code>] step <k> (1-based) is `not-started|running|done|stopped|interrupted` with its code (`-` when none); run.txt is rewritten whole,
+#                                         beside the name and moved over (a reader never sees half of it); never fails
+_run_record_flush() {
+  local i
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
+  {
+    printf '%s\n' "$_RUN_HEAD"
+    for i in "${!_RUN_STATE[@]}"; do printf '%s %s %s %s\n' "$((i + 1))" "${_RUN_STATE[$i]}" "${_RUN_CODE[$i]}" "${_PLAN_TEXT[$i]}"; done
+  } > "$RUN_DIR/run.txt.part" 2> /dev/null && mv -f "$RUN_DIR/run.txt.part" "$RUN_DIR/run.txt" 2> /dev/null
+  return 0
+}
+
+run_record_init() {
+  local i
+  _RUN_STATE=() _RUN_CODE=()
+  for ((i = 0; i < $2; i++)); do _RUN_STATE[i]=not-started _RUN_CODE[i]=-; done
+  _RUN_HEAD="PLAN=$1 SHA256=${_PLAN_SHA:-} STEPS=$2"
+  _RUN_PLAN_ACTIVE=1
+  _run_record_flush
+  [ -f "${RUN_DIR:-/nonexistent}/run.txt" ] || { echo "r9700: run: run.txt cannot be written in the run folder" >&2; return 2; }
+}
+
+run_record_write() {
+  local i
+  [ "${_RUN_PLAN_ACTIVE:-0}" = 1 ] || return 0
+  [[ ${1:-} =~ ^[1-9][0-9]*$ ]] || return 0
+  i=$(($1 - 1))
+  [ "$i" -lt "${#_RUN_STATE[@]}" ] || return 0
+  _RUN_STATE[i]="$2"
+  _RUN_CODE[i]="${3:--}"
+  _run_record_flush
+  return 0
+}
+
+# run_record_interrupt <k>: what the signal handler calls: step <k> is `interrupted` unless its final state (done, stopped) is already written, which a signal never overwrites
+run_record_interrupt() {
+  [ "${_RUN_PLAN_ACTIVE:-0}" = 1 ] || return 0
+  [[ ${1:-} =~ ^[1-9][0-9]*$ ]] || return 0
+  case "${_RUN_STATE[$(($1 - 1))]:-}" in done | stopped) return 0 ;; esac
+  run_record_write "$1" interrupted
 }
 
 _rg_traps_on() {
@@ -478,6 +526,7 @@ _rg_on_signal() {
   [ -z "${_RG_SLEEPER:-}" ] || kill "$_RG_SLEEPER" 2> /dev/null
   [ -z "${_RG_BG:-}" ] || _rg_bg_kill # a call in the background: its adapter fork kills the call's process group
   if [ -n "${_RG_OUTCOME:-}" ]; then outcome_write "$_RG_OUTCOME" KIND=interrupted "DETAIL=signal $1"; fi
+  [ -z "${_RG_RUN_STEP:-}" ] || run_record_interrupt "$_RG_RUN_STEP"
   rg_log "signal $1: cleaning up"
   if cleanup_once interrupted; then rg_err "r9700: interrupted, restored"; else rg_err "r9700: interrupted, the restore did not finish (the marker stays)"; fi
   exit "$code"

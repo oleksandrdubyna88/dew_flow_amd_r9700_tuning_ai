@@ -24,7 +24,7 @@ declare -ga _F_ORDER=()
 declare -gA _F_SCOPE=() _F_TYPE=() _F_DEF=() _F_DESC=()
 
 # _field <scope> <KEY> <type> <default-or-"required"> "<one-line description>"
-# Types: cmd image name prefix dir path win cpath cpath? int:<min>:<max> dec:<min>:<max> enum:<a>,<b> hhmm? str? ints mounts args
+# Types: cmd image name prefix dir path win cpath cpath? int:<min>:<max> dec:<min>:<max> enum:<a>,<b> hhmm? str? ints mounts args shapes?
 # A required field is also refused when its value is empty or only spaces.
 _field() {
   _F_ORDER+=("$2")
@@ -74,6 +74,8 @@ _field model MOE_DTYPE enum:auto,fp8_w8a8,int8_w8a16,int4_w4a16,none int4_w4a16 
 _field model TUNED_CONFIG_DIR cpath? "" "the folder of tuned MoE configs, as a path inside the container; empty means none"
 _field model MOUNTS mounts "" "extra mounts: <source relative to PATCH_DIR>:<container path>[:ro], separated by spaces"
 _field model EXTRA_SERVE_ARGS args "" "extra arguments of the serve command, split on spaces; quotes are refused"
+_field model LINEAR_SHAPES shapes? "" "the hybrid W4A16 linear shapes for linear-bench: <name>:<K>:<N>:<layers> words separated by spaces; empty means none known"
+_field model LINEAR_GROUP_SIZE int:32:1024 128 "the quantization group size of the linear shapes (every K must be a multiple of it)"
 
 _RE_LINE='^([A-Z][A-Z0-9_]*)=(.*)$'
 _RE_IMAGE='^[a-z0-9][a-z0-9./_-]*:[A-Za-z0-9._-]+$'
@@ -168,6 +170,30 @@ _cfg_ints_problem() {
   [ -z "$_PE" ]
 }
 
+# _cfg_shapes_problem <value>: sets _PE and returns 1 for the first word that is not <name>:<K>:<N>:<layers>: a name of letters, digits and . _ + -
+# (no space: `+` joins layers that share a shape), K N and layers positive integers of at most 9 digits, K a multiple of 8 and N a multiple of 16
+# (lib/linear_bench.py's kernel reads k // 8 and the smallest BLOCK_N is 16), a name once. The multiple of LINEAR_GROUP_SIZE is the cross-field
+# check. The same rules as lib/linear_bench.py parse_shapes; tests/fixtures/kernels/shapes_cases.txt feeds both.
+_cfg_shapes_problem() {
+  local -a words
+  local word name k n layers
+  local -A seen=()
+  _PE=""
+  read -r -a words <<< "$1"
+  for word in "${words[@]}"; do
+    if ! [[ $word =~ ^([A-Za-z0-9._+-]+):([1-9][0-9]{0,8}):([1-9][0-9]{0,8}):([1-9][0-9]{0,8})$ ]]; then
+      _PE="\"$word\" is not <name>:<K>:<N>:<layers> (a name of letters, digits and . _ + -; positive whole numbers)"
+      return 1
+    fi
+    name="${BASH_REMATCH[1]}" k="${BASH_REMATCH[2]}" n="${BASH_REMATCH[3]}" layers="${BASH_REMATCH[4]}"
+    if [ $((k % 8)) -ne 0 ]; then _PE="\"$word\": K $k is not a multiple of 8"; return 1; fi
+    if [ $((n % 16)) -ne 0 ]; then _PE="\"$word\": N $n is not a multiple of 16"; return 1; fi
+    if [ -n "${seen[$name]+set}" ]; then _PE="the shape name \"$name\" is given twice"; return 1; fi
+    seen[$name]=1
+  done
+  return 0
+}
+
 _cfg_legal() { # <type>
   local lo hi
   case $1 in
@@ -188,6 +214,7 @@ _cfg_legal() { # <type>
     ints) echo "distinct positive integers of at most 9 digits, separated by spaces" ;;
     mounts) echo "<relative source>:<container path>[:ro] words separated by spaces, or empty" ;;
     args) echo "words separated by single spaces; no quotes, tabs or * ? [" ;;
+    'shapes?') echo "<name>:<K>:<N>:<layers> words separated by spaces (K a multiple of 8, N of 16, a name once), or empty" ;;
   esac
 }
 
@@ -228,6 +255,7 @@ _cfg_check() {
     ints) _cfg_ints_problem "$v" ;;
     args) _cfg_args_problem "$v" ;;
     mounts) _cfg_mounts_problem "$v" ;;
+    'shapes?') _cfg_shapes_problem "$v" ;;
   esac
   [ -z "$_PE" ]
 }
@@ -319,7 +347,7 @@ _cfg_where() { printf '%s' "${_C_FILE[$1]:-${_C_SRC[${_F_SCOPE[$1]}]}}"; }
 
 # Cross-field checks: only over fields that passed their own check.
 _cfg_cross() {
-  local n word source
+  local n word source k
   local -a words
   if [ -z "${_C_BAD[PREFILL_LENS]+set}${_C_BAD[MAX_MODEL_LEN]+set}" ]; then
     for n in ${_C_VAL[PREFILL_LENS]}; do
@@ -333,6 +361,14 @@ _cfg_cross() {
       source="${word%%:*}"
       [ -e "${_C_VAL[PATCH_DIR]}/$source" ] || _cfg_error "$(_cfg_where MOUNTS)" "${_C_LINE[MOUNTS]-}" MOUNTS \
         "\"$source\" does not exist under PATCH_DIR" "every source is a file or folder under PATCH_DIR"
+    done
+  fi
+  if [ -z "${_C_BAD[LINEAR_SHAPES]+set}${_C_BAD[LINEAR_GROUP_SIZE]+set}" ]; then
+    read -r -a words <<< "${_C_VAL[LINEAR_SHAPES]}"
+    for word in "${words[@]}"; do
+      IFS=: read -r _ k _ <<< "$word"
+      ((k % _C_VAL[LINEAR_GROUP_SIZE] == 0)) || _cfg_error "$(_cfg_where LINEAR_SHAPES)" "${_C_LINE[LINEAR_SHAPES]-}" LINEAR_SHAPES \
+        "\"$word\": K $k is not a multiple of LINEAR_GROUP_SIZE ${_C_VAL[LINEAR_GROUP_SIZE]}" "every K a multiple of LINEAR_GROUP_SIZE"
     done
   fi
   if [ -z "${_C_BAD[PROD_CONTAINER]+set}${_C_BAD[CONTAINER_PREFIX]+set}" ] && [[ ${_C_VAL[PROD_CONTAINER]} == "${_C_VAL[CONTAINER_PREFIX]}"* ]]; then
