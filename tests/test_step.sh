@@ -330,6 +330,52 @@ t_l12d_the_wait_bound_is_a_knob_and_a_bad_knob_is_refused() {
   kill_recorded_pids "$CASE"
 }
 
+# 2026-11-03, the first GPU acceptance runs: `wslc stop vllm` returned 1 in 2 of 6 admissions and the server WAS stopped (the next admission found it not listed). The
+# admission cost a failed try each time. So after a stop that returns non-zero the admission lists again: a server that is gone is a stopped server.
+t_a_stop_that_returns_1_but_leaves_no_server_is_counted_as_stopped_and_the_step_goes_on() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=1 # a failed try would end the step with exit 7
+  prod_running
+  printf '1\n' > "$STUB/stop-gone-vllm" # the stop returns 1 and the container is gone
+  assert_exit 0 "a stop that returns 1 and removes the server does not fail the admission" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_contains "$OUT" "stop returned 1 but the server is gone: counted as stopped" "the log says what was decided"
+  assert_contains "$OUT" "stopped the operator's server (stop 1 of 3)" "the stop is charged against MAX_SERVER_STOPS like any stop"
+  assert_not_contains "$OUT" "failed try" "no failed try was counted"
+  assert_eq "1" "$(count_calls wslc stop)" "the server was not stopped a second time"
+  assert_exit 0 "the worker ran" -- test -f "$STUB/worker.done"
+  assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_stop_that_fails_and_leaves_the_server_listed_is_a_failed_try_and_wslcs_own_text_is_logged() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=2
+  prod_running
+  printf '1\n' > "$STUB/stop-fail-vllm" # the stop returns 1 and the server keeps running
+  assert_exit 0 "the second admission stops the server" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_contains "$OUT" "failed try 1 of 2: admit stopping vllm failed (code 1)" "the first stop is a failed try, as before"
+  assert_contains "$OUT" "stop output: stub: stop failed (scripted): vllm" "and what wslc printed is in the log (the cause is no longer lost)"
+  assert_not_contains "$OUT" "but the server is gone" "a server that is still listed is not counted as stopped"
+  assert_eq "2" "$(count_calls wslc stop)" "the stop was repeated by the next admission"
+  assert_exit 0 "the server is back" -- test -f "$STUB/containers/vllm.pid"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_stop_that_fails_and_a_list_that_fails_after_it_stays_a_failed_try_because_nothing_proves_the_server_is_gone() {
+  step_setup "$FUNCNAME"
+  step_cfg MAX_FAILED_TRIES=2
+  prod_running
+  printf '1\n' > "$STUB/stop-gone-vllm" # the server IS gone, but the list that would show it fails
+  printf '1 1\n' > "$STUB/fail-list" # the admission's own list is the first: good; the list after the stop is the next: it fails
+  assert_exit 0 "the step ends well: the retry finds the server not listed" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_contains "$OUT" "failed try 1 of 2: admit stopping vllm failed (code 1)" "an unreadable list does not count the server as stopped"
+  assert_not_contains "$OUT" "but the server is gone" "no claim without a list"
+  assert_eq "1" "$(count_calls wslc stop)" "one stop call: the retry found the server not listed"
+  kill_recorded_pids "$CASE"
+}
+
 # a step command that exits 2 for a passing error (argparse, grep, curl) is a failed try like any other code: the series worker's refusal is the
 # typed outcome KIND=refused, never the bare exit code
 t_a_step_command_that_exits_2_is_a_failed_try_and_is_retried() {

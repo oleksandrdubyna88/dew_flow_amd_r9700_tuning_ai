@@ -3,7 +3,7 @@
 > Status: **IMPLEMENTED, 2026-11-03.** (Approved 2026-11-01: `review_plan` proceed, 2 reviewers, 8 findings
 > accepted.) Scope: this new repository — the scripts written ad hoc during the 2026-10-25..11-01 tuning
 > work, made model-independent, tested and documented. Epics E1, E2 and E3 are merged; the GPU acceptance runs
-> that were not made are the open items of [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md) (see *Deviations*).
+> that were not made were the open items of [PLAN_r9700_gpu_acceptance.md](PLAN_r9700_gpu_acceptance.md) (see *Deviations*); they were made on the evening of 2026-11-03 and that plan is IMPLEMENTED.
 
 ## Plan changes
 
@@ -70,7 +70,7 @@ models/qwen3.6-35b-a3b-gptq.env  models/qwen3.8-27b-awq.env   (examples, from th
 machine.env.example            wslc path, image, work dirs, restore command, RAM limit, quiet load, deadline
 tests/                         pytest (python) + plain-bash tests with stub wslc/powershell
 research/                      architecture.md, module_tests.md, README.md
-todo/                          the open plan (the GPU acceptance runs), README.md
+todo/                          no open plan (its README.md says so); the GPU acceptance runs are PLAN_r9700_gpu_acceptance.md in research/
 POST_DEPLOY.md  README.md  LICENSE  .github/workflows (family checks, tests)
 ```
 
@@ -154,7 +154,7 @@ Which epic builds each step, and where a step is divided by file, is in *Epics* 
 - [x] `README.md` quick start, `research/architecture.md`, `research/module_tests.md`, `POST_DEPLOY.md`.
 - [ ] The acceptance runs on the R9700 passed and are recorded. **Partly:** the `series` run is done and recorded
       (`research/ACCEPTANCE_series_2026-11-02.md`); the other four are templates marked NOT RUN, moved to
-      [PLAN_r9700_gpu_acceptance.md](../todo/PLAN_r9700_gpu_acceptance.md).
+      [PLAN_r9700_gpu_acceptance.md](PLAN_r9700_gpu_acceptance.md). (Since 2026-11-03 evening the four are run and recorded, with deviations: see that plan.)
 - [x] The repository is public, its family checks are green, and the conventions consumer list names it. (Read 2026-11-03: `PUBLIC`; the consumers row is in `dew_flow_conventions`.)
 
 ## Epics
@@ -288,5 +288,5 @@ What shipped differently from the plan (2026-11-03). The stories documents ([E1]
 - **The stop budget changed twice.** E1 made `MAX_SERVER_STOPS` a per-invocation count of admissions (A20); E3.S2 made it a RUN-WIDE cap on ACTUAL stops of the operator's server (a quiet chain of any length is one stop). After the E3.S2 review a bound on exit-3 repeats was added (3 x `MAX_FAILED_TRIES`, then exit 8; test knob `R9700_MAX_WAIT_REPEATS`), `machine.env` is hashed at the start of a chain (a changed file is refused at the next step), and a signal never overwrites a final step state.
 - **The test base is one Node runner** for Python and bash tests (`tests/run.mjs`, one owned run folder, a process cap added after the shim incident of 2026-11-02), not pytest alone. The document checks live in `tests/test_docs.sh` and the unfinished-work scan is `tests/check_static.sh --unfinished` (a flag named `--planned` would match the phrase it forbids).
 - **`POST_DEPLOY.md`:** items 2 and 3 (the two series dry runs) became one item; the freed slot is item 3, `run --check` over the operator's plan. Twelve items.
-- **Acceptance.** Only `series` was run (2026-11-02, one round, with the quiet gate off by the operator's decision: `ta3` PASS). The three E3 templates and the E2 template are NOT RUN because the operator holds GPU runs. The run template predicts 35 to 40 minutes, not the 12 to 15 the E3 plan said: it left out the quiet waits (three checks 300 s apart before each step).
+- **Acceptance.** Only `series` was run (2026-11-02, one round, with the quiet gate off by the operator's decision: `ta3` PASS). The three E3 templates and the E2 template are NOT RUN because the operator holds GPU runs. The run template predicts 35 to 40 minutes, not the 12 to 15 the E3 plan said: it left out the quiet waits (three checks 300 s apart before each step). (The four were run on the evening of 2026-11-03: [PLAN_r9700_gpu_acceptance.md](PLAN_r9700_gpu_acceptance.md); the run record took 14 min 54 s because the quiet gate was off by the operator's decision.)
 - **Not built, on purpose:** an end-to-end A/B of a tile patch (a measurement of a future day, not a toolkit feature); `moe-tune merge` and `activate` as steps of a plan (refused: they change what a server reads).

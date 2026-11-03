@@ -10,7 +10,7 @@
 #                                           stdout and stderr merged                                                           the argument
 #   wslc_argv_text <args...>                prints `wslc <args...>`, one line, for a dry run; calls nothing
 #   wslc_list                               the names of the listed containers (list --no-trunc), one per line                 60 s
-#   wslc_stop <name>                        stop <name>; the child's output is discarded                                       60 s
+#   wslc_stop <name>                        stop <name>; prints the child's output (stdout and stderr, CRs removed, the last 20 lines)  60 s
 #   wslc_logs <name>                        logs <name>, stderr merged                                                         60 s
 #   win_ram_mb                              the Windows "Available MBytes" integer; nothing and 1 when it is not an integer    30 s
 #   win_disk_newest                         the newest disk/stornvme System-log record id; nothing and 1 when not an integer   60 s
@@ -308,10 +308,22 @@ wslc_list() {
   return "${PIPESTATUS[0]}"
 }
 
+# wslc_stop <name>: stops <name> and prints what wslc printed (stdout and stderr merged, CRs removed, the LAST 20 lines): a caller that does not
+# want it redirects it, a caller that logs a failure shows it (2026-11-03: a stop returned 1 and nothing said why, because the output was dropped).
+# NOT a pipeline: the call must stay in the caller's own shell, where the caller's TERM trap and the interrupt chain of _adapter_wait reach it (a
+# pipeline would be a fork that the caller's trap cannot end until the call does). The output goes through a process substitution on a descriptor
+# of its own, closed when the call ends; the substitution is waited for, so everything it keeps is printed before the function returns.
 wslc_stop() {
   _adapter_drop_lock
   _adapter_name_ok wslc_stop "${1:-}" || return 2
-  _adapter_call --merge 60 "$R9700_WSLC" stop "$1" > /dev/null
+  local _adapter_fd _adapter_ps _adapter_rc
+  exec {_adapter_fd}> >(exec 9>&-; tr -d '\r' | tail -n 20)
+  _adapter_ps=$!
+  _adapter_call --merge 60 "$R9700_WSLC" stop "$1" >&"$_adapter_fd" {_adapter_fd}>&- # the child gets the pipe as its stdout ONLY: a copy on this descriptor would outlive it in a process the stop leaves running
+  _adapter_rc=$?
+  exec {_adapter_fd}>&-
+  wait "$_adapter_ps" 2> /dev/null
+  return "$_adapter_rc"
 }
 
 wslc_logs() {

@@ -225,7 +225,7 @@ template_problems() {
     }' "$1"
 }
 
-t_doc12_the_acceptance_templates_exist_say_not_run_and_hold_a_prediction_before_empty_observed_sections() {
+t_doc12_the_acceptance_records_exist_and_are_well_formed_each_says_not_run_with_empty_sections_or_run_and_is_filled_in() {
   local name
   for name in linear_bench prefixtest run; do
     assert_exit 0 "ACCEPTANCE_${name}_2026-11-03.md exists" -- test -f "$REPO/research/ACCEPTANCE_${name}_2026-11-03.md"
@@ -236,7 +236,8 @@ t_doc12_the_acceptance_templates_exist_say_not_run_and_hold_a_prediction_before_
 }
 
 t_doc13_the_template_check_is_alive_over_planted_records() {
-  local src="$REPO/research/ACCEPTANCE_prefixtest_2026-11-03.md" bad="$R9700_TEST_ROOT/acc-bad.md"
+  # the source is a fixture: a copy of a NOT RUN template (the prefixtest one as it was before its run). The real records are filled in now, so none of them can be the source.
+  local src="$FIX/acceptance_template.md" bad="$R9700_TEST_ROOT/acc-bad.md"
   sed -E '0,/^\(paste the output of bin\/r9700 init\)$/s//The output was: ok/' "$src" > "$bad"
   assert_exit 1 "a NOT RUN record with a pasted output is refused" -- template_problems "$bad"
   assert_contains "$OUT" "not a (paste" "and says why"

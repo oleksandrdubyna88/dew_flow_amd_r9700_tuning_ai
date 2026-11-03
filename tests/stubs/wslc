@@ -293,6 +293,22 @@ case "${1:-}" in
         exit 1
       fi
     fi
+    # stop-gone-<name>: a count; that many `stop <name>` calls fail with code 1 AND the container is gone (the stop worked, the call said it did not: the
+    # observed case of 2026-11-03, two of six stops of the operator's server). The stop prints its error as a failing stop does, then the container is
+    # stopped as usual, so the next `list` has no such container.
+    if [ -f "$R9700_STUB_DIR/stop-gone-${2:-}" ]; then
+      read -r _left < "$R9700_STUB_DIR/stop-gone-${2:-}"
+      if [ "${_left:-0}" -gt 0 ]; then
+        printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/stop-gone-${2:-}"
+        stub_container_stop "${2:-}" > /dev/null 2>&1
+        echo "stub: stop returned an error but the container is gone (scripted): ${2:-}" >&2
+        exit 1
+      fi
+    fi
+    # stop-lines-<name>: a number; `stop <name>` prints that many lines first (a verbose wslc: the adapter keeps only the last twenty)
+    if [ -f "$R9700_STUB_DIR/stop-lines-${2:-}" ]; then
+      for _n in $(seq 1 "$(cat "$R9700_STUB_DIR/stop-lines-${2:-}")"); do printf 'stub stop noise %s%s\n' "$_n" "$CRLF"; done
+    fi
     # on-stop-<name>: a script of the test (E1.S3), run once that container is stopped: the way a test changes the world at a unit's end
     if stub_container_stop "${2:-}"; then
       printf '%s%s\n' "$2" "$CRLF"

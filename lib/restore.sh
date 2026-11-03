@@ -160,7 +160,8 @@ container_stop_all() {
     [[ -n $name && $name == "$R9700_CONTAINER_PREFIX"* ]] || continue
     mkdir -p "$run/guard"
     wslc_logs "$name" 2> /dev/null | tail -n 200 9>&- > "$run/guard/$stamp-$name.tail.log"
-    wslc_stop "$name"
+    # wslc_stop prints the text of the stop (the step logs it); the restore reports the code only
+    wslc_stop "$name" > /dev/null
     rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "r9700: restore: $name did not stop (code $rc)" >&2

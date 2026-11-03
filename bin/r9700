@@ -133,7 +133,7 @@ init_check_containers() {
   if grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing"; then init_line "$R9700_PROD_CONTAINER:" running; else init_line "$R9700_PROD_CONTAINER:" "not running"; fi
   while read -r name; do
     [[ -n $name && $name == "$R9700_CONTAINER_PREFIX"* ]] || continue
-    if wslc_stop "$name"; then stopped+=("$name"); else init_problem "leftover containers:" "$name did not stop"; fi
+    if wslc_stop "$name" > /dev/null; then stopped+=("$name"); else init_problem "leftover containers:" "$name did not stop"; fi
   done <<< "$listing"
   if [ "${#stopped[@]}" -gt 0 ]; then init_line "leftover containers:" "stopped ${stopped[*]}"; else init_line "leftover containers:" none; fi
 }

@@ -52,7 +52,7 @@ t_a_stopped_container_is_not_listed_and_stopping_an_unknown_one_fails() {
   wslc_run r9700tune-a img > /dev/null
   wslc_run r9700tune-b img > /dev/null
   assert_eq "r9700tune-a r9700tune-b" "$(wslc_list | sort | tr '\n' ' ' | sed 's/ $//')" "both listed"
-  wslc_stop r9700tune-a
+  wslc_stop r9700tune-a > /dev/null
   assert_eq "r9700tune-b" "$(wslc_list)" "only the stopped one is gone"
   assert_exit 1 "stopping an unknown container fails" -- wslc_stop r9700tune-zzz
   kill_recorded_pids "$CASE"
@@ -339,14 +339,37 @@ t_R9700_STUB_DELAY_S_makes_every_bench_serve_call_wait_that_long() {
   kill_recorded_pids "$CASE"
 }
 
+# stop-gone-<name>: the observed case of 2026-11-03 (a stop that returned 1 while the server was gone), so a test of the step can play it
+t_a_scripted_stop_can_return_1_and_still_remove_the_container_and_the_knob_is_spent_after_its_count() {
+  setup_case "$FUNCNAME"
+  wslc_run r9700tune-a img > /dev/null
+  printf '1\n' > "$STUB/stop-gone-r9700tune-a"
+  assert_exit 1 "the scripted stop returns 1" -- wslc stop r9700tune-a
+  assert_contains "$ERR" "stub: stop returned an error but the container is gone" "with its error line"
+  assert_eq "" "$(wslc_list)" "and the container is gone: the next list does not show it"
+  wslc_run r9700tune-a img > /dev/null
+  assert_exit 0 "after its count the knob is spent: the next stop works" -- wslc stop r9700tune-a
+  assert_eq "" "$(wslc_list)" "and the container is gone"
+  kill_recorded_pids "$CASE"
+}
+
+t_the_stop_lines_knob_makes_a_stop_print_that_many_lines_first() {
+  setup_case "$FUNCNAME"
+  wslc_run r9700tune-a img > /dev/null
+  printf '30\n' > "$STUB/stop-lines-r9700tune-a"
+  assert_exit 0 "a verbose stop" -- wslc stop r9700tune-a
+  assert_eq "31" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "thirty noise lines and the name"
+  kill_recorded_pids "$CASE"
+}
+
 t_the_on_stop_hook_of_a_container_runs_once_the_container_is_stopped() {
   setup_case "$FUNCNAME"
   printf 'touch "%s/hooked"\n' "$CASE" > "$STUB/on-stop-r9700tune-a"
   wslc_run r9700tune-a img > /dev/null
   wslc_run r9700tune-b img > /dev/null
-  wslc_stop r9700tune-b
+  wslc_stop r9700tune-b > /dev/null
   assert_missing "$CASE/hooked" "another container's stop does not run it"
-  wslc_stop r9700tune-a
+  wslc_stop r9700tune-a > /dev/null
   assert_exit 0 "its own stop does" -- test -f "$CASE/hooked"
   kill_recorded_pids "$CASE"
 }

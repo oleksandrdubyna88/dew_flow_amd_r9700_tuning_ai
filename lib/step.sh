@@ -86,6 +86,25 @@ _step_guards_start() {
   _RG_WATCHERS+=("$!")
 }
 
+# _step_stop_prod: the stop of the operator's server. 0 it is stopped; 1 it is not (or cannot be shown to be gone): _RG_FAIL says what, and the caller counts a failed try.
+# A stop that returns non-zero is not yet a failure (2026-11-03: `wslc stop vllm` returned 1 in 2 of 6 admissions and the server WAS stopped: the next admission found
+# it not listed, and each time a failed try was charged for a stop that had worked). So after a non-zero stop the list is read again: a server that is no longer listed
+# is a stopped server (one line says so; the stop stays charged, as every stop is), one that is still listed, or a list that cannot be read, is the failed try it always was.
+# What wslc printed (the last 20 lines, from wslc_stop) is logged on a failure, line by line, so the cause is no longer lost.
+_step_stop_prod() {
+  local rc out line listing
+  _rg_run out wslc_stop "$R9700_PROD_CONTAINER"
+  rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  while IFS= read -r line; do [ -n "$line" ] && rg_log "stop output: $line"; done <<< "$out"
+  if _rg_run listing wslc_list && ! grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing"; then
+    rg_log "stop returned $rc but the server is gone: counted as stopped"
+    return 0
+  fi
+  _RG_FAIL="stopping $R9700_PROD_CONTAINER failed (code $rc)"
+  return 1
+}
+
 # _step_admit <label> <command...>: the stop of the operator's server and the start of the worker. 0 the worker runs (WORKER_PID, behind an open
 # gate, guards on); 1 a failed admission (_RG_FAIL says what; the caller counts a try); 8 the stop budget is used; 9 the disk gate stopped.
 _step_admit() {
@@ -113,9 +132,7 @@ _step_admit() {
   cp -p "$MARKER_FILE" "$RUN_DIR/steps/$n.marker" # the evidence if the supervisor dies before the worker keys; replaced below, with this time
   if [ "$listed" = yes ]; then
     _RG_STOPS=$((_RG_STOPS + 1))
-    wslc_stop "$R9700_PROD_CONTAINER"
-    rc=$?
-    if [ "$rc" -ne 0 ]; then _RG_FAIL="stopping $R9700_PROD_CONTAINER failed (code $rc)"; return 1; fi
+    _step_stop_prod || return 1
     rg_log "stopped the operator's server (stop $_RG_STOPS of $R9700_MAX_SERVER_STOPS)"
   fi
   rg_log admitted

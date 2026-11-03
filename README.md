@@ -134,7 +134,7 @@ moe-tune chunk qwen3.6-35b-a3b-gptq --keys "24 32" --coarse --chunk night-24-32
   night must not decide that). `--dry-run` inside a plan line is refused.
 - **Stops and budgets.** A quiet chain stops your server ONCE and restores it ONCE, however many steps it has. `MAX_SERVER_STOPS` is the cap for the whole run and counts real stops: the only
   other stop is after your server was given back while the PC was busy (a step that exits 3 waits for a quiet PC; it is not a failed try). A step that would pass the cap is refused before it starts
-  anything, and your server is still restored. `MAX_FAILED_TRIES` is per step. A step whose worker exits 3 more than 3 x `MAX_FAILED_TRIES` times ends with exit 8. Do not edit `machine.env` during a night: the next step is refused (exit 2). The deadline is per run: a step that ends with 6 ends the chain, and the later steps are not started.
+  anything, and your server is still restored. If `wslc stop` returns an error code but your server is no longer listed, the stop counts as done (the supervisor log says `stop returned <code> but the server is gone: counted as stopped`); if it is still listed, the step counts a failed try and the log shows what `wslc` printed (`stop output: <line>`). `MAX_FAILED_TRIES` is per step. A step whose worker exits 3 more than 3 x `MAX_FAILED_TRIES` times ends with exit 8. Do not edit `machine.env` during a night: the next step is refused (exit 2). The deadline is per run: a step that ends with 6 ends the chain, and the later steps are not started.
 - **How a stop reads.** The exit code is the code of the step that stopped the chain (the table below; `run` adds no code), and stderr says where: `r9700: run: stopped at step 2 of 3 (<the line>): 7`.
   `<RESULTS_DIR>/runs/<id>/run.txt` has the plan's path and hash and one line per step: `<k> <state> <code> <line>`, the state one of `not-started`, `running`, `done`, `stopped`, `interrupted`;
   `plan.txt` beside it is the plan as it was run.
@@ -170,8 +170,8 @@ Tests: `node tests/run.mjs` (stubs only: no container and no GPU) and `bash test
 ## Acceptance on the GPU
 
 CI uses stubs, so every flow that needs the GPU, the real `wslc` and the real image has a record in `research/`, made by the operator's session on the R9700 PC before a release: the prediction is written first, the observed sections are filled after the run,
-and a record that was not run says NOT RUN in its title and keeps its observed sections empty. `research/ACCEPTANCE_series_2026-11-02.md` has been run. `research/ACCEPTANCE_moe_tune_2026-11-02.md`, `research/ACCEPTANCE_linear_bench_2026-11-03.md`,
-`research/ACCEPTANCE_prefixtest_2026-11-03.md` and `research/ACCEPTANCE_run_2026-11-03.md` are NOT RUN: the operator holds GPU runs for now. `POST_DEPLOY.md` is the short list to run on the PC after every install or update.
+and a record that was not run says NOT RUN in its title and keeps its observed sections empty. `research/ACCEPTANCE_series_2026-11-02.md` was run on 2026-11-02; `research/ACCEPTANCE_moe_tune_2026-11-02.md`, `research/ACCEPTANCE_linear_bench_2026-11-03.md`,
+`research/ACCEPTANCE_prefixtest_2026-11-03.md` and `research/ACCEPTANCE_run_2026-11-03.md` were run on 2026-11-03, so all five are filled in, each with its observed-against-predicted table (where the run differed from the prediction, the record says so). `POST_DEPLOY.md` is the short list to run on the PC after every install or update.
 
 ## The family
 
