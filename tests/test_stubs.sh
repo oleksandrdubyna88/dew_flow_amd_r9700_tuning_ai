@@ -362,6 +362,22 @@ t_the_stub_harness_writes_as_many_prompt_results_as_answers_prompts_n_says() {
   kill_recorded_pids "$CASE"
 }
 
+# E3.S2 review item: a stub container started while TERM is ignored (the supervisor's cleanup phase ignores it, and the restore starts the operator's server there) was stopped only after
+# a fixed 3 s wait for a TERM it never acts on, against the adapter's 6 s ceiling at the test scale: under load the stop timed out ("admit stopping vllm failed (code 124)").
+t_stopping_a_stub_container_that_ignores_term_takes_a_fraction_of_the_adapters_ceiling() {
+  setup_case "$FUNCNAME"
+  local start end elapsed
+  ( trap '' TERM; wslc run -d --rm --name vllm img > /dev/null )
+  start="$(date +%s.%N)"
+  assert_exit 0 "wslc stop of a container that ignores TERM" -- wslc stop vllm
+  end="$(date +%s.%N)"
+  elapsed="$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }')"
+  if awk -v e="$elapsed" 'BEGIN { exit !(e < 1.5) }'; then assert_eq ok ok "it ended in ${elapsed} s, well inside the ceiling of 6 s"; else assert_eq "< 1.5 s" "$elapsed s" "a stop of a TERM-ignoring container waited for a signal it ignores"; fi
+  assert_eq "0" "$(wslc list | grep -c '^vllm')" "and the container is gone"
+  ( trap '' TERM; wslc run -d --rm --name vllm img > /dev/null )
+  assert_exit 0 "the adapter's wslc_stop under its real ceiling of this scale" -- wslc_stop vllm
+}
+
 t_the_fail_list_file_makes_the_next_list_calls_fail_after_the_skipped_good_ones() {
   setup_case "$FUNCNAME"
   printf '1 2\n' > "$STUB/fail-list"

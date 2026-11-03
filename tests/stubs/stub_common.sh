@@ -152,7 +152,8 @@ stub_require_running() {
   return 1
 }
 
-# stub_container_stop <name>: TERM, then waits until the process is gone; 1 when there was no such running container
+# stub_container_stop <name>: TERM, then waits (at most about half a second) until the process is gone, then KILL (the wait was 3 s once and a stop of a TERM-ignoring container then timed out
+# against the adapter's 6 s ceiling of the test scale under load); 1 when there was no such running container
 stub_container_stop() {
   local file="$R9700_STUB_DIR/containers/$1.pid" pid _ticks i
   if ! stub_alive "$file"; then
@@ -161,7 +162,7 @@ stub_container_stop() {
   fi
   read -r pid _ticks < "$file"
   kill -TERM "$pid" 2> /dev/null
-  for i in $(seq 1 30); do stub_alive "$file" || break; sleep 0.1; done
+  for i in $(seq 1 10); do stub_alive "$file" || break; sleep 0.05; done # 0.5 s: a TERM that is acted on works at once; one that is ignored must not hold the caller for seconds
   # A container started during a cleanup phase (the restore) inherits the ignored TERM of the supervisor's cleanup, as any child of a shell
   # that ran `trap '' TERM` does: stopping it takes the KILL, as `wslc stop` ends a container that does not leave in time.
   stub_alive "$file" && kill -KILL "$pid" 2> /dev/null
