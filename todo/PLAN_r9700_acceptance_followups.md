@@ -42,5 +42,5 @@ change it causes gets its own tests.
 
 - [x] The decision on item 1 is recorded (option b, 2026-11-04), and item 12 of `POST_DEPLOY.md` matches it.
 - [x] Item 2's answer is in `research/module_tests.md` (listed, 2026-11-04).
-- [ ] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10. (2026-11-04: items 4–10 observed at 2f8cd71; item 2 held after the 10:32 bug check.)
+- [x] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10 (2026-11-04: items 4–10 at 2f8cd71, item 2 at 4b81cc9 after the hold of the 10:32 bug check was lifted).
 - [ ] KW5 passes under load, with the cause named in the commit.
