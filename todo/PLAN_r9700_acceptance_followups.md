@@ -35,9 +35,9 @@ of the operator's server that returns non-zero but leaves no server); these four
      the stub's one-shot `list-delay-once` makes one `wslc list` take 8 s; with the old scale the test fails with that very line, with the new one it passes (RED, GREEN, RED, 2026-11-04).
    - [ ] `test_run.sh` R3 and R17 `restore-5`, the other window: under heavy load (4 busy loops on 2 cores) the chains still ended 5 with the new ceilings, so a window other than the
      `wslc list` ceiling runs out too. Not found; no load has shown 0 failures.
-   - [ ] Four more assertions fail at a high load, on main too, so this branch did not cause them (2026-11-04, all at the machine's own load from other work, no burners). `test_adapter.sh` "the nine calls
+   - [ ] More assertions fail at a high load, the two wall-clock ones on main too, so this branch did not cause those (2026-11-04, all at the machine's own load from other work, no burners). `test_adapter.sh` "the nine calls
      took under 8 s" and `test_guards.sh` "the supervisor waited for the guard's call" (< 2 s, actual 2.30 and 2.51 s) assert a wall clock: run alternately, main and this branch each failed 1 of 3 (main at load 30, the branch
-     at load 16; the other runs passed at loads from 5 to 37). `test_adapter.sh` "nine hung stubs were recorded" (8) and `test_restore.sh` "two transient failures of the list" (`vllm not ready after 67 s`, exit 5) and a deadline
+     at load 16; the other runs passed at loads from 5 to 37), and in the re-run of the failed files both failed on the branch at load 15. `test_adapter.sh` "nine hung stubs were recorded" (8) and `test_restore.sh` "two transient failures of the list" (`vllm not ready after 67 s`, exit 5) and a deadline
      test of `test_series.sh` ("fbase-1 is recorded") failed once, in one full run at load 24 to 35, and passed when the files ran again at load 15. Not fixed.
 
 ## Build order
@@ -57,4 +57,4 @@ change it causes gets its own tests.
 - [x] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10 (2026-11-04: items 4–10 at 2f8cd71, item 2 at 4b81cc9 after the hold of the 10:32 bug check was lifted).
 - [x] KW5 passes under load, with the cause named in the commit (b16baf8); R18 likewise (0e02531).
 - [ ] R3 and R17 `restore-5`: the other window that still ended 5 under heavy load is found and fixed (item 4). Until then this plan stays in `todo/`.
-- [ ] The four assertions of `test_adapter.sh`, `test_guards.sh`, `test_restore.sh` and `test_series.sh` that fail at a high load (item 4) pass there, or a wall-clock assertion is replaced by one that does not depend on the load.
+- [ ] The assertions of `test_adapter.sh`, `test_guards.sh`, `test_restore.sh` and `test_series.sh` that fail at a high load (item 4) pass there, or a wall-clock assertion is replaced by one that does not depend on the load.
