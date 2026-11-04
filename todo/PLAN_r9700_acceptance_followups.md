@@ -25,15 +25,16 @@ of the operator's server that returns non-zero but leaves no server); these four
    record the answer in `research/module_tests.md`.
 3. **Re-run `POST_DEPLOY.md` items 2 and 4–10 against the installed version** (the stamp of 2026-11-03 observed items 1, 3, 11 and 12
    only at d983327). Write the new stamp with date, target and version.
-4. [ ] **Load flakes of the test suite** (2026-11-04: reproduced under bounded CPU burners; KW5 and R18 fixed RED-GREEN-RED, R3 and R17 mitigated).
+4. [ ] **Load flakes of the test suite** (2026-11-04: reproduced under bounded CPU burners; KW5, R18 and the ceiling part of R3/R17 fixed RED-GREEN-RED; one other window left).
    - [x] `test_kernels.sh` KW5 (failed once in a full run on 2026-11-03): the test's deadline window (`short_variant`, T_STOP 9.4 s after the start at scale 25) was already
      past when the unit's container started on a starved CPU (`the part stays` 0 != 1; the step ended 8 or 5). KW5 now runs at scale 5 (T_STOP 35 s).
    - [x] `test_run.sh` R18 (exit 137 instead of 8): `step_end` killed the supervisor after its fixed 60 s while the four-step chain with three busy waits needed more on a starved CPU;
      `run_end` now takes a bound and R18 gives it 300 s (the busy-wait watcher lives as long).
-   - [ ] `test_run.sh` R3 ("and no failed try", admitted 5 != 4) and R17 `restore-5` (7 != 5), seen once in CI: the mechanism was reproduced (`failed try 1 of 3: admit the container list failed ()`:
-     an adapter call's ceiling, `wslc list` 60 s / 10 = 6 s, ran out in a stub call that only waited for the CPU, then a repeated admission and a chain ending 7), and the chain tests now
-     divide the ceilings by 2 (`run_setup`). NOT proven: under heavy load (4 busy loops on 2 cores) the chains still end 5, because other windows (the final restore's readiness window)
-     run out too; no loop showed 0 failures. Open until a load that fails the old code and passes the new one is found; one stub call delayed past 6 s and under 30 s may prove the ceiling part without any load.
+   - [x] `test_run.sh` R3 and R17 `restore-5`, the ceiling part (seen once in CI): an adapter call's ceiling (`wslc list` 60 s / 10 = 6 s) ran out in a stub call that only waited
+     for the CPU: `failed try 1 of 3: admit the container list failed ()`, a repeated admission, a chain ending 7. `run_setup` now divides the ceilings by 2 (30 s). Proven without load by R3b:
+     the stub's one-shot `list-delay-once` makes one `wslc list` take 8 s; with the old scale the test fails with that very line, with the new one it passes (RED, GREEN, RED, 2026-11-04).
+   - [ ] `test_run.sh` R3 and R17 `restore-5`, the other window: under heavy load (4 busy loops on 2 cores) the chains still ended 5 with the new ceilings, so a window other than the
+     `wslc list` ceiling runs out too. Not found; no load has shown 0 failures.
 
 ## Build order
 
@@ -51,4 +52,4 @@ change it causes gets its own tests.
 - [x] Item 2's answer is in `research/module_tests.md` (listed, 2026-11-04).
 - [x] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10 (2026-11-04: items 4–10 at 2f8cd71, item 2 at 4b81cc9 after the hold of the 10:32 bug check was lifted).
 - [x] KW5 passes under load, with the cause named in the commit (b16baf8); R18 likewise (0e02531).
-- [ ] R3 and R17 `restore-5`: a load or a stub delay that fails the old ceilings passes the new ones, and the other window that still ended 5 is found (item 4). Until then this plan stays in `todo/`.
+- [ ] R3 and R17 `restore-5`: the other window that still ended 5 under heavy load is found and fixed (item 4). Until then this plan stays in `todo/`.
