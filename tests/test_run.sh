@@ -575,7 +575,7 @@ t_r18_the_stop_cap_is_reached_only_by_real_stops_and_a_refused_admission_launche
   run_bg "$PLAN"
   wait_for "$R9700_RESULTS_DIR/runs" 100
   quiet_after_each_restore
-  run_end 3000 # four steps and three busy waits: 15 s idle, over 60 s on a starved CPU (2026-11-04: the 60 s end killed the supervisor, exit 137); the watcher lives 300 s
+  run_end 300 # four steps and three busy waits: 15 s idle, over 60 s on a starved CPU (2026-11-04: the 60 s end killed the supervisor, exit 137); the watcher lives 300 s
   local run
   run="$(last_run_dir)"
   assert_eq "8" "$SRC" "exit 8"

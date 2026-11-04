@@ -12,7 +12,7 @@
 #   step_cfg KEY=VALUE...    appends lines to this case's machine.env (a variant of the fixture)
 #   step_bg <args...>        `bin/r9700 step <args...>` in the background as a user runs it (the config variables of the test shell are
 #                            not handed on); sets SUP, its pid; output in $CASE/sup.out and $CASE/sup.err
-#   step_end                 waits (bounded, 60 s) for SUP; sets SRC (its exit code), SOUT and SERR
+#   step_end [<seconds>]     waits (bounded, 60 s by default) for SUP; sets SRC (its exit code), SOUT and SERR
 #   run_dir_of               the one run folder under RESULTS_DIR/runs (waits up to 10 s for it)
 #   count_calls <stub> <word> lines of the call log of that stub that hold the word as an argument
 #   stamp_of <regex>         the epoch stamp of the first call-log line matching the regex
@@ -91,10 +91,10 @@ step_bg() {
   guard_pid "$SUP" "supervisor-$SUP"
 }
 
-# step_end [<tenths of a second>]: waits for the supervisor, at most 60 s by default; a long chain says how long it may take (a starved CPU makes each of its steps slower)
+# step_end [<seconds>]: waits for the supervisor, at most 60 s by default (checked 10 times a second); a long chain says how long it may take (a starved CPU makes each of its steps slower)
 step_end() {
   local i
-  for i in $(seq 1 "${1:-600}"); do kill -0 "$SUP" 2> /dev/null || break; sleep 0.1; done
+  for i in $(seq 1 "$(( ${1:-60} * 10 ))"); do kill -0 "$SUP" 2> /dev/null || break; sleep 0.1; done
   if kill -0 "$SUP" 2> /dev/null; then kill -KILL "$SUP"; fi
   wait "$SUP" 2> /dev/null
   SRC=$?

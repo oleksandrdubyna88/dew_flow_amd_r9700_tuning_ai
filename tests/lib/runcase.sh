@@ -7,7 +7,7 @@
 #   plan_write <name> <line>...       $CASE/<name>.plan with one step per argument; sets PLAN
 #   plan_fixture <name>               a copy of tests/fixtures/plans/<name>.plan in $CASE (it is the operator's file: a test never edits the tracked one); sets PLAN
 #   run_bg <args...>                  `bin/r9700 run <args...>` in the background as a user runs it (SUP, then run_end); the output is in $CASE/sup.*
-#   run_end                           step_end under another name: SRC, SOUT, SERR
+#   run_end [<seconds>]               step_end under another name (the optional bound is in whole seconds, default 60): SRC, SOUT, SERR
 #   run_txt                           the run.txt of the newest run folder
 #   run_state <k>                     "<state> <code>" of step k in that run.txt
 #   run_inline_bg <plan> <function>...  `verb_run <plan>` in a background subshell of THIS shell after sourcing bin/r9700, with the named functions (defined by the test) put over the
