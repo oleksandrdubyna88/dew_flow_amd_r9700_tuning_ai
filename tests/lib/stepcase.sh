@@ -91,9 +91,10 @@ step_bg() {
   guard_pid "$SUP" "supervisor-$SUP"
 }
 
+# step_end [<tenths of a second>]: waits for the supervisor, at most 60 s by default; a long chain says how long it may take (a starved CPU makes each of its steps slower)
 step_end() {
   local i
-  for i in $(seq 1 600); do kill -0 "$SUP" 2> /dev/null || break; sleep 0.1; done
+  for i in $(seq 1 "${1:-600}"); do kill -0 "$SUP" 2> /dev/null || break; sleep 0.1; done
   if kill -0 "$SUP" 2> /dev/null; then kill -KILL "$SUP"; fi
   wait "$SUP" 2> /dev/null
   SRC=$?

@@ -39,7 +39,7 @@ busy_hook() { printf 'printf "%s\\n" > "%s"\n' "$BUSY_LINE" "$CASE/loadavg" > "$
 quiet_after_each_restore() {
   (
     local seen=0 n i
-    for i in $(seq 1 2400); do
+    for i in $(seq 1 6000); do
       n="$(grep -c "$RESTORE_WAIT_LINE" "$(last_run_dir)/supervisor.log" 2> /dev/null)"
       if [ "${n:-0}" -gt "$seen" ]; then seen="$n"; printf '0.50 0.40 0.30 1/100 1\n' > "$CASE/loadavg"; fi
       sleep 0.05
@@ -575,7 +575,7 @@ t_r18_the_stop_cap_is_reached_only_by_real_stops_and_a_refused_admission_launche
   run_bg "$PLAN"
   wait_for "$R9700_RESULTS_DIR/runs" 100
   quiet_after_each_restore
-  run_end
+  run_end 3000 # four steps and three busy waits: 15 s idle, over 60 s on a starved CPU (2026-11-04: the 60 s end killed the supervisor, exit 137); the watcher lives 300 s
   local run
   run="$(last_run_dir)"
   assert_eq "8" "$SRC" "exit 8"

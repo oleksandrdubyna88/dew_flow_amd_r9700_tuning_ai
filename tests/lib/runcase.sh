@@ -52,7 +52,7 @@ run_bg() {
   guard_pid "$SUP" "supervisor-$SUP"
 }
 
-run_end() { step_end; }
+run_end() { step_end "$@"; }
 
 run_txt() { cat "$(last_run_dir)/run.txt"; }
 
