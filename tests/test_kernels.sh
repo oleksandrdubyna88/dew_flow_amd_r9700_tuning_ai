@@ -142,7 +142,12 @@ t_kw12_the_placement_and_the_identity_check_without_an_argument_still_read_the_m
 
 t_kw5_the_deadline_ends_a_linear_unit_as_kind_deadline_and_the_part_becomes_evidence() {
   kernels_setup "$FUNCNAME"
-  short_variant
+  # Time scale 5, NOT short_variant's 25: T_STOP 35 s after the start, the cleanup budget 85 s and the readiness window 12 s (short_variant: 9.4 s, 17 s, 2.4 s). The deadline is fixed when
+  # the supervisor starts; the quiet wait, the disk gate, the stop of the operator's server and the worker's identity check come after it, and the cleanup and the restore must end
+  # inside the budget. On a starved CPU (2026-11-04: 7 busy loops on one core) the 9.4 s window had passed before the unit's container started (step ended 8, "not quiet before the
+  # deadline", no part) and the restore did not become ready in 2.4 s (step ended 5): a race between the test's clock and the load, not a defect of the product.
+  step_cfg MAX_RUN_MINUTES=10 CLEANUP_BUDGET_S=425 READY_TIMEOUT_S=60
+  export R9700_TIME_SCALE=5
   printf '100\n' > "$STUB/answers/linear_seconds"
   moe_sup_bg body_linear
   step_end
