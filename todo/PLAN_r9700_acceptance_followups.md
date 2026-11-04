@@ -33,7 +33,7 @@ of the operator's server that returns non-zero but leaves no server); these four
    - [ ] `test_run.sh` R3 ("and no failed try", admitted 5 != 4) and R17 `restore-5` (7 != 5), seen once in CI: the mechanism was reproduced (`failed try 1 of 3: admit the container list failed ()`:
      an adapter call's ceiling, `wslc list` 60 s / 10 = 6 s, ran out in a stub call that only waited for the CPU, then a repeated admission and a chain ending 7), and the chain tests now
      divide the ceilings by 2 (`run_setup`). NOT proven: under heavy load (4 busy loops on 2 cores) the chains still end 5, because other windows (the final restore's readiness window)
-     run out too; no loop showed 0 failures. Open until a load that fails the old code and passes the new one is found.
+     run out too; no loop showed 0 failures. Open until a load that fails the old code and passes the new one is found; one stub call delayed past 6 s and under 30 s may prove the ceiling part without any load.
 
 ## Build order
 
@@ -50,4 +50,5 @@ change it causes gets its own tests.
 - [x] The decision on item 1 is recorded (option b, 2026-11-04), and item 12 of `POST_DEPLOY.md` matches it.
 - [x] Item 2's answer is in `research/module_tests.md` (listed, 2026-11-04).
 - [x] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10 (2026-11-04: items 4–10 at 2f8cd71, item 2 at 4b81cc9 after the hold of the 10:32 bug check was lifted).
-- [x] KW5 passes under load, with the cause named in the commit (b16baf8); R18 likewise. R3 and R17 `restore-5` stay open (item 4).
+- [x] KW5 passes under load, with the cause named in the commit (b16baf8); R18 likewise (0e02531).
+- [ ] R3 and R17 `restore-5`: a load or a stub delay that fails the old ceilings passes the new ones, and the other window that still ended 5 is found (item 4). Until then this plan stays in `todo/`.
