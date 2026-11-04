@@ -21,6 +21,10 @@ PLAN_FIXTURES="$HERE/fixtures/plans"
 
 run_setup() {
   series_setup "$1" "${2:-$MODEL_35B}"
+  # The chain tests divide the adapter's ceilings by 2, not by setup_case's 10: a chain makes many stub calls and, on a starved CPU (a CI runner, or busy loops beside
+  # the suite, 2026-11-04), one of them ran past 6 s (`wslc list`, 60 s / 10) or the supervisor past 3 s (the worker's 30 s gate) while it only waited for the CPU:
+  # `failed try 1 of 3: admit the container list failed ()` and a repeated admission, so a chain ended 7, 5 or 9 (R3, R17 restore-5) instead of the exit under test.
+  export R9700_CEILING_SCALE=2
   MODEL="${2:-$MODEL_35B}"
   KMODEL="$(basename "$MODEL" .env)"
   RECS="$R9700_RESULTS_DIR/kernels-$KMODEL"
