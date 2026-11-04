@@ -95,7 +95,10 @@ step_bg() {
 step_end() {
   local i
   for i in $(seq 1 "$(( ${1:-60} * 10 ))"); do kill -0 "$SUP" 2> /dev/null || break; sleep 0.1; done
-  if kill -0 "$SUP" 2> /dev/null; then kill -KILL "$SUP"; fi
+  if kill -0 "$SUP" 2> /dev/null; then
+    echo "step_end: the supervisor ($SUP) was still running after ${1:-60} s: killed (exit 137)" >&2 # the test's own stderr, never SOUT or SERR (those are read from the supervisor's files below)
+    kill -KILL "$SUP"
+  fi
   wait "$SUP" 2> /dev/null
   SRC=$?
   SOUT="$(cat "$CASE/sup.out")"
