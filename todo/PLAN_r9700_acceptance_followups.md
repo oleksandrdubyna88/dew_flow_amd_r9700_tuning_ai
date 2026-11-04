@@ -20,7 +20,7 @@ of the operator's server that returns non-zero but leaves no server); these four
    faster, the operator copies the activated file by hand (README already says so), and item 12 now checks that copy. Option (c), a verb
    that copies with a backup and a hash check, is not built: today's A/B found no gain, and it is worth it only if tuned files ship often.
    No production change was made. The operator may still choose (a) or (c).
-2. **Is a foreground `wslc run --rm --name <n>` listed by `wslc list` while it runs?** UNVERIFIED (the chunk, A/B and linear units use it;
+2. **DONE 2026-11-04 — yes, it is listed.** Observed during a real chunk (09:16–09:24 UTC, `research/module_tests.md` § *What it does not prove*); the watcher's raw log was lost when a Windows bug check at 10:32 cleared `/tmp`, the lines read before it are quoted there. Original question: **Is a foreground `wslc run --rm --name <n>` listed by `wslc list` while it runs?** UNVERIFIED (the chunk, A/B and linear units use it;
    the stubs assume yes). Observe it once during the next real foreground unit (`wslc list` from a second shell while a chunk runs), and
    record the answer in `research/module_tests.md`.
 3. **Re-run `POST_DEPLOY.md` items 2 and 4–10 against the installed version** (the stamp of 2026-11-03 observed items 1, 3, 11 and 12
@@ -41,6 +41,6 @@ change it causes gets its own tests.
 ## Definition of Done
 
 - [x] The decision on item 1 is recorded (option b, 2026-11-04), and item 12 of `POST_DEPLOY.md` matches it.
-- [ ] Item 2's answer is in `research/module_tests.md`.
-- [ ] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10.
+- [x] Item 2's answer is in `research/module_tests.md` (listed, 2026-11-04).
+- [ ] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10. (2026-11-04: items 4–10 observed at 2f8cd71; item 2 held after the 10:32 bug check.)
 - [ ] KW5 passes under load, with the cause named in the commit.
