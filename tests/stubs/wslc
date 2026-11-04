@@ -174,7 +174,13 @@ run_container() {
 
 # <stub dir>/fail-list: "<count>" or "<skip> <count>": after <skip> good `list` calls (default 0) the next <count> calls fail (a transient fault of wslc)
 list_containers() {
-  local file skip=0 count=0
+  local file skip=0 count=0 delay
+  # list-delay-once: this call sleeps that many seconds, and removes the file first, so that no other call (a retry, a second list at the same moment) is delayed too
+  if [ -f "$R9700_STUB_DIR/list-delay-once" ]; then
+    delay="$(cat "$R9700_STUB_DIR/list-delay-once")"
+    rm -f "$R9700_STUB_DIR/list-delay-once"
+    sleep "$delay"
+  fi
   if [ -f "$R9700_STUB_DIR/fail-list" ]; then
     read -r skip count < "$R9700_STUB_DIR/fail-list"
     if [ -z "$count" ]; then count="$skip"; skip=0; fi

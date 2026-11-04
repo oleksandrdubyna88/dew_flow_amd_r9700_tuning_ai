@@ -25,8 +25,20 @@ of the operator's server that returns non-zero but leaves no server); these four
    record the answer in `research/module_tests.md`.
 3. **Re-run `POST_DEPLOY.md` items 2 and 4–10 against the installed version** (the stamp of 2026-11-03 observed items 1, 3, 11 and 12
    only at d983327). Write the new stamp with date, target and version.
-4. **The `test_kernels.sh` KW5 load flake.** It failed once in a full suite run on 2026-11-03 and passed alone twice and in the next full run;
-   the cause is not found. Reproduce it under load (the full suite beside a CPU burner), find the race, and fix it RED-GREEN-RED.
+4. [ ] **Load flakes of the test suite** (2026-11-04: reproduced under bounded CPU burners; KW5, R18 and the ceiling part of R3/R17 fixed RED-GREEN-RED; one other window left).
+   - [x] `test_kernels.sh` KW5 (failed once in a full run on 2026-11-03): the test's deadline window (`short_variant`, T_STOP 9.4 s after the start at scale 25) was already
+     past when the unit's container started on a starved CPU (`the part stays` 0 != 1; the step ended 8 or 5). KW5 now runs at scale 5 (T_STOP 35 s).
+   - [x] `test_run.sh` R18 (exit 137 instead of 8): `step_end` killed the supervisor after its fixed 60 s while the four-step chain with three busy waits needed more on a starved CPU;
+     `run_end` now takes a bound and R18 gives it 300 s (the busy-wait watcher lives as long).
+   - [x] `test_run.sh` R3 and R17 `restore-5`, the ceiling part (seen once in CI): an adapter call's ceiling (`wslc list` 60 s / 10 = 6 s) ran out in a stub call that only waited
+     for the CPU: `failed try 1 of 3: admit the container list failed ()`, a repeated admission, a chain ending 7. `run_setup` now divides the ceilings by 2 (30 s). Proven without load by R3b:
+     the stub's one-shot `list-delay-once` makes one `wslc list` take 8 s; with the old scale the test fails with that very line, with the new one it passes (RED, GREEN, RED, 2026-11-04).
+   - [ ] `test_run.sh` R3 and R17 `restore-5`, the other window: under heavy load (4 busy loops on 2 cores) the chains still ended 5 with the new ceilings, so a window other than the
+     `wslc list` ceiling runs out too. Not found; no load has shown 0 failures.
+   - [ ] More assertions fail at a high load, the two wall-clock ones on main too, so this branch did not cause those (2026-11-04, all at the machine's own load from other work, no burners). `test_adapter.sh` "the nine calls
+     took under 8 s" and `test_guards.sh` "the supervisor waited for the guard's call" (< 2 s, actual 2.30 and 2.51 s) assert a wall clock: run alternately, main and this branch each failed 1 of 3 (main at load 30, the branch
+     at load 16; the other runs passed at loads from 5 to 37), and in the re-run of the failed files both failed on the branch at load 15. `test_adapter.sh` "nine hung stubs were recorded" (8) and `test_restore.sh` "two transient failures of the list" (`vllm not ready after 67 s`, exit 5) and a deadline
+     test of `test_series.sh` ("fbase-1 is recorded") failed once, in one full run at load 24 to 35, and passed when the files ran again at load 15. Not fixed.
 
 ## Build order
 
@@ -43,4 +55,6 @@ change it causes gets its own tests.
 - [x] The decision on item 1 is recorded (option b, 2026-11-04), and item 12 of `POST_DEPLOY.md` matches it.
 - [x] Item 2's answer is in `research/module_tests.md` (listed, 2026-11-04).
 - [x] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10 (2026-11-04: items 4–10 at 2f8cd71, item 2 at 4b81cc9 after the hold of the 10:32 bug check was lifted).
-- [ ] KW5 passes under load, with the cause named in the commit.
+- [x] KW5 passes under load, with the cause named in the commit (b16baf8); R18 likewise (0e02531).
+- [ ] R3 and R17 `restore-5`: the other window that still ended 5 under heavy load is found and fixed (item 4). Until then this plan stays in `todo/`.
+- [ ] The assertions of `test_adapter.sh`, `test_guards.sh`, `test_restore.sh` and `test_series.sh` that fail at a high load (item 4) pass there, or a wall-clock assertion is replaced by one that does not depend on the load.
