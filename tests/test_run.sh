@@ -35,14 +35,17 @@ wait_log() {
 # busy_hook <container name>: the stub runs this script when that container is stopped: the PC turns busy at the end of that step
 busy_hook() { printf 'printf "%s\\n" > "%s"\n' "$BUSY_LINE" "$CASE/loadavg" > "$STUB/on-stop-${R9700_CONTAINER_PREFIX}$1"; }
 
-# quiet_after_each_restore: a bounded background watcher: every time the supervisor log shows one more busy-wait restore, the PC turns quiet again
+# quiet_after_each_restore: a bounded background watcher: every time the supervisor log shows one more busy-wait restore, the PC turns quiet again. It ends when the supervisor
+# ($SUP, set by run_bg) ends, and in any case after 2000 polls 0.2 s apart (400 s: above the 300 s of the longest run_end); it polls slowly because it must not add load to the
+# starved CPU it exists for (the supervisor's quiet check ticks every 3 s, so 0.2 s is quick enough).
 quiet_after_each_restore() {
   (
     local seen=0 n i
-    for i in $(seq 1 6000); do
+    for i in $(seq 1 2000); do
+      kill -0 "$SUP" 2> /dev/null || break
       n="$(grep -c "$RESTORE_WAIT_LINE" "$(last_run_dir)/supervisor.log" 2> /dev/null)"
       if [ "${n:-0}" -gt "$seen" ]; then seen="$n"; printf '0.50 0.40 0.30 1/100 1\n' > "$CASE/loadavg"; fi
-      sleep 0.05
+      sleep 0.2
     done
   ) &
   guard_pid "$!" "watcher-$!"
@@ -205,6 +208,27 @@ t_r3_a_step_that_exits_3_is_repeated_after_the_quiet_wait_and_is_not_counted_as_
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore: the wait stayed under the 900 s phase, so the mid-run restore did not fire"
   assert_eq "1" "$(prod_stops)" "one stop"
   assert_eq "2" "$(cat "$CASE/c3.count")" "the stand-in ran twice"
+}
+
+# ---- R3b: a slow stub call under the ceilings of the chain tests ----------------------------------------------------------------------------------------------------------
+
+t_r3b_a_wslc_list_slower_than_6_s_and_faster_than_30_s_is_not_a_failed_try() {
+  run_setup "$FUNCNAME"
+  plan_write r3b "prefixtest $KMODEL --name p1"
+  # The chain tests run with R9700_CEILING_SCALE=2 (run_setup), so a `wslc list` has a ceiling of 60 s / 2 = 30 s; with the scale 10 of setup_case it would be 6 s and this
+  # 8 s list would be cut (code 124, `admit the container list failed ()`): the failed try that a starved CPU caused in CI (R3, R17 restore-5). The sleeps run at scale 100,
+  # so the 8 s are 800 s of the run: far inside the deadline (MAX_RUN_MINUTES), which therefore cannot be what the test sees.
+  printf '8\n' > "$STUB/list-delay-once"
+  assert_exit 0 "a one-step chain whose first wslc list takes 8 s" -- r9700 run "$PLAN"
+  local run log
+  run="$(last_run_dir)"
+  log="$(cat "$run/supervisor.log")"
+  assert_missing "$STUB/list-delay-once" "the delay was used by a wslc list call (the stub removes the file when it sleeps)"
+  assert_not_contains "$log" "failed try" "no failed try"
+  assert_not_contains "$log" "deadline" "and no deadline in the log"
+  assert_eq "1" "$(grep -c ' admitted$' <<< "$log")" "one admission"
+  assert_eq "done 0" "$(run_state 1)" "run.txt: done"
+  assert_eq "1" "$(prod_stops)" "one stop"
 }
 
 # ---- R4: the deadline ------------------------------------------------------------------------------------------------------------------------------------------------
@@ -575,7 +599,7 @@ t_r18_the_stop_cap_is_reached_only_by_real_stops_and_a_refused_admission_launche
   run_bg "$PLAN"
   wait_for "$R9700_RESULTS_DIR/runs" 100
   quiet_after_each_restore
-  run_end 300 # four steps and three busy waits: 15 s idle, over 60 s on a starved CPU (2026-11-04: the 60 s end killed the supervisor, exit 137); the watcher lives 300 s
+  run_end 300 # four steps and three busy waits: 15 s idle, over 60 s on a starved CPU (2026-11-04: the 60 s end killed the supervisor, exit 137); the watcher above polls for 400 s
   local run
   run="$(last_run_dir)"
   assert_eq "8" "$SRC" "exit 8"
