@@ -12,12 +12,14 @@ of the operator's server that returns non-zero but leaves no server); these four
 
 ## The items
 
-1. **POST_DEPLOY item 12 fails on this PC, by design of the PC, and needs the operator's decision.** The operator's server mounts its MoE
-   config from the start script's own patch folder at `/vllm-tuned-moe` (`VLLM_TUNED_CONFIG_FOLDER=/vllm-tuned-moe`, seen with
-   `wslc inspect vllm` on 2026-11-03); it does not mount `<WORK_DIR>/r9700/moe/<model>/merged`. So `moe-tune activate` can never reach it,
-   which is exactly the failure item 12 names. Options for the operator: (a) point the start script's MoE mount at the exchange folder;
-   (b) keep the two apart and copy an activated file into the patch folder by hand after a passed A/B; (c) a toolkit verb that does (b)
-   with a backup. Until decided, item 12 stays "fails on this PC" in the stamp. No code changes before the decision.
+1. **DONE 2026-11-04 — POST_DEPLOY item 12: the folders stay apart (option b).** The operator's server mounts its MoE config from the
+   start script's own patch folder at `/vllm-tuned-moe` (`wslc inspect vllm`, 2026-11-03), not `<WORK_DIR>/r9700/moe/<model>/merged`. Decided
+   by the question consultants (coai consult d4a08b51, two answers agreeing), verified on the code: `moe-tune ab` needs `activate.env`
+   (lib/moe.sh `_moe_b_file`), so activation comes BEFORE the A/B verdict, and pointing production at the exchange folder (a) would let an
+   untested candidate reach production at its next restart. So the toolkit never writes into the production folder; after an A/B that says
+   faster, the operator copies the activated file by hand (README already says so), and item 12 now checks that copy. Option (c), a verb
+   that copies with a backup and a hash check, is not built: today's A/B found no gain, and it is worth it only if tuned files ship often.
+   No production change was made. The operator may still choose (a) or (c).
 2. **Is a foreground `wslc run --rm --name <n>` listed by `wslc list` while it runs?** UNVERIFIED (the chunk, A/B and linear units use it;
    the stubs assume yes). Observe it once during the next real foreground unit (`wslc list` from a second shell while a chunk runs), and
    record the answer in `research/module_tests.md`.
@@ -38,7 +40,7 @@ change it causes gets its own tests.
 
 ## Definition of Done
 
-- [ ] The operator's decision on item 1 is recorded, and item 12 of `POST_DEPLOY.md` matches it.
+- [x] The decision on item 1 is recorded (option b, 2026-11-04), and item 12 of `POST_DEPLOY.md` matches it.
 - [ ] Item 2's answer is in `research/module_tests.md`.
 - [ ] A new `POST_DEPLOY.md` stamp covers items 2 and 4–10.
 - [ ] KW5 passes under load, with the cause named in the commit.
