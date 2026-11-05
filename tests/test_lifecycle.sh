@@ -104,7 +104,7 @@ t_init_keeps_the_newest_ten_restore_folders_and_removes_only_older_ones_by_exact
 
 t_l4_a_restore_that_never_becomes_ready_stops_the_invocation_with_exit_5() {
   lc_setup "$FUNCNAME"
-  write_marker
+  write_marker READY_TIMEOUT_S=60 # asserts the contract line's SHAPE only, so the window may be the short one: 0.6 s, not the helper's 33 s
   printf 'fail\n' > "$STUB/answers/ready"
   assert_exit 5 "init after a marker whose restore never gets ready" -- r9700 init --model "$MODEL_35B"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "exactly one stderr line"
@@ -117,7 +117,7 @@ t_l4_a_restore_that_never_becomes_ready_stops_the_invocation_with_exit_5() {
 
 t_l5_a_server_that_answers_models_but_not_a_completion_is_not_ready() {
   lc_setup "$FUNCNAME"
-  write_marker
+  write_marker READY_TIMEOUT_S=1500 # asserts a REAL answer in the line (`completion: HTTP 500)`): the first probe must be answered inside the window, and 0.6 s is too short for a busy CPU; 15 s (the test then takes 15 s: the server never gets ready)
   printf 'models-only\n' > "$STUB/answers/ready"
   assert_exit 5 "init" -- r9700 init --model "$MODEL_35B"
   assert_contains "$ERR" "completion: HTTP 500)" "the stderr line ends with the failing check"
@@ -409,6 +409,7 @@ t_l20_an_unknown_verb_is_refused_naming_the_legal_ones() {
 t_l21_a_worker_whose_supervisor_died_before_the_gate_exits_4_by_itself_and_touches_nothing() {
   lc_setup "$FUNCNAME"
   prod_running
+  export R9700_CEILING_SCALE=10 # the subject is a gate wait that gives up: 30 s / 10 = 3 s, not lc_setup's 15 s (the log is awaited for 10 s below)
   fake_supervisor kill-before-gate || return
   gone "$SUP"
   assert_exit 0 "the marker exists" -- test -f "$MARKER_FILE"

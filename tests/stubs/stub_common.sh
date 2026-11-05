@@ -14,6 +14,7 @@
 #   moe_clear_mode  the same words, but for the MoE cache-clear container only (a foreground run named ...moe-clear), so a test can hang the
 #                  cleanup hook without hanging the restore
 #   list-delay-once    seconds the NEXT `wslc list` sleeps before it answers (that call removes the file: a one-shot slow list, for a test of an adapter ceiling)
+#   list-delay-until-<name>  seconds EVERY `wslc list` sleeps while no container <name> runs (a slow list before the start of a server; each delayed call is noted in list-delayed.log)
 #   stop-delay-<name>  seconds `wslc stop <name>` sleeps before it stops the container (a slow stop, for a test that interrupts one)
 #   stop-fail-<name>   a count: that many `wslc stop <name>` calls fail (code 1) and leave the container running, then stops work again
 #   stop-gone-<name>   a count: that many `wslc stop <name>` calls return 1 AND remove the container (the stop worked, the call said it did not)

@@ -231,6 +231,47 @@ t_r3b_a_wslc_list_slower_than_6_s_and_faster_than_30_s_is_not_a_failed_try() {
   assert_eq "1" "$(prod_stops)" "one stop"
 }
 
+# ---- R3c: a slow stub call inside the readiness window of the chain's own restore ---------------------------------------------------------------------------------------
+
+t_r3c_a_wslc_list_slower_than_12_s_and_faster_than_32_s_inside_the_final_restore_is_not_a_failed_restore() {
+  run_setup "$FUNCNAME"
+  plan_write r3c "prefixtest $KMODEL --name p1"
+  # The window of the final restore is READY_TIMEOUT_S: the fixture's default 1200 s was 12 s at scale 100, and run_setup now sets the config's largest value, 3235 s = 32 s. A starved CPU
+  # (2026-11-04) made one stub call longer than the 12 s: `vllm not ready after ... s`, exit 5 for a chain that had finished (R3). A wrapper of the start script arms a one-shot 15 s delay
+  # AFTER the stub started the server, so the only list that can take it is one inside the restore's ready_wait: over the old 12 s, under the new 32 s and under the list's own
+  # ceiling (30 s, run_setup). The sleeps run at scale 100: the 15 s are 1500 s of the run, far inside MAX_RUN_MINUTES.
+  mkdir -p "$CASE/wrap"
+  printf '#!/usr/bin/env bash\n"%s/pwsh.exe" "$@"\nrc=$?\nprintf "15\\n" > "$R9700_STUB_DIR/list-delay-once"\nexit "$rc"\n' "$STUBS" > "$CASE/wrap/pwsh.exe"
+  chmod +x "$CASE/wrap/pwsh.exe"
+  PATH="$CASE/wrap:$PATH"
+  assert_exit 0 "a one-step chain whose final restore's first list takes 15 s" -- r9700 run "$PLAN"
+  local run log
+  run="$(last_run_dir)"
+  log="$(cat "$run/supervisor.log")"
+  assert_not_contains "$ERR" "not ready" "no restore line on stderr"
+  assert_missing "$STUB/list-delay-once" "the delay was used by a wslc list call after the start script ran (the stub removes the file when it sleeps)"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "one restore: the final one is the call that armed the delay"
+  assert_contains "$log" " restored" "the final restore ended restored"
+  assert_eq "done" "$(cat "$run/status")" "the status is done"
+  assert_eq "done 0" "$(run_state 1)" "run.txt: done"
+}
+
+# ---- R7b: a dry run asks the recorded-chunk question too -------------------------------------------------------------------------------------------------------------------
+
+t_r7b_run_dry_run_of_a_moe_tune_chunk_the_real_run_refuses_is_refused_and_a_matching_record_prints_its_container_line() {
+  run_setup "$FUNCNAME"
+  plan_write r7b "moe-tune chunk $KMODEL --keys 24 --out m"
+  local rec="$R9700_RESULTS_DIR/m/chunks/experts-full-24"
+  mkdir -p "$rec"
+  printf 'CHUNK=experts-full-24\nLAYER=experts\nACT_DTYPE=float16\n' > "$rec/chunk.env" # recorded for float16; the 35B file serves bfloat16
+  assert_exit 2 "run --dry-run over a record of another activation dtype" -- r9700 run "$PLAN" --dry-run
+  assert_contains "$ERR" "moe-tune: chunk experts-full-24 is recorded with ACT_DTYPE float16 but this run tunes for bfloat16" "the real run's line"
+  assert_not_contains "$OUT" "dry-run: wslc run" "and no container line"
+  printf 'CHUNK=experts-full-24\nLAYER=experts\nACT_DTYPE=bfloat16\n' > "$rec/chunk.env"
+  assert_exit 0 "run --dry-run over a matching record" -- r9700 run "$PLAN" --dry-run
+  assert_contains "$OUT" "dry-run: wslc run --rm --name ${R9700_CONTAINER_PREFIX}moe-tune-experts-full-24 " "the container line is printed as before"
+}
+
 # ---- R4: the deadline ------------------------------------------------------------------------------------------------------------------------------------------------
 
 t_r4_the_deadline_ends_the_chain_and_the_restore_is_inside_the_budget() {

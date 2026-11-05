@@ -181,6 +181,15 @@ list_containers() {
     rm -f "$R9700_STUB_DIR/list-delay-once"
     sleep "$delay"
   fi
+  # list-delay-until-<name>: seconds EVERY `wslc list` sleeps while no container <name> is running (the delayed call is noted in list-delayed.log: "<epoch.ns> <seconds>").
+  # The restore's preparation lists come before the start of the operator's server and ready_wait's after it, so a test can slow the first group and leave the second alone.
+  for file in "$R9700_STUB_DIR"/list-delay-until-*; do
+    [ -f "$file" ] || continue
+    stub_alive "$R9700_STUB_DIR/containers/${file##*/list-delay-until-}.pid" && continue
+    delay="$(cat "$file")"
+    printf '%s %s\n' "$(date +%s.%N)" "$delay" >> "$R9700_STUB_DIR/list-delayed.log"
+    sleep "$delay"
+  done
   if [ -f "$R9700_STUB_DIR/fail-list" ]; then
     read -r skip count < "$R9700_STUB_DIR/fail-list"
     if [ -z "$count" ]; then count="$skip"; skip=0; fi

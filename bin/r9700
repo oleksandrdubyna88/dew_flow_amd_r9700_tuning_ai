@@ -458,6 +458,11 @@ moe_chunk_body() {
   [ "$_MOE_COARSE" = yes ] && search=coarse
   echo "moe-tune: outdir $outdir"
   moe_place || return 2
+  if [ -d "$outdir/chunks/$_MOE_CHUNK" ]; then
+    # a record of another layer or activation dtype (or of none, as the older ones) is not "done" for this run: refused here, before the admission, so nothing is stopped,
+    # and before the dry run, so that a dry run does not say yes to a command the real run refuses
+    moe_recorded_check "$outdir" "$_MOE_CHUNK" "$_MOE_LAYER" || { echo "r9700: moe-tune: $_MOE_REASON" >&2; return 2; }
+  fi
   if [ "$_MOE_DRY" = yes ]; then moe_dry_run chunk "$_MOE_MODEL" "$_MOE_LAYER" "$search" "$_MOE_CHUNK" "${keys[@]}"; return $?; fi
   if [ -d "$outdir/chunks/$_MOE_CHUNK" ]; then
     echo "moe-tune: chunk $_MOE_CHUNK is recorded, nothing to do"
