@@ -39,11 +39,15 @@ of the operator's server that returns non-zero but leaves no server); these four
      took under 8 s" and `test_guards.sh` "the supervisor waited for the guard's call" (< 2 s, actual 2.30 and 2.51 s) assert a wall clock: run alternately, main and this branch each failed 1 of 3 (main at load 30, the branch
      at load 16; the other runs passed at loads from 5 to 37), and in the re-run of the failed files both failed on the branch at load 15. `test_adapter.sh` "nine hung stubs were recorded" (8) and `test_restore.sh` "two transient failures of the list" (`vllm not ready after 67 s`, exit 5) and a deadline
      test of `test_series.sh` ("fbase-1 is recorded") failed once, in one full run at load 24 to 35, and passed when the files ran again at load 15. Not fixed.
+5. [ ] **`moe-tune` tunes the main layer with FP16 activations, but production serves BF16** (added 2026-11-05, the operator agreed to a todo, not a run). `lib/moe.sh` `moe_layer_words` sets `MOE_TUNE_ACT_DTYPE=bfloat16` only for
+   the `draft` layer, and `experts` takes the default of `benchmark_moe.py`, FP16 on ROCm. So the tuned int4 file and the "not faster" verdict of 2026-11-02 are FP16 results. Measured with BF16 (`dew_flow_benchmark · research/RESULTS_vllm_029_r9700_speed_options.md`
+   § 15.3): the file is 16.4 % slower than the default at M=640, and a `"512"` entry gives −13.5 % to −28.3 % at M 512–768 as a kernel. End to end (§ 15.5) that entry shows no measured gain, so this is not urgent. Another R9700 owner's BF16 tuning reached the
+   same tiles at most batch sizes, which suggests little more to find. To do when a model is tuned next: let `experts` tune and A/B with the activation dtype the model serves, with a test of the argv, and say which dtype in the README. No re-tune is planned before that.
 
 ## Build order
 
 Item 1 first (a question to the operator; it decides whether item 12 changes). Items 2 and 3 at the next GPU window, in one sitting. Item 4
-is CPU-only and can run any time.
+is CPU-only and can run any time. Item 5 is a small code change with its own tests, then a GPU run only if a re-tune is wanted.
 
 ## Test plan
 
@@ -58,3 +62,4 @@ change it causes gets its own tests.
 - [x] KW5 passes under load, with the cause named in the commit (b16baf8); R18 likewise (0e02531).
 - [ ] R3 and R17 `restore-5`: the other window that still ended 5 under heavy load is found and fixed (item 4). Until then this plan stays in `todo/`.
 - [ ] The assertions of `test_adapter.sh`, `test_guards.sh`, `test_restore.sh` and `test_series.sh` that fail at a high load (item 4) pass there, or a wall-clock assertion is replaced by one that does not depend on the load.
+- [ ] `moe-tune` uses the activation dtype the model serves for the `experts` layer, with a test, and the README says so (item 5).
