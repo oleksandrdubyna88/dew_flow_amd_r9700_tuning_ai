@@ -1,6 +1,6 @@
 # research — the system as it is
 
-Architecture, module deep-dives and records of decisions that shipped. Open work is in `../todo/`: [the items the GPU acceptance left open](../todo/PLAN_r9700_acceptance_followups.md).
+Architecture, module deep-dives and records of decisions that shipped. Open work would be in `../todo/`; no plan is open.
 
 | Document | What |
 |---|---|
@@ -14,6 +14,7 @@ Architecture, module deep-dives and records of decisions that shipped. Open work
 | [ACCEPTANCE_prefixtest_2026-11-03.md](ACCEPTANCE_prefixtest_2026-11-03.md) | the acceptance run of `prefixtest` on the R9700 (one fresh server, against results § 13.3), RUN 2026-11-03: the prediction written before it, the observed output and the table against it |
 | [ACCEPTANCE_run_2026-11-03.md](ACCEPTANCE_run_2026-11-03.md) | the acceptance run of `run` on the R9700 (a two-step plan, a forced RAM stop and one restore, then the clean chain), RUN 2026-11-03: the prediction written before it, the observed output of both runs and the tables against it |
 | [PLAN_r9700_gpu_acceptance.md](PLAN_r9700_gpu_acceptance.md) | IMPLEMENTED (2026-11-03): the plan of the four GPU acceptance runs (`moe-tune`, `linear-bench`, `prefixtest`, `run`) and the `POST_DEPLOY.md` items they observe, with its deviations: the quiet gate off, the forced `activate`, the stop of the operator's server that returned 1 with the server gone, and what stays open |
+| [PLAN_r9700_acceptance_followups.md](PLAN_r9700_acceptance_followups.md) | IMPLEMENTED (2026-11-05): the items the GPU acceptance of 2026-11-03 left open: the operator's decision on POST_DEPLOY item 12, the foreground `wslc list` answer, the new stamp, the load flakes of the tests (windows the CPU cannot use up, a fake clock for the fit check) and `moe-tune` tuning the experts layer for the activation dtype the model serves (`MOE_ACT_DTYPE`), with its deviations: the load level, what is and is not proven about R3, the weakened count of recorded hung stubs, no GPU run |
 | [PLAN_r9700_tuning_toolkit.md](PLAN_r9700_tuning_toolkit.md) | IMPLEMENTED (2026-11-03): the plan of the whole toolkit (goal, design, inputs, epics) and its deviations |
 | [PLAN_r9700_tuning_toolkit_E1.md](PLAN_r9700_tuning_toolkit_E1.md) | IMPLEMENTED: the stories of E1 (config, verdict, harness, test base; lifecycle and restore; run identity and the series), the amendments A1 to A24 and the deviations |
 | [PLAN_r9700_tuning_toolkit_E2.md](PLAN_r9700_tuning_toolkit_E2.md) | IMPLEMENTED: the stories of E2 (the pure parts of MoE tuning; the chunk and the A/B as workers; `moe-tune`) and the deviations |

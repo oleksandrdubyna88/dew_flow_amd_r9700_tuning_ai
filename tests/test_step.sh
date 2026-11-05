@@ -505,6 +505,7 @@ t_l20_a_bad_label_or_a_bad_step_command_is_refused_before_anything_else() {
 t_l21_the_real_step_killed_before_the_gate_leaves_a_worker_that_only_waits_and_the_next_invocation_restores() {
   step_setup "$FUNCNAME"
   prod_running
+  export R9700_CEILING_SCALE=10 # the subject is a gate wait that gives up: 30 s / 10 = 3 s, not lc_setup's 15 s (the log is awaited for 10 s below)
   export R9700_TEST_KILL_BEFORE_GATE=1
   assert_exit 137 "step with the kill hook" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
   unset R9700_TEST_KILL_BEFORE_GATE

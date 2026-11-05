@@ -68,6 +68,17 @@ and `--rule-keys` (the keys the decision is about; both required), `--reps` (def
 `moe-<model name>`). `--dry-run` prints the resolved container lines; it starts no container and does not stop your server, but it is not read-only: like `activate` it runs under the supervisor, so it takes the lock (exit 4 when another run holds it), restores your server first when a recovery marker is left, makes a run folder under `<RESULTS_DIR>/runs/`, copies the two vendored files into the work folder, and is refused (exit 2) when the deadline leaves no room. The draft layer (`--layer draft`) is for an MTP draft MoE layer, the
 35B model's case. A model with no MoE layers sets `MOE_DTYPE=none` in its model file; `moe-tune` then refuses it before it stops anything.
 
+**Which activation dtype the experts layer is tuned for.** The benchmark forces FP16 activations on ROCm, while the 35B model serves BF16, and a file tuned for the wrong dtype can be slower than vLLM's default
+(`dew_flow_benchmark`, `research/RESULTS_vllm_029_r9700_speed_options.md` § 15.3: 16.4 % slower at M=640). The model file's `MOE_ACT_DTYPE` (`bfloat16`, the default, or `float16`) says which dtype your server serves:
+with `bfloat16`, `chunk` and `ab` of the experts layer set the vendored benchmark's hook `MOE_TUNE_ACT_DTYPE=bfloat16` (`--dry-run` shows it); with `float16` they set no word, and the benchmark's own FP16 runs. The draft layer is always BF16.
+`chunk.env` and `ab.env` record the value (`ACT_DTYPE`), and `merge` refuses chunks that differ in it. `models/qwen3.6-35b-a3b-gptq.env` sets `bfloat16` with the evidence; `models/qwen3.8-27b-awq.env` keeps the default, which was NOT measured
+for that model: set `float16` there if your server runs FP16. An EXPERTS chunk recorded by an older version names no dtype and is never taken for a match: running its command again is refused (exit 2, before anything is stopped, and also with `--dry-run`) and asks for another `--out`;
+a recorded chunk of another dtype, or of another layer, or with no `LAYER`, is refused the same way. Old DRAFT records hold `bfloat16` (the draft layer was always BF16) and still match.
+Nothing checks `MOE_ACT_DTYPE` against the running server, because the server's start script is yours: set it to match any `--dtype` your server uses.
+`merge` still merges, but it says and records what it mixes: `merge.env` holds `ACT_DTYPE` (the chunks' common value, or `unknown` when they name none) and `BASE_ACT_DTYPE` (`none` without a base, `unknown` with one: a production file is not a record),
+and it prints one `note:` line when a base of unknown dtype is merged (`--base none` keeps it out), when the chunks name no dtype, or when the experts chunks were tuned for another dtype than the model's `MOE_ACT_DTYPE`. `activate` copies both words into `activate.env`
+(`unknown` for a record that has none), and `ab` writes them to `ab.env` as `FILE_ACT_DTYPE` and `FILE_BASE_ACT_DTYPE` and prints one `note:` when the activated file's dtype is not the run's or its base's is not `none`; `ab.env`'s `ACT_DTYPE` stays what the A/B ran with. The toolkit tunes and measures; whether the hook changes the real kernel's activations is known from the draft-layer chunks of 2026-10-28..31 and has not been observed through the toolkit yet (`vendor/README.md`).
+
 Where things are:
 
 - The records: `<RESULTS_DIR>/moe-<model>/chunks/<chunk>/` (the tuned JSON, the log, `chunk.env`), `merged/<stamp>/` (the merged file, `merge.env`), `ab/<stamp>/`
@@ -80,7 +91,7 @@ Where things are:
 - `merge --base auto` fails with `duplicate key` when a chunk holds a key that the production file already has: use `--base none` for such a chunk. When the model's `TUNED_CONFIG_DIR` is not under `/work` the production file cannot be read from WSL: `merge` refuses and asks for `--base <file>` or `--base none`.
 - `ab` reads the layer and the file name from `activate.env` (written by `activate`), so it works in any `--out`. If you activated a record of the other layer last, `ab` refuses and says which record to activate again. If a run was killed in the middle of an activation, the next `activate` (or the start of an `ab`) finishes it.
 
-To resume, run the same `chunk` command: a recorded chunk is skipped before anything is stopped. Name another `--chunk` for a second search. For a long search
+To resume, run the same `chunk` command (with the same `MOE_ACT_DTYPE`): a recorded chunk is skipped before anything is stopped. Name another `--chunk` for a second search. For a long search
 set `MAX_RUN_MINUTES` (up to 2880) and `MOE_CHUNK_MAX_S` in `machine.env`.
 
 ## Kernels and the prefix check
@@ -151,7 +162,7 @@ Exit codes of `bin/r9700` (the table with the line each prints is in `research/a
 
 - `0` done.
 - `1` `verdict`: at least one arm is INCOMPLETE (a round is missing).
-- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment; `run`: a refused plan (a line that is not a step, a refused character, a refused argument, no step), or a step whose config or identity is refused when it starts.
+- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a recorded chunk of another activation dtype (or of none, as the older ones), a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment; `run`: a refused plan (a line that is not a step, a refused character, a refused argument, no step), or a step whose config or identity is refused when it starts.
 - `4` another run holds the lock.
 - `5` the restore of your own server did not become ready: look at the server by hand; the recovery marker stays.
 - `6` the deadline stopped the run (or the next arm-round no longer fits before it): run the same command again.

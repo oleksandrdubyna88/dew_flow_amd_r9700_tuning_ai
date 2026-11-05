@@ -6,7 +6,7 @@
 
 A chunk file is `{"triton_version": "<v>", "<batch size>": {<config>}, ...}` (benchmark_moe.py `save_configs`). A chunk dir holds exactly one
 `E=*.json` (its name comes from vLLM and is read back, never typed) and, when present, a `chunk.env` with `KEYS=` (the batch sizes the chunk
-promised) and the identity words IMAGE, MODEL_DIR, DTYPE and LAYER. The file is parsed in ONE place, so `check` (the validity of one chunk file,
+promised) and the identity words IMAGE, MODEL_DIR, DTYPE, ACT_DTYPE (the activation dtype the chunk was tuned for; an older chunk holds it empty, so it never merges with a new one) and LAYER. The file is parsed in ONE place, so `check` (the validity of one chunk file,
 used by the records of S2) and `merge` cannot disagree.
 
 check: exit 0, or 1 with the FIRST problem on stdout. merge: exit 0, or 2 with every problem found, one `merge: ` line each on stderr. The output
@@ -35,7 +35,7 @@ import moekeys  # noqa: E402
 
 # The fields every config must hold; more are allowed (`waves_per_eu`, `SPLIT_K`). Typed once: merge_moe.py line 12 of the published script.
 FIELDS = frozenset({"BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K", "GROUP_SIZE_M", "num_warps", "num_stages"})
-IDENTITY = ("IMAGE", "MODEL_DIR", "DTYPE", "LAYER")  # the words of chunk.env that must be equal between chunks
+IDENTITY = ("IMAGE", "MODEL_DIR", "DTYPE", "ACT_DTYPE", "LAYER")  # the words of chunk.env that must be equal between chunks (ACT_DTYPE: an old experts chunk holds it empty, so it never merges with a new one)
 CHUNK_GLOB = "E=*.json"
 HOLD_ENV = "R9700_TEST_MERGE_HOLD_S"
 CLAIM_STALE_ENV = "R9700_TEST_CLAIM_STALE_S"  # test knob: the age (s) after which an empty or unreadable claim counts as left behind

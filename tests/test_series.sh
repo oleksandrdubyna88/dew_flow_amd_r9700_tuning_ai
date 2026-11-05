@@ -221,25 +221,80 @@ t_s12_the_quiet_check_runs_before_every_arm_round_and_exits_3_and_the_series_res
 
 # ---- S13: the fit check -------------------------------------------------------------------------------------------------------------------------
 
+# install_gate_clock: defines and exports a `date` that answers a fake epoch ONLY to a call made directly by _series_gate (FUNCNAME[1], also inside the $(...) of the gate's awk) and the real
+# clock to every other call. The fake time is R9700_T_STOP - <the allowance> + FAKE_GATE_OFFSET, where the allowance is t_scale of R9700_ARM_SECONDS, the number the gate itself computes,
+# and the gate asks `now + allowance <= T_STOP`: offset -1 fits with a second to spare, 0 is the boundary, 1 does not fit. Without FAKE_GATE_OFFSET the offset follows the records: -1 until
+# the folder rounds/fbase-1 of $_SERIES_OUT (set by the worker, by the test) exists, 1 afterwards. Every answer is appended to FAKE_GATE_LOG, so that a test can prove the function ran.
+install_gate_clock() {
+  date() {
+    if [ "${FUNCNAME[1]-}" = _series_gate ]; then
+      local offset="${FAKE_GATE_OFFSET:-}"
+      if [ -z "$offset" ]; then
+        if [ -d "${_SERIES_OUT:?}/rounds/fbase-1" ]; then offset=1; else offset=-1; fi
+      fi
+      printf '%s\n' "$offset" >> "${FAKE_GATE_LOG:?}"
+      awk -v s="${R9700_T_STOP:?}" -v a="$(t_scale "${R9700_ARM_SECONDS:-1500}")" -v o="$offset" 'BEGIN { printf "%.9f\n", s - a + o }'
+    else
+      command date "$@"
+    fi
+  }
+  export -f date
+}
+
 t_s13_the_fit_check_ends_the_series_cleanly_before_the_deadline() {
   series_setup "$FUNCNAME"
-  short_variant
-  # T_STOP is 8.4..9.4 s after the start (E2.S2: 11 minutes and a budget of 425 s) (the stop is rounded down to a whole second); an arm-round is allowed 4 s (100 s at scale 25) and takes
-  # about 5 s (twelve bench calls of 0.3 s and the rest): the first starts at t1 (a second or two in: the fingerprint's python calls come first)
-  # and fits while t1 + 4 < 8.4, that is for every t1 below 4.4 s; the second starts at about t1 + 5.5 and cannot (t1 + 5.5 + 4 > 9.4 for any
-  # t1 above 0.1 s) while the first still ends before T_STOP (t1 + 5 < 8.4)
-  export R9700_ARM_SECONDS=100 R9700_STUB_DELAY_S=0.3
+  # The fit check is proven on the CLOCK IT READS, not by racing the real one: an arm-round's own time is CPU plus sleeps, and at 2 burners it took 60 to 70 s, so every attempt to fit it between
+  # two real instants (a stub delay: the second round started; an on-stop hook holding until T_STOP - 20 s: the round was cut by the real T_STOP or the worker killed before the check) lost a
+  # race to the load (2026-11-05). The setup's generous real deadline stays (time scale 100, 7.2 minutes: the real T_STOP never cuts the round); R9700_ARM_SECONDS=2000 is 20 s at scale 100. The one
+  # `date` call of lib/series.sh's _series_gate is answered by install_gate_clock: 21 s before T_STOP (the allowance 20 s fits) until the folder of fbase-1 exists, 19 s before it afterwards (does
+  # not fit). So fbase round 1 starts and fcombo round 1 is refused by the fit check, whatever the load. The function reaches the worker through the exported environment (`env`, `setsid`, `bash`).
+  # NOT proven here: that real elapsed time reaches the boundary. That part is one `date` call and `now + allowance <= T_STOP`, which the next test checks at the boundary itself; a real deadline
+  # that stops a real run is R4 and the other short_variant tests of the deadline (test_run.sh, test_guards.sh: the watcher and the supervisor's own stop at a real T_STOP) and S12 (a busy PC at
+  # the real deadline), none of which asks the fit check.
+  export R9700_ARM_SECONDS=2000 FAKE_GATE_LOG="$CASE/gate-answers"
+  install_gate_clock
   local out run
   out="$(outdir)"
   assert_exit 6 "the supervisor exits 6: the deadline" -- sr fbase fcombo --out s --rounds 1
   run="$(run_dir_of)"
+  assert_eq "-1
+1" "$(cat "$FAKE_GATE_LOG" 2> /dev/null)" "the fake clock answered the gate twice, below the boundary for fbase-1 and above it for fcombo-1 (a function that never ran would leave no line)"
   assert_exit 0 "fbase-1 is recorded" -- test -d "$out/rounds/fbase-1"
   assert_missing "$out/rounds/fcombo-1" "nothing for fcombo"
+  assert_eq "${R9700_CONTAINER_PREFIX}sp-fbase-1" "$(starts)" "the only container ever started is fbase-1's (a missing folder alone would not show that fcombo never started)"
   assert_contains "$(cat "$run/steps/1.worker.log")" "series: 1 arm-rounds no longer fit before the deadline" "the worker says why it stops"
   assert_not_contains "$(cat "$run/supervisor.log")" "failed try" "no failed try: a clean end is not a failure"
   assert_eq "deadline" "$(cat "$run/status")" "the status is deadline"
   assert_eq "1" "$(log_count pwsh.exe -Detach)" "the server was restored"
   assert_eq "0" "$(ls "$out/rejected" 2> /dev/null | wc -l | tr -d ' ')" "nothing was rejected"
+}
+
+t_the_fit_check_passes_below_and_at_the_boundary_and_refuses_above_it() {
+  series_setup "$FUNCNAME"
+  # _series_gate itself, without the chain, on the fake clock of install_gate_clock: the real quiet_check (the setup's load file says quiet) and the real disk gate (baseline 100, newest 100).
+  source "$REPO/lib/series.sh"
+  export R9700_ARM_SECONDS=2000 FAKE_GATE_LOG="$CASE/gate-answers"
+  R9700_T_STOP=$(( $(date +%s) + 1000 )) # any whole second: the fake clock is relative to it
+  R9700_RUN_DIR="$CASE/run"
+  mkdir -p "$R9700_RUN_DIR"
+  _SERIES_OUT="$CASE/results/x" _SERIES_ROUNDS=1
+  _SERIES_ARMS=(fbase fcombo)
+  disk_gate_baseline "$R9700_RUN_DIR/disk_gate.state" > /dev/null
+  install_gate_clock
+  local offset rc
+  for offset in -1 0 1; do
+    FAKE_GATE_OFFSET="$offset" _series_gate fbase 1 > "$CASE/gate.out" 2>&1
+    rc=$?
+    case $offset in
+      -1) assert_eq "0" "$rc" "one second before the boundary (now + 20 s = T_STOP - 1 s): the arm-round fits" ;;
+      0) assert_eq "0" "$rc" "exactly at the boundary (now + 20 s = T_STOP): it fits, the check is <=" ;;
+      1) assert_eq "4" "$rc" "one second above it (now + 20 s = T_STOP + 1 s): refused with 4"
+         assert_contains "$(cat "$CASE/gate.out")" "series: 2 arm-rounds no longer fit before the deadline" "and the line says how many arm-rounds are left" ;;
+    esac
+  done
+  assert_eq "-1
+0
+1" "$(cat "$FAKE_GATE_LOG")" "the fake clock answered each of the three calls (a function that never ran would leave no line)"
 }
 
 # ---- S14: the disk gate -------------------------------------------------------------------------------------------------------------------------

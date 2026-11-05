@@ -207,19 +207,45 @@ t_an_executable_that_cannot_be_found_is_one_line_and_return_10_and_no_call() {
   assert_missing "$STUB/calls.log" "no stub was called"
 }
 
+# stub_world: one line "<pid> <name>" for every live process whose environment names THIS test's stub folder (R9700_STUB_DIR=$STUB): the stubs, their sleepers and whatever they
+# started, wherever they were put (a `setsid` is no escape: the environment is inherited). bash builtins only, `$(< file)`, so the scan itself starts no process to be found; a
+# process whose environment cannot be read (not ours, gone meanwhile) is skipped. The test shell does not match: its environment was fixed at its exec, before setup_case exported
+# the variable (the companion test asserts that, it is not assumed). Environment words are glued together once the NULs are dropped, hence the substring match.
+stub_world() {
+  local file pid env
+  for file in /proc/[0-9]*/environ; do
+    pid="${file#/proc/}"
+    pid="${pid%/environ}"
+    { env="$(< "$file")"; } 2> /dev/null || continue
+    [[ $env == *"R9700_STUB_DIR=$STUB"* ]] || continue
+    { echo "$pid $(< "/proc/$pid/comm")"; } 2> /dev/null
+  done
+}
+
+# stub_world_gone: 0 when stub_world is empty, polled for at most 5 s (a killed process takes a moment to be reaped)
+stub_world_gone() {
+  local i
+  for i in $(seq 1 50); do [ -z "$(stub_world)" ] && return 0; sleep 0.1; done
+  return 1
+}
+
 t_a_hung_adapter_call_is_killed_at_its_ceiling_and_leaves_no_process() {
   setup_case "$FUNCNAME"
   printf 'hang\n' > "$STUB/mode"
-  R9700_CEILING_SCALE=100 # every call must end at its ceiling: the shortest is the point here
-  local started ended name file pid rc
-  started="$(date +%s.%N)"
+  # Scale 30: a 60 s call has 2 s, the 30 s one 1 s. Scale 100 gave 0.6 s and 0.3 s, and under load the ceiling fired before the stub had written its pid file: "nine hung stubs were
+  # recorded" found 8 (2026-11-04; scale 30 still found 7 and 8 at 2 burners, hence the count below). The nine calls take about 25 s at scale 30 (the ceilings add up to 600 s / 30 = 20 s) against about 8 s at scale 100.
+  R9700_CEILING_SCALE=30
+  local t0 t1 name file pid rc
   for name in "wslc_list" "wslc_stop r9700tune-a" "wslc_logs r9700tune-a" "wslc_run r9700tune-a img" "wslc_exec 70 vllm true" "restore_probe vllm" "win_ram_mb" "win_disk_newest" "restore_start"; do
+    t0="$(date +%s.%N)"
     $name > /dev/null 2>&1
     rc=$?
+    t1="$(date +%s.%N)"
     if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then assert_eq ok ok "$name: the ceiling ended it (rc $rc)"; else assert_eq "124 or 137" "$rc" "$name: the ceiling ended it"; fi
+    # The bound does not depend on the load: the shortest REAL ceiling of these calls is 30 s (win_ram_mb), the others 60 and 120 s, so a call that ran at its unscaled ceiling fails here
+    # and one that merely waited for a busy CPU does not.
+    assert_exit 0 "$name: it ended well below its real ceiling (under 30 s; the scaled ceiling is 1..4 s)" -- awk -v a="$t0" -v b="$t1" 'BEGIN { exit !(b - a < 30) }'
   done
-  ended="$(date +%s.%N)"
-  assert_exit 0 "the nine calls took under 8 s (a ceiling scale of 100 turns 60..120 s into under 2 s each)" -- awk -v a="$started" -v b="$ended" 'BEGIN { exit !(b - a < 8) }'
   local n=0
   for file in "$STUB"/hung/containers/*.pid; do
     [ -e "$file" ] || continue # nothing was recorded: the count below says so, the loop must not crash
@@ -227,7 +253,32 @@ t_a_hung_adapter_call_is_killed_at_its_ceiling_and_leaves_no_process() {
     read -r pid _ < "$file"
     assert_exit 0 "the hung stub's sleep (pid file $n) is gone" -- gone "$pid"
   done
-  assert_eq "9" "$n" "nine hung stubs were recorded"
+  # At least one, not nine: with a ceiling of 1..4 s a busy CPU lets the ceiling fire before the stub has written its pid file (2026-11-05 at 2 burners: 7, 8 and 8 of 9 were recorded), so the
+  # count says only that the scan is alive (a loop over no file proves nothing). That every one of the NINE calls was ended by its ceiling is asserted above, by the return code 124 or 137 of
+  # each; and every stub that WAS recorded is asserted gone, so no process is left.
+  if [ "$n" -ge 1 ]; then assert_eq ok ok "at least one hung stub was recorded ($n of 9), so the scan of the pid files is alive"; else assert_eq ">= 1" "$n" "at least one hung stub was recorded"; fi
+  # The nine back again: a stub that was killed before it wrote its pid file is not in the loop above, but its process is still one with this test's stub folder in its environment.
+  stub_world_gone
+  assert_eq "" "$(stub_world)" "after the nine calls no process of this test's stub world is alive, recorded or not"
+}
+
+t_the_stub_world_scan_finds_a_live_hung_stub_and_not_the_test_shell() {
+  setup_case "$FUNCNAME"
+  printf 'hang\n' > "$STUB/mode"
+  R9700_CEILING_SCALE=1 # the real 60 s ceiling: only the end below ends the call
+  ( wslc_list > /dev/null 2>&1 ) &
+  local call=$! i
+  guard_pid "$call" "hung-call-$call"
+  for i in $(seq 1 100); do [ -f "$STUB/hung/containers/1.pid" ] && break; sleep 0.1; done
+  assert_exit 0 "the hung stub recorded itself (bounded wait)" -- test -f "$STUB/hung/containers/1.pid"
+  assert_contains "$(stub_world)" "sleep" "the scan finds the hung stub's sleeper (a scan that matches nothing would pass for ever)"
+  assert_exit 0 "the stub's own bash is in it too" -- test "$(stub_world | wc -l)" -ge 2
+  assert_eq "no" "$([[ "$(< "/proc/$$/environ")" == *"R9700_STUB_DIR=$STUB"* ]] 2> /dev/null && echo yes || echo no)" "the test shell's environment does not name the stub folder (fixed before the export)"
+  assert_eq "no" "$([[ "$(stub_world | cut -d' ' -f1)" == *"$BASHPID"* ]] && echo yes || echo no)" "and the scan does not list the test shell itself"
+  kill_recorded_pids "$CASE" # the recorded sleeper: the stub's wait ends, then timeout and the call
+  wait "$call" 2> /dev/null
+  stub_world_gone
+  assert_eq "" "$(stub_world)" "after the call ended the scan finds nothing again"
 }
 
 t_an_adapter_call_never_reads_the_standard_input_of_its_caller() {

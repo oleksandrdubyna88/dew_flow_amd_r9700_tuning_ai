@@ -300,7 +300,7 @@ t_a_term_during_a_hanging_throwaway_container_ends_the_supervisor_within_seconds
   step_end
   end="$(date +%s.%N)"
   assert_eq "143" "$SRC" "exit 143"
-  assert_exit 0 "within 6 s of the start (the probe's own ceiling is 12 s here)" -- awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 6) }'
+  assert_exit 0 "within 6 s of the start (the probe's own ceiling is 60 s here: 120 s / 2, the ceiling scale of lc_setup)" -- awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 6) }'
   assert_eq "0" "$(prod_stops)" "the operator's server was never stopped"
   assert_eq "0" "$(log_count pwsh.exe -Detach)" "so nothing was restored"
   assert_exit 0 "and it still runs" -- test -f "$STUB/containers/vllm.pid"

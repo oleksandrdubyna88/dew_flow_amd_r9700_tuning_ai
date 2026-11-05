@@ -59,12 +59,12 @@ t_t2_the_container_argv_is_the_measured_one() {
   run_argv moe-tune-int4-24
   local got expect
   got="$(IFS='|'; echo "${ARGV[*]}")"
-  expect="run|--rm|--name|r9700tune-moe-tune-int4-24|--gpus|all|--shm-size|16g|-e|HIP_VISIBLE_DEVICES=0|-e|TRITON_CACHE_DIR=/root/.cache/vllm/triton-moe-tune"
+  expect="run|--rm|--name|r9700tune-moe-tune-int4-24|--gpus|all|--shm-size|16g|-e|HIP_VISIBLE_DEVICES=0|-e|MOE_TUNE_ACT_DTYPE=bfloat16|-e|TRITON_CACHE_DIR=/root/.cache/vllm/triton-moe-tune"
   expect+="|-v|hf-cache:/root/.cache/huggingface|-v|vllm-cache:/root/.cache/vllm|-v|C:\\r9700\\work:/work|-w|/work/r9700|$R9700_IMAGE|python3|benchmark_moe.py"
   expect+="|--model|/root/.cache/huggingface/local/Qwen3.6-35B-A3B-GPTQ|--tp-size|1|--dtype|int4_w4a16|--tune|--batch-size|24"
   expect+="|--save-dir|/work/r9700/moe/qwen3.6-35b-a3b-gptq/tune/int4-24|--trust-remote-code"
-  assert_eq "$expect" "$got" "the argv of tune_chunk.sh lines 14-17 through the adapter, as an array"
-  assert_not_contains "$got" "MOE_TUNE_" "and no MOE_TUNE_ word for the experts layer with the full search"
+  assert_eq "$expect" "$got" "the argv of tune_chunk.sh lines 14-17 through the adapter, as an array, plus the activation hook of the 35B file (MOE_ACT_DTYPE=bfloat16: it serves BF16)"
+  assert_not_contains "$got" "MOE_TUNE_CANDIDATES" "and no candidates word for the full search"
 }
 
 t_t3_the_draft_layer_and_the_coarse_search_set_exactly_their_two_environment_words() {
@@ -84,7 +84,67 @@ t_t3_the_draft_layer_and_the_coarse_search_set_exactly_their_two_environment_wor
   assert_eq "auto" "$(env_get "$RECS/chunks/draft-c/chunk.env" DTYPE)" "DTYPE"
   moe_chunk exp-f experts full 256 > /dev/null 2>&1
   run_argv moe-tune-exp-f
-  assert_not_contains "$(IFS='|'; echo "${ARGV[*]}")" "MOE_TUNE_" "with experts and the full search neither word appears (the same fixture, the negative)"
+  got="$(IFS='|'; echo "${ARGV[*]}")"
+  assert_not_contains "$got" "MOE_TUNE_CANDIDATES" "with experts and the full search the candidates word does not appear (the same fixture, the negative)"
+  assert_contains "$got" "|-e|MOE_TUNE_ACT_DTYPE=bfloat16|" "and the experts layer of a model that serves BF16 has the activation hook too (the next tests cover float16)"
+}
+
+# act_variant <bfloat16|float16>: the 35B model with MOE_ACT_DTYPE set to that (its line replaced), under the name model.env; sets MODEL
+act_variant() {
+  { grep -v '^MOE_ACT_DTYPE=' "$MODEL_35B"; echo "MOE_ACT_DTYPE=$1"; } > "$CASE/model.env"
+  MODEL="$CASE/model.env"
+}
+
+t_an_experts_chunk_gets_the_activation_hook_when_the_model_serves_bfloat16_and_none_for_float16_and_the_record_says_which() {
+  local dtype got
+  for dtype in bfloat16 float16; do
+    moe_setup "$FUNCNAME-$dtype"
+    act_variant "$dtype"
+    assert_exit 0 "[$dtype] an experts chunk" -- moe_chunk exp-24 experts full 24
+    run_argv moe-tune-exp-24
+    got="$(IFS='|'; echo "${ARGV[*]}")"
+    if [ "$dtype" = bfloat16 ]; then
+      assert_contains "$got" "|-e|MOE_TUNE_ACT_DTYPE=bfloat16|" "[$dtype] the activation hook is in the argv"
+    else
+      assert_not_contains "$got" "MOE_TUNE_" "[$dtype] no MOE_TUNE_ word: the benchmark's own ROCm default (float16) is what runs"
+    fi
+    assert_contains "$got" "|--dtype|int4_w4a16|" "[$dtype] the weight dtype is untouched (the positive for the same argv)"
+    assert_eq "$dtype" "$(env_get "$RECS/chunks/exp-24/chunk.env" ACT_DTYPE)" "[$dtype] chunk.env says which activation dtype the chunk was tuned for, never empty"
+  done
+}
+
+t_a_draft_chunk_keeps_its_bfloat16_hook_whatever_the_model_serves() {
+  moe_setup "$FUNCNAME"
+  act_variant float16
+  chunk_json_for b1 256
+  assert_exit 0 "a draft chunk of a model whose experts are tuned for float16" -- moe_chunk draft-f draft full 256
+  run_argv moe-tune-draft-f
+  assert_contains "$(IFS='|'; echo "${ARGV[*]}")" "|-e|MOE_TUNE_ACT_DTYPE=bfloat16|" "the draft layer's hook is bfloat16 (speed_CB.sh line 22)"
+  assert_eq "bfloat16" "$(env_get "$RECS/chunks/draft-f/chunk.env" ACT_DTYPE)" "and its record says so"
+}
+
+t_an_experts_ab_gets_the_activation_hook_when_the_model_serves_bfloat16_and_none_for_float16_and_the_record_says_which() {
+  local dtype got ab
+  for dtype in bfloat16 float16; do
+    moe_setup "$FUNCNAME-$dtype"
+    act_variant "$dtype"
+    moe_merged_place b2
+    moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B2_NAME" b2
+    assert_exit 0 "[$dtype] an experts A/B" -- moe_ab experts median "24 32 64 128" 3 "8 16 20 24 32 48 64 96 128 192 256"
+    ab="$(ls -d "$RECS"/ab/*/ | head -n 1)"
+    ab="${ab%/}"
+    for arm in default tuned; do
+      run_argv "moe-ab-$arm-1"
+      got="$(IFS='|'; echo "${ARGV[*]}")"
+      if [ "$dtype" = bfloat16 ]; then
+        assert_contains "$got" "|-e|MOE_TUNE_ACT_DTYPE=bfloat16|" "[$dtype] the $arm arm has the activation hook"
+      else
+        assert_not_contains "$got" "MOE_TUNE_" "[$dtype] the $arm arm has no MOE_TUNE_ word"
+      fi
+    done
+    assert_contains "$got" "|--dtype|int4_w4a16|" "[$dtype] the weight dtype is untouched (the positive for the same argv)"
+    assert_eq "$dtype" "$(env_get "$ab/ab.env" ACT_DTYPE)" "[$dtype] ab.env says which activation dtype the A/B ran with, never empty"
+  done
 }
 
 t_t4_the_cache_is_cleared_before_the_unit_by_a_prefixed_container_with_only_the_cache_volume() {
@@ -162,6 +222,78 @@ t_t8_a_recorded_chunk_is_not_run_again() {
   assert_eq "1" "$(run_lines moe-tune-int4-24 | wc -l | tr -d ' ')" "the call log has no second moe-tune run"
   after="$(stat -c %Y "$RECS/chunks/int4-24")"
   assert_eq "$before" "$after" "the record's mtime is unchanged"
+}
+
+# old_record <chunk> [<ACT_DTYPE line>]: chunk.env of a recorded chunk as an older version wrote it: no ACT_DTYPE line (no 2nd argument), or the line given (`ACT_DTYPE=`)
+old_record() {
+  grep -v '^ACT_DTYPE=' "$RECS/chunks/$1/chunk.env" > "$RECS/chunks/$1/chunk.env.new"
+  [ -z "${2:-}" ] || printf '%s\n' "$2" >> "$RECS/chunks/$1/chunk.env.new"
+  mv "$RECS/chunks/$1/chunk.env.new" "$RECS/chunks/$1/chunk.env"
+}
+
+t_a_recorded_chunk_of_another_activation_dtype_is_refused_and_starts_no_container() {
+  moe_setup "$FUNCNAME"
+  moe_chunk exp-24 experts full 24 > /dev/null 2>&1
+  assert_eq "bfloat16" "$(env_get "$RECS/chunks/exp-24/chunk.env" ACT_DTYPE)" "the recorded chunk says bfloat16 (the positive: the fixture is a real record)"
+  act_variant float16
+  local runs before
+  runs="$(run_lines moe-tune-exp-24 | wc -l | tr -d ' ')"
+  before="$(stat -c %Y "$RECS/chunks/exp-24")"
+  assert_exit 2 "the same chunk name under a model that serves float16" -- moe_chunk exp-24 experts full 24
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused: the supervisor stops at once, no retry"
+  assert_contains "$O_DETAIL" "ACT_DTYPE bfloat16" "the line names the recorded dtype"
+  assert_contains "$O_DETAIL" "float16" "and the wanted one"
+  assert_contains "$O_DETAIL" "--out" "and says to use a new --out"
+  assert_eq "$runs" "$(run_lines moe-tune-exp-24 | wc -l | tr -d ' ')" "no second container run"
+  assert_eq "$before" "$(stat -c %Y "$RECS/chunks/exp-24")" "the record is untouched"
+}
+
+t_a_recorded_chunk_of_another_layer_or_of_no_layer_is_refused_by_the_unit_and_starts_no_container() {
+  moe_setup "$FUNCNAME"
+  moe_chunk mine experts full 24 > /dev/null 2>&1
+  local runs
+  runs="$(run_lines moe-tune-mine | wc -l | tr -d ' ')"
+  chunk_json_for b1 256
+  assert_exit 2 "the experts chunk's name asked for the draft layer" -- moe_chunk mine draft full 256
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_eq "refused" "$O_KIND" "KIND=refused"
+  assert_contains "$O_DETAIL" "chunk mine is recorded for the layer experts but this run is of the layer draft" "the line names both layers"
+  grep -v '^LAYER=' "$RECS/chunks/mine/chunk.env" > "$RECS/chunks/mine/chunk.env.new"
+  mv "$RECS/chunks/mine/chunk.env.new" "$RECS/chunks/mine/chunk.env"
+  assert_exit 2 "a record with no LAYER, asked for the experts layer" -- moe_chunk mine experts full 24
+  outcome_read "$(last_run_dir)/steps/1.outcome"
+  assert_contains "$O_DETAIL" "chunk mine is recorded with no layer" "it is unknown, not taken for experts"
+  assert_eq "$runs" "$(run_lines moe-tune-mine | wc -l | tr -d ' ')" "no second container run"
+}
+
+t_a_recorded_chunk_of_the_same_activation_dtype_is_still_nothing_to_do_for_both_dtypes() {
+  local dtype
+  for dtype in bfloat16 float16; do
+    moe_setup "$FUNCNAME-$dtype"
+    act_variant "$dtype"
+    moe_chunk exp-24 experts full 24 > /dev/null 2>&1
+    assert_exit 0 "[$dtype] the same chunk again" -- moe_chunk exp-24 experts full 24
+    assert_contains "$(worker_log 1)" "chunk exp-24: recorded, nothing to do" "[$dtype] the worker says so"
+    assert_eq "1" "$(run_lines moe-tune-exp-24 | wc -l | tr -d ' ')" "[$dtype] the call log has no second run"
+  done
+}
+
+t_an_old_record_without_a_known_activation_dtype_is_never_taken_for_a_match_whichever_dtype_is_wanted() {
+  local dtype form
+  for dtype in bfloat16 float16; do
+    for form in empty absent; do
+      moe_setup "$FUNCNAME-$dtype-$form"
+      moe_chunk exp-24 experts full 24 > /dev/null 2>&1
+      if [ "$form" = empty ]; then old_record exp-24 "ACT_DTYPE="; else old_record exp-24; fi
+      act_variant "$dtype"
+      assert_exit 2 "[$dtype, $form] an old record is refused" -- moe_chunk exp-24 experts full 24
+      outcome_read "$(last_run_dir)/steps/1.outcome"
+      assert_eq "refused" "$O_KIND" "[$dtype, $form] KIND=refused"
+      assert_contains "$O_DETAIL" "no activation dtype" "[$dtype, $form] the line says the record names none"
+      assert_eq "1" "$(run_lines moe-tune-exp-24 | wc -l | tr -d ' ')" "[$dtype, $form] no second container run"
+    done
+  done
 }
 
 # ---- T14-T16: the kernel A/B -------------------------------------------------------------------------------------------------------------------
@@ -356,11 +488,12 @@ t_t9_a_ram_stop_during_a_chunk_leaves_no_prefixed_container_no_worker_process_an
 
 t_t10_a_stale_part_directory_is_evidence_not_a_record() {
   moe_setup "$FUNCNAME"
-  step_cfg MAX_FAILED_TRIES=1
-  ram_stop_run
-  local part
-  part="$(ls -d "$RECS"/chunks/*.part-* | head -n 1)"
-  part="${part##*/}"
+  # The stale part is written by hand, in the shape `chunks/<chunk>.part-<run id>` that moe_chunk_unit makes. A RAM stop cannot make one reliably: on a loaded PC the worker handled the TERM and moved
+  # its own part to rejected/ with `rc=143` before the kill (2026-11-06, a full run with the operator's server loading: `ls: cannot access chunks/*.part-*`, then this test's first assertion failed).
+  # T9 takes both outcomes of a real stop, a part or a rejected record; this test is about what the next start does with a part it finds.
+  local part=int4-24.part-hand-1
+  mkdir -p "$RECS/chunks/$part"
+  printf 'a line of the run that never finished\n' > "$RECS/chunks/$part/chunk.log"
   printf '0\n' > "$STUB/answers/moe_tune_seconds"
   printf '8000\n' > "$STUB/answers/ram"
   assert_exit 0 "a stub chunk after the stop" -- moe_chunk int4-24 experts full 24

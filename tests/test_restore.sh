@@ -182,6 +182,7 @@ t_worker_start_refuses_a_worker_that_is_not_its_own_session_leader() {
   lc_setup "$FUNCNAME"
   local rc gate="$CASE/steps/9.gate" i
   mkdir -p "$CASE/steps"
+  export R9700_CEILING_SCALE=10 # the subject is a gate wait that gives up: 30 s / 10 = 3 s, not lc_setup's 15 s (the wait below is 10 s)
   # with job control on, a background job leads a process group, so setsid forks and $! is a process that is not the worker
   ( set -m; worker_start "$gate" "$CASE/worker.log" "$STUBS/worker.sh" ok; echo "$?" > "$CASE/rc" ) > "$CASE/out" 2>&1
   rc="$(cat "$CASE/rc")"
@@ -189,7 +190,6 @@ t_worker_start_refuses_a_worker_that_is_not_its_own_session_leader() {
   assert_contains "$(cat "$CASE/out")" "worker_start: " "one line says why"
   assert_contains "$(cat "$CASE/out")" "session" "naming the session"
   # the worker that did start sits at the gate and gives up by itself (30 s at ceiling scale 10 = 3 s); nothing is left
-  R9700_CEILING_SCALE=100
   for i in $(seq 1 100); do pgrep -f "worker_gate.sh $gate" > /dev/null || break; sleep 0.1; done
   assert_exit 1 "no gated worker is left" -- pgrep -f "worker_gate.sh $gate"
   assert_missing "$STUB/worker.calls" "and it never ran its command"
@@ -537,6 +537,44 @@ t_three_list_failures_give_the_contract_line_exit_5_and_no_start() {
   kill_recorded_pids "$CASE"
 }
 
+# ---- the windows of a restore under the lifecycle tests (2026-11-05): a slow stub call is not a failed restore ----------------------------------------------------------
+
+t_a_restore_whose_preparation_lists_each_take_7_s_is_not_cut_by_the_list_ceiling_of_the_lifecycle_tests() {
+  lc_setup "$FUNCNAME"
+  # READY_TIMEOUT_S=3300 here: this test is about the ceiling of a `wslc list`, not about the readiness window (the next test)
+  write_marker READY_TIMEOUT_S=3300
+  # lc_setup divides the adapter's ceilings by 2 (a `wslc list` gets 60 s / 2 = 30 s); setup_case's 10 gave 6 s, and a list that took longer (a starved CPU,
+  # 2026-11-05 at 4 busy loops: list calls about 10 s apart) ended each of the three tries of _restore_prepare with `the container list failed ()`: exit 5, the
+  # server not started. Every list before the server's start takes 7 s here: over the old 6 s, far under the new 30 s. (observed with the scale 10: exit 5 and that line)
+  printf '7\n' > "$STUB/list-delay-until-vllm"
+  assert_exit 0 "a restore whose two preparation lists take 7 s each" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq "" "$ERR" "nothing on stderr: no failed try"
+  assert_eq "1" "$(log_count pwsh.exe -Detach)" "the server was started once"
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  # the delay hit the intended calls: the two lists of the preparation (container_stop_all's and the one that decides the start), and only those (ready_wait's lists come after the start)
+  assert_eq "2" "$(wc -l < "$STUB/list-delayed.log" | tr -d ' ')" "two lists were delayed"
+  assert_exit 0 "and the start came after both (at least 13.5 s after the first list)" -- awk -v first="$(awk '$3 == "wslc" && $4 == "list" { print $1; exit }' "$STUB/calls.log")" \
+    '$3 == "pwsh.exe" { found = 1; ok = ($1 - first >= 13.5) } END { exit !(found && ok) }' "$STUB/calls.log"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_restore_whose_first_list_in_ready_wait_takes_2_s_is_not_cut_by_the_default_window_of_the_marker() {
+  lc_setup "$FUNCNAME"
+  write_marker "RESTORE_SHELL=$CASE/bin/pwsh.exe"
+  mkdir -p "$CASE/bin"
+  # The marker's default READY_TIMEOUT_S is 3300 (33 s at scale 100); 60 gave a window of 0.6 s, and one `wslc list` that took longer (a starved CPU, 2026-11-04: 0.67 s)
+  # ended the restore with `vllm not ready after 67 s`, exit 5, for a server that was up. A wrapper of the start script arms a one-shot 2 s delay AFTER the stub has started
+  # the server, so the only list that can take it is one inside ready_wait: over the old 0.6 s, far under the new 33 s.
+  printf '#!/usr/bin/env bash\n"%s/pwsh.exe" "$@"\nrc=$?\nprintf "2\\n" > "$R9700_STUB_DIR/list-delay-once"\nexit "$rc"\n' "$STUBS" > "$CASE/bin/pwsh.exe"
+  chmod +x "$CASE/bin/pwsh.exe"
+  assert_exit 0 "a restore whose first list after the start takes 2 s" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
+  assert_eq "" "$ERR" "nothing on stderr: the server was ready"
+  assert_missing "$STUB/list-delay-once" "the delay was used by a list call after the start (the stub removes the file when it sleeps)"
+  assert_exit 0 "and a probe went through wslc exec" -- test "$(grep -c ' wslc exec vllm python3 ' "$STUB/calls.log")" -ge 1
+  assert_missing "$MARKER_FILE" "the marker is gone"
+  kill_recorded_pids "$CASE"
+}
+
 t_a_failed_stop_of_a_test_container_is_retried_before_the_restore_gives_up() {
   lc_setup "$FUNCNAME"
   write_marker PROD_WAS_RUNNING=no
@@ -569,7 +607,7 @@ t_a_stop_that_keeps_failing_ends_in_the_contract_line_naming_the_container() {
 
 t_a_restore_that_never_becomes_ready_exits_5_with_one_line_and_keeps_the_marker() {
   lc_setup "$FUNCNAME"
-  write_marker
+  write_marker READY_TIMEOUT_S=60 # asserts the contract line's SHAPE only, so the window may be the short one: 0.6 s, not the helper's 33 s
   printf 'fail\n' > "$STUB/answers/ready"
   assert_exit 5 "not ready" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "exactly one stderr line"
@@ -581,7 +619,7 @@ t_a_restore_that_never_becomes_ready_exits_5_with_one_line_and_keeps_the_marker(
 
 t_a_server_that_answers_models_but_not_a_completion_is_not_ready() {
   lc_setup "$FUNCNAME"
-  write_marker
+  write_marker READY_TIMEOUT_S=1500 # asserts a REAL answer in the line: the first probe must be answered inside the window, and 0.6 s is too short for a busy CPU (2026-11-05: `not ready after 195 s (the readiness window ended)`); 15 s (the test then takes 15 s: the server never gets ready)
   printf 'models-only\n' > "$STUB/answers/ready"
   assert_exit 5 "not ready" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
   assert_contains "$ERR" "completion: HTTP 500)" "the line ends with the failing check and its status (a last call cut by the window only adds a note before it)"
@@ -591,19 +629,21 @@ t_a_server_that_answers_models_but_not_a_completion_is_not_ready() {
 
 t_a_probe_cut_by_the_window_keeps_the_last_real_reason_and_adds_the_window() {
   lc_setup "$FUNCNAME"
-  write_marker
-  # the first probe answers HTTP 500, the second never answers: the window (0.6 s, its end rounded up to a whole second) cuts that last
-  # call, deterministically, without any load
+  write_marker READY_TIMEOUT_S=1500 # asserts a REAL answer in the line: the first probe must be answered inside the window, and 0.6 s is too short for a busy CPU (2026-11-05: `not ready after 195 s (the readiness window ended)`); 15 s (the test then takes 15 s: the hung second probe is cut by the window)
+  # The first probe answers HTTP 500, the second never answers and the window (15 s, its end rounded up to a whole second) cuts it. Whether a second probe started is read from the stub's
+  # call log: with one probe only, nothing was cut and no note is owed. The last real reason is kept either way.
   printf 'models-only\nhang\n' > "$STUB/answers/ready"
   assert_exit 5 "not ready" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"
   assert_contains "$ERR" "completion: HTTP 500)" "the line still ends with the last real failing check and its status"
-  # Both notes mean the window cut the last call: under load the window can end before the second probe starts (2026-11-03, failed once in a
-  # full run), and then lib/restore.sh says "the readiness window ended" instead of "the probe timed out".
-  if [[ $ERR == *"the probe timed out"* || $ERR == *"the readiness window ended"* ]]; then
-    assert_eq ok ok "and it says the last call was cut"
+  local probes
+  probes="$(grep -c ' wslc exec vllm python3 ' "$STUB/calls.log")"
+  if [ "$probes" -lt 2 ]; then
+    assert_eq ok ok "only $probes probe started, so nothing was cut and no note is owed (the window ended before the second one)"
+  elif [[ $ERR == *"the probe timed out"* || $ERR == *"the readiness window ended"* ]]; then
+    assert_eq ok ok "and it says the last call was cut ($probes probes started)"
   else
-    assert_eq "the probe timed out | the readiness window ended" "$ERR" "and it says the last call was cut"
+    assert_eq "the probe timed out | the readiness window ended" "$ERR" "and it says the last call was cut ($probes probes started)"
   fi
   assert_exit 0 "the marker is kept" -- test -f "$MARKER_FILE"
   kill_recorded_pids "$CASE"
@@ -611,7 +651,7 @@ t_a_probe_cut_by_the_window_keeps_the_last_real_reason_and_adds_the_window() {
 
 t_a_window_that_ended_before_the_first_answer_says_only_that() {
   lc_setup "$FUNCNAME"
-  write_marker
+  write_marker READY_TIMEOUT_S=1500 # asserts WHICH call the window cut (the hung probe, not a list the window ended before): 15 s, so the first probe starts on any CPU (the test then takes 15 s)
   printf 'hang\n' > "$STUB/answers/ready"
   assert_exit 5 "not ready" -- restore_from_marker "$MARKER_FILE" "$CASE/run"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one stderr line"

@@ -32,7 +32,9 @@ Each change is marked with the words `LOCAL CHANGE` in an added comment line.
    where the full space takes hours. Where: `main`, after `search_space = get_configs_compute_bound(...)`. Source: the same § 3.
 3. **`MOE_TUNE_ACT_DTYPE`.** In `resolve_dtype`, upstream forces `float16` activations on ROCm. With `MOE_TUNE_ACT_DTYPE=bfloat16` it returns
    `torch.bfloat16`, so the BF16 draft (MTP) experts are tuned with the activations they really run with. Where: the top of `resolve_dtype`.
-   Source: `RESULTS_vllm_029_r9700_speed_options.md` § 11.4 and the speed-options notes on the code facts.
+   Source: `RESULTS_vllm_029_r9700_speed_options.md` § 11.4 and the speed-options notes on the code facts. The toolkit sets it for the draft layer always, and for the
+   **experts layer** when the model file's `MOE_ACT_DTYPE` is `bfloat16` (the default; the 35B model serves BF16, § 15.3 of the speed-options results: a file tuned with the forced
+   FP16 is 16.4 % slower than the default at M=640). With `MOE_ACT_DTYPE=float16` it sets no word and the upstream FP16 default runs. The hook accepts only `bfloat16`.
 
 ## The diff
 
@@ -98,4 +100,5 @@ Empty until the acceptance run of the MoE tuning story is done on the R9700.
 - Hooks 1 and 2: observed in the work of 2026-10-26..11-01 (the chunks and the B2 run ran with this file); not yet observed through the toolkit.
 - Hook 3 (`MOE_TUNE_ACT_DTYPE`) has NOT yet been observed on the machine through the toolkit. It is known only by its effect, in the B1 draft-layer chunks of
   2026-10-28..31 (BF16 activations; the kernel A/B of the draft layer ran with `MOE_TUNE_ACT_DTYPE=bfloat16`). The acceptance run does not run a draft-layer chunk,
-  so it stays unobserved until one runs.
+  so it stays unobserved until one runs. The experts layer now sets it too (`MOE_ACT_DTYPE=bfloat16`): that the hook changes the activations of the real kernel is not observed
+  through the toolkit either, until a real chunk or A/B runs; the tests prove the argv and the record, not the kernel.

@@ -4,7 +4,7 @@
 > Scope: the runs on the real R9700 PC that CI cannot make, for the parts of the toolkit that are merged
 > ([PLAN_r9700_tuning_toolkit.md](PLAN_r9700_tuning_toolkit.md), epics E2 and E3; its stories documents are in `research/` too), and the `POST_DEPLOY.md` items they observe.
 > The plan itself changed no code: each run fills a record that already existed as a template in `research/`. One toolkit change followed from a finding of the runs (deviation 3).
-> Open items (the parts of the Definition of Done below that are not met) moved to [../todo/PLAN_r9700_acceptance_followups.md](../todo/PLAN_r9700_acceptance_followups.md).
+> Open items (the parts of the Definition of Done below that are not met) moved to [PLAN_r9700_acceptance_followups.md](PLAN_r9700_acceptance_followups.md) (a plan in `todo/` then; promoted to `research/` on 2026-11-05).
 
 ## Deviations — what shipped differently, and what is NOT done (2026-11-03)
 

@@ -243,6 +243,21 @@ def test_every_identity_word_of_chunk_env_is_compared(tmp_path):
         assert f"merge: {word} differs: {one} x vs {two} y" in err.splitlines()
 
 
+def test_the_activation_dtype_is_an_identity_word_so_an_old_empty_record_never_merges_with_a_new_one(tmp_path):
+    old = chunk_dir(tmp_path, "old", B2, "24", env="ACT_DTYPE=\n")  # an experts chunk of the versions before MOE_ACT_DTYPE
+    new = chunk_dir(tmp_path, "new", B2, "32", env="ACT_DTYPE=bfloat16\n")
+    code, out, err = run(["merge", "--out", tmp_path / "m", old, new])
+    assert code == 2
+    assert f"merge: ACT_DTYPE differs: {old}  vs {new} bfloat16" in err.splitlines()
+    other = chunk_dir(tmp_path, "other", B2, "32", env="ACT_DTYPE=float16\n")
+    new_too = chunk_dir(tmp_path, "new-too", B2, "24", env="ACT_DTYPE=bfloat16\n")
+    code, out, err = run(["merge", "--out", tmp_path / "m2", new_too, other])
+    assert code == 2
+    assert f"merge: ACT_DTYPE differs: {new_too} bfloat16 vs {other} float16" in err.splitlines()
+    same = chunk_dir(tmp_path, "same", B2, "32", env="ACT_DTYPE=bfloat16\n")
+    assert run(["merge", "--out", tmp_path / "m3", new_too, same])[0] == 0  # the positive: equal values merge
+
+
 def test_a_chunk_env_that_is_not_the_grammar_is_refused_never_executed(tmp_path):
     chunk = chunk_dir(tmp_path, "c", B1, "1", env="not a pair\n", promise=False)
     code, out, err = run(["merge", "--out", tmp_path / "m", chunk])

@@ -26,6 +26,12 @@ run_setup() {
   # `failed try 1 of 3: admit the container list failed ()` and a repeated admission, so a chain ended 7, 5 or 9 (R3, R17 restore-5) instead of the exit under test.
   # (observed to work: test R3b delays one `wslc list` by 8 s; without this line it fails with `failed try 1 of 3: admit the container list failed ()`)
   export R9700_CEILING_SCALE=2
+  # The readiness windows of a chain (the admission of a server, the final restore, a busy-wait restore) are READY_TIMEOUT_S, the config's largest legal value: 3235 s = 32 s at scale 100, not
+  # the fixture's default 1200 s = 12 s, which a stub call on a starved CPU used up (2026-11-04: R3 ended 5, `vllm not ready after ... s`, for a server that was up). CLEANUP_BUDGET_S=3600 is the
+  # largest pair that rule allows (READY_TIMEOUT_S + 365, lib/config.sh); the deadline T_STOP = T_END - 36 s is still far inside MAX_RUN_MINUTES (720: T_END 432 s). A chain test whose subject is a
+  # deadline or a window that runs out calls short_variant, which drops these two lines and writes its own.
+  # (observed to work: t_r3c_... fails with `vllm not ready after ... s (the readiness window ended)` when these two values are the fixture's)
+  step_cfg READY_TIMEOUT_S=3235 CLEANUP_BUDGET_S=3600
   MODEL="${2:-$MODEL_35B}"
   KMODEL="$(basename "$MODEL" .env)"
   RECS="$R9700_RESULTS_DIR/kernels-$KMODEL"

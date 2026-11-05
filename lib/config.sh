@@ -71,6 +71,7 @@ _field model MAX_NUM_SEQS int:1:256 required "the number of concurrent sequences
 _field model GPU_MEM_UTIL dec:0.10:0.95 0.85 "the GPU memory fraction of the server"
 _field model PREFILL_LENS ints required "the prefill lengths to measure, in tokens; each plus 128 must fit MAX_MODEL_LEN"
 _field model MOE_DTYPE enum:auto,fp8_w8a8,int8_w8a16,int4_w4a16,none int4_w4a16 "the weight dtype of the model's MoE layers for tuning; none means no MoE layers"
+_field model MOE_ACT_DTYPE enum:bfloat16,float16 bfloat16 "the activation dtype the model serves, which moe-tune tunes the experts layer for: bfloat16 sets the hook MOE_TUNE_ACT_DTYPE, float16 is the benchmark's own ROCm default"
 _field model TUNED_CONFIG_DIR cpath? "" "the folder of tuned MoE configs, as a path inside the container; empty means none"
 _field model MOUNTS mounts "" "extra mounts: <source relative to PATCH_DIR>:<container path>[:ro], separated by spaces"
 _field model EXTRA_SERVE_ARGS args "" "extra arguments of the serve command, split on spaces; quotes are refused"

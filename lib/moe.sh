@@ -14,6 +14,8 @@
 #   (E3.S1: these and moe_place take the NAME of an assets function, default moe_assets, so lib/kernels.sh imports the placement and the identity
 #   check instead of copying them; _MOE_WHO and _MOE_PLACED_BY name the caller in a refusal)
 #   moe_sweep_parts <outdir>       a part directory an earlier worker left is moved to rejected/ as INTERRUPTED evidence
+#   moe_layer_words <layer> <envs> <dtype> <act>   the ONE place that says the hook, the weight dtype and the activation dtype of a layer (tune, ab, the dry run and the records ask it)
+#   moe_recorded_check <outdir> <chunk> <layer>    a recorded chunk counts as done only when its chunk.env names the activation dtype this run tunes for (the verb asks it before the admission too)
 #
 # Records (E2.S2 decisions 2-4, the shape of lib/series.sh): chunks/<chunk>/ is final; while it is built it is chunks/<chunk>.part-<run id>/. It
 # becomes final by ONE rename after the validation (RC=0, exactly one E=*.json, `merge_moe.py check` on it, a non-empty log). A failed validation
@@ -24,9 +26,9 @@
 # The A/B prints `  ab rep <r>/<n>: <arm>` before each container, a chunk `  chunk <name>: running <m> min` every 5 production minutes (a heartbeat fork, ended
 # when the container call returns; the argv and chunk.log are untouched). A failed cache clear before a unit refuses it (KIND=refused); the hook's stays best-effort.
 #
-# Exit codes: 0 done (recorded, or already recorded); 1 the unit failed (a rejected record, or the disk gate: KIND=disk_gate; or the stop time came:
+# Exit codes: 0 done (recorded, or already recorded for the same activation dtype: moe_recorded_check); 1 the unit failed (a rejected record, or the disk gate: KIND=disk_gate; or the stop time came:
 # KIND=deadline, and the part stays for the next start's sweep); 2 refused (KIND=refused when the identity check or the layer refuses: the supervisor
-# stops at once; a bad argument is a plain 2 with one `moe:` line). No exit 3 or 4: the supervisor waits for quiet before every admission and a unit is
+# stops at once, also for a recorded chunk of another activation dtype; a bad argument is a plain 2 with one `moe:` line). No exit 3 or 4: the supervisor waits for quiet before every admission and a unit is
 # one container run.
 
 _MOE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -154,13 +156,22 @@ _moe_assets_unchanged() {
 }
 
 # ---------- the container ----------
-# moe_layer_words <layer> <envs array> <dtype var>: the activation hook and the dtype of a layer (decision 2); 2 with one `moe:` line for another
+# moe_layer_words <layer> <envs array> <dtype var> <act var>: the activation hook, the weight dtype and the activation dtype of a layer (decision 2); 2 with one `moe:` line for another.
+# The experts layer is tuned for the activation dtype the model SERVES (MOE_ACT_DTYPE): bfloat16 sets the hook (hook 3 of the vendored benchmark accepts only that value),
+# float16 sets no word, because the benchmark forces float16 on ROCm by itself. The draft layer is always bfloat16 (speed_CB.sh line 22). `tune`, `ab`, the dry run and the
+# records all ask this ONE function, so they cannot disagree.
 moe_layer_words() {
   local -n _l_envs="$2"
   local -n _l_dtype="$3"
+  local -n _l_act="$4"
   case $1 in
-    experts) _l_envs=(); _l_dtype="$R9700_MOE_DTYPE" ;;
-    draft) _l_envs=(-e "MOE_TUNE_ACT_DTYPE=$_MOE_DRAFT_ACT"); _l_dtype=auto ;;
+    experts)
+      _l_envs=()
+      [ "$R9700_MOE_ACT_DTYPE" = bfloat16 ] && _l_envs=(-e "MOE_TUNE_ACT_DTYPE=bfloat16")
+      _l_dtype="$R9700_MOE_DTYPE"
+      _l_act="$R9700_MOE_ACT_DTYPE"
+      ;;
+    draft) _l_envs=(-e "MOE_TUNE_ACT_DTYPE=$_MOE_DRAFT_ACT"); _l_dtype=auto; _l_act="$_MOE_DRAFT_ACT" ;;
     *) echo "moe: the layer \"$1\" is not experts or draft" >&2; return 2 ;;
   esac
 }
@@ -170,10 +181,10 @@ moe_layer_words() {
 moe_argv() {
   local -n _m_argv="$1"
   local -n _m_extra="$2"
-  local mode="$3" layer="$4" model="$5" chunk="$6" cache dtype
+  local mode="$3" layer="$4" model="$5" chunk="$6" cache dtype act
   local -a layer_envs=()
   shift 6
-  moe_layer_words "$layer" layer_envs dtype || return 2
+  moe_layer_words "$layer" layer_envs dtype act || return 2
   [ "$mode" = tune ] && cache="$_MOE_TUNE_CACHE" || cache="$_MOE_AB_CACHE"
   _m_argv=(
     --gpus all --shm-size 16g -e HIP_VISIBLE_DEVICES=0 "${_m_extra[@]}" "${layer_envs[@]}" -e "TRITON_CACHE_DIR=$cache"
@@ -262,11 +273,10 @@ _moe_deadline() {
 # ---------- the chunk unit ----------
 # _moe_chunk_env <part> <chunk> <layer> <search> <name> <started> <finished> <seconds> <rc> <keys...>: chunk.env
 _moe_chunk_env() {
-  local part="$1" chunk="$2" layer="$3" search="$4" name="$5" started="$6" finished="$7" elapsed="$8" rc="$9" dtype act=""
+  local part="$1" chunk="$2" layer="$3" search="$4" name="$5" started="$6" finished="$7" elapsed="$8" rc="$9" dtype act
   local -a layer_envs=()
   shift 9
-  moe_layer_words "$layer" layer_envs dtype
-  [ "$layer" = draft ] && act="$_MOE_DRAFT_ACT"
+  moe_layer_words "$layer" layer_envs dtype act
   {
     _moe_env_line CHUNK "$chunk"
     _moe_env_line LAYER "$layer"
@@ -319,13 +329,47 @@ _moe_heartbeat() {
   done
 }
 
+# moe_recorded_check <outdir> <chunk> <layer>: for a chunk whose folder exists: 0 when its record names this layer and the activation dtype this run tunes for, else 1 with the
+# reason in _MOE_REASON. A record that names none (an empty or absent ACT_DTYPE, as every experts chunk of the versions before MOE_ACT_DTYPE) is unknown to the check and
+# never a match, whichever dtype is wanted: a name alone must not make an fp16 record stand in for a bf16 run. Records are append-only; the remedy is another --out.
+# The verb calls it before the admission (nothing is stopped for a refusal), the worker calls it again as the unit's own net.
+moe_recorded_check() {
+  local have want dtype
+  local -a layer_envs=()
+  moe_layer_words "$3" layer_envs dtype want || { _MOE_REASON="the layer \"$3\" is not experts or draft"; return 1; }
+  have="$(_moe_env_value "$1/chunks/$2/chunk.env" LAYER)"
+  if [ -z "$have" ]; then
+    _MOE_REASON="chunk $2 is recorded with no layer (a record that names none is not taken for $3): use another --out"
+    return 1
+  fi
+  if [ "$have" != "$3" ]; then
+    _MOE_REASON="chunk $2 is recorded for the layer $have but this run is of the layer $3: a record is never replaced, use another --out"
+    return 1
+  fi
+  have="$(_moe_env_value "$1/chunks/$2/chunk.env" ACT_DTYPE)"
+  have="${have#\"}"
+  have="${have%\"}"
+  if [ -z "$have" ]; then
+    _MOE_REASON="chunk $2 is recorded with no activation dtype (an older record, tuned for what the benchmark forced): it is not taken for $want, use another --out"
+    return 1
+  fi
+  if [ "$have" != "$want" ]; then
+    _MOE_REASON="chunk $2 is recorded with ACT_DTYPE $have but this run tunes for $want: a record is never replaced, use another --out"
+    return 1
+  fi
+}
+
 # moe_chunk_unit <outdir> <model> <chunk> <layer> <search> <keys...>
 moe_chunk_unit() {
   local outdir="$1" model="$2" chunk="$3" layer="$4" search="$5" part tune name started finished t0 t1 rc valid heartbeat
   local -a keys=() argv=() extra=()
   shift 5
   keys=("$@")
-  if [ -d "$outdir/chunks/$chunk" ]; then echo "chunk $chunk: recorded, nothing to do"; return 0; fi
+  if [ -d "$outdir/chunks/$chunk" ]; then
+    moe_recorded_check "$outdir" "$chunk" "$layer" || { _moe_refuse "$_MOE_REASON"; return 2; }
+    echo "chunk $chunk: recorded, nothing to do"
+    return 0
+  fi
   echo "=== $(_moe_iso) chunk $chunk ($layer, $search, keys ${keys[*]})"
   if [ "$layer" = experts ] && [ "$R9700_MOE_DTYPE" = none ]; then _moe_refuse "MOE_DTYPE is none: the model has no MoE layers to tune"; return 2; fi
   moe_identity_check || return 2
@@ -400,7 +444,7 @@ moe_activate_recover() {
 # _moe_env_value <file> <KEY>: the first KEY=value line of a file, without the key (a missing file gives nothing)
 _moe_env_value() { sed -n "s/^$2=//p" "$1" 2> /dev/null | head -n 1; }
 
-# _moe_b_file <model> <layer>: the name of the layer's activated file, READ from merged/activate.env (written by `activate`: STAMP, NAME, LAYER) and never guessed from
+# _moe_b_file <model> <layer>: the name of the layer's activated file, READ from merged/activate.env (written by `activate`: STAMP, NAME, LAYER, ACT_DTYPE, BASE_ACT_DTYPE) and never guessed from
 # the chunk records of this outdir (another --out has none) or from what merged/ happens to hold (it can hold the files of several layers). Sets _MOE_B_FILE;
 # 2 with the outcome KIND=refused and a message that says what to do when activate.env is missing, has no layer, or names another layer.
 _moe_b_file() {
@@ -412,6 +456,10 @@ _moe_b_file() {
   [ -n "$got" ] || { _moe_refuse "merged/activate.env names no layer (it was written by an older version); run moe-tune activate again for the record of the layer $layer"; return 2; }
   [ "$got" = "$layer" ] || { _moe_refuse "the file activated last is of the layer $got, not $layer; run moe-tune activate for a record of the layer $layer"; return 2; }
   _MOE_B_FILE="$(_moe_env_value "$env" NAME)"
+  _MOE_B_ACT="$(_moe_env_value "$env" ACT_DTYPE)"
+  _MOE_B_BASE_ACT="$(_moe_env_value "$env" BASE_ACT_DTYPE)"
+  [ -n "$_MOE_B_ACT" ] || _MOE_B_ACT=unknown # an activate.env of an older version names none
+  [ -n "$_MOE_B_BASE_ACT" ] || _MOE_B_BASE_ACT=unknown
   [ -n "$_MOE_B_FILE" ] && [ -f "$merged/$_MOE_B_FILE" ] || { _moe_refuse "merged/ holds no ${_MOE_B_FILE:-file named by activate.env} (the file of the layer $layer); run moe-tune activate again"; return 2; }
 }
 
@@ -440,10 +488,9 @@ _moe_ab_validate() {
 
 # _moe_ab_env <part> <layer> <rule> <rule keys> <reps> <a folder> <b folder> <b file> <started> <finished> <keys> <b sha256>: ab.env
 _moe_ab_env() {
-  local part="$1" layer="$2" dtype act=""
+  local part="$1" layer="$2" dtype act
   local -a layer_envs=()
-  moe_layer_words "$layer" layer_envs dtype
-  [ "$layer" = draft ] && act="$_MOE_DRAFT_ACT"
+  moe_layer_words "$layer" layer_envs dtype act
   {
     _moe_env_line LAYER "$layer"
     _moe_env_line DTYPE "$dtype"
@@ -456,6 +503,8 @@ _moe_ab_env() {
     _moe_env_line B_FOLDER "$7"
     _moe_env_line B_FILE "$8"
     _moe_env_line B_SHA256 "${12}"
+    _moe_env_line FILE_ACT_DTYPE "${_MOE_B_ACT:-unknown}" # what the activated file was made for (activate.env, from merge.env); ACT_DTYPE above is what THIS run used
+    _moe_env_line FILE_BASE_ACT_DTYPE "${_MOE_B_BASE_ACT:-unknown}"
     _moe_env_line A_CONFIG_LINE "$(_moe_config_line "$part/default-1.log")"
     _moe_env_line B_CONFIG_LINE "$(_moe_config_line "$part/tuned-1.log")"
     _moe_env_line IMAGE "$R9700_IMAGE"
@@ -505,6 +554,12 @@ moe_ab_unit() {
   moe_activate_recover "$(moe_exchange_dir "$model")/merged" || { _moe_refuse "$_MOE_LEFTOVER is left by an activation that died and is not the active file's: run moe-tune activate for the record again (it removes the leftover)"; return 2; }
   _moe_b_file "$model" "$layer" || return 2
   bfile="$_MOE_B_FILE"
+  # a file made for another dtype, or with a base of unknown dtype, is measured all the same: one note, and ab.env records both words
+  local run_envs=() run_dtype run_act
+  moe_layer_words "$layer" run_envs run_dtype run_act
+  if [ "$_MOE_B_ACT" != "$run_act" ] || [ "$_MOE_B_BASE_ACT" != none ]; then
+    echo "note: the activated file's activation dtype is $_MOE_B_ACT and its base's is $_MOE_B_BASE_ACT; this A/B runs with $run_act (a base file or an unknown dtype is no record of what it was tuned for)"
+  fi
   bfolder="$(moe_container_dir "$model")/merged"
   moe_identity_check || return 2
   _MOE_HASHES="$(moe_asset_hashes)"

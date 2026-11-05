@@ -125,7 +125,9 @@ _moe_merge_base() {
   if [ -f "$file" ]; then _MOE_BASE_FILE="$file"; echo "base: $file"; else echo "base: $file does not exist, no base"; fi
 }
 
-# _moe_merge_env <record dir> <chunk names> <layer>: merge.env, written beside and moved (the record's own file is never half there)
+# _moe_merge_env <record dir> <chunk names> <layer> <ACT_DTYPE> <BASE_ACT_DTYPE>: merge.env, written beside and moved (the record's own file is never half there).
+# ACT_DTYPE is the activation dtype the chunks name (`unknown` when they name none); BASE_ACT_DTYPE is `none` without a base and `unknown` with one, because a base file
+# is not a record and says nothing about what it was tuned for.
 _moe_merge_env() {
   local dest="$1" bsha=none
   local -a out=()
@@ -134,6 +136,8 @@ _moe_merge_env() {
   {
     _moe_env_line CHUNKS "$2"
     _moe_env_line LAYER "${3:-unknown}"
+    _moe_env_line ACT_DTYPE "${4:-unknown}"
+    _moe_env_line BASE_ACT_DTYPE "${5:-unknown}"
     _moe_env_line BASE "${_MOE_BASE_FILE:-none}"
     _moe_env_line BASE_SHA256 "$bsha"
     _moe_env_line OUTPUT_SHA256 "$(_moe_sha "${out[0]}")"
@@ -144,7 +148,7 @@ _moe_merge_env() {
 # moe_merge_verb <outdir> <model> <layer> <base> <chunk>...: the merge mode. A new folder merged/<stamp>/ per merge, nothing replaced and the exchange
 # folder never touched (which file a server reads is `activate`). The exit code is merge_moe.py's (0, 2).
 moe_merge_verb() {
-  local outdir="$1" model="$2" layer="$3" base="$4" stamp dest rc chunk hint=""
+  local outdir="$1" model="$2" layer="$3" base="$4" stamp dest rc chunk hint="" mlayer act base_act
   local -a dirs=()
   shift 4
   for chunk in "$@"; do dirs+=("$outdir/chunks/$chunk"); done
@@ -155,7 +159,20 @@ moe_merge_verb() {
   python3 "$_MOE_LIB/merge_moe.py" merge --out "$dest" ${_MOE_BASE_FILE:+--base "$_MOE_BASE_FILE"} "${dirs[@]}" 9>&-
   rc=$?
   if [ "$rc" -ne 0 ]; then rmdir "$dest" "$outdir/merged" 2> /dev/null; return "$rc"; fi
-  _moe_merge_env "$dest" "$*" "${layer:-$(_moe_env_value "${dirs[0]}/chunk.env" LAYER)}" || { echo "moe-tune: merge: merge.env cannot be written in $dest" >&2; return 2; }
+  mlayer="${layer:-$(_moe_env_value "${dirs[0]}/chunk.env" LAYER)}"
+  act="$(_moe_env_value "${dirs[0]}/chunk.env" ACT_DTYPE)" # merge_moe.py has made the chunks agree (ACT_DTYPE is an identity word)
+  act="${act//\"/}"
+  [ -n "$act" ] || act=unknown
+  base_act=none
+  [ -z "$_MOE_BASE_FILE" ] || base_act=unknown
+  _moe_merge_env "$dest" "$*" "$mlayer" "$act" "$base_act" || { echo "moe-tune: merge: merge.env cannot be written in $dest" >&2; return 2; }
+  # What the merge MIXES is said and recorded, never refused: the file may be what the person wants.
+  [ -z "$_MOE_BASE_FILE" ] || echo "note: the base $_MOE_BASE_FILE is merged and the activation dtype it was tuned for is unknown; pass --base none to keep it out"
+  if [ "$act" = unknown ]; then
+    echo "note: the chunks name no activation dtype (records of an older version); what the merged file was tuned for is unknown"
+  elif [ "$mlayer" = experts ] && [ "$act" != "$R9700_MOE_ACT_DTYPE" ]; then
+    echo "note: the chunks were tuned for the activation dtype $act, the model's MOE_ACT_DTYPE is $R9700_MOE_ACT_DTYPE"
+  fi
   [ "${outdir##*/}" = "moe-$model" ] || hint=" --out ${outdir##*/}"
   echo "merged: $stamp (activate it with: moe-tune activate $model $stamp$hint)"
 }
@@ -265,7 +282,7 @@ _moe_activate_swap() {
   mv -T -- "$part" "$2" 9>&- || { rm -f -- "$part"; echo "moe-tune: activate: cannot move $part onto $2" >&2; return 2; }
 }
 
-# _moe_activate_env_part <exchange merged folder> <stamp> <name> <sha256> <previous> <forced> <layer>: activate.env written to a PART beside it (sets _MOE_ENV_PART), BEFORE
+# _moe_activate_env_part <exchange merged folder> <stamp> <name> <sha256> <previous> <forced> <layer> <ACT_DTYPE> <BASE_ACT_DTYPE>: activate.env written to a PART beside it (sets _MOE_ENV_PART), BEFORE
 # the swap, so that the record of the swap is ready and only a rename is left after it. 1 when it cannot be written.
 _moe_activate_env_part() {
   _MOE_ENV_PART="$1/activate.env.part-$(_moe_part_tag)"
@@ -273,6 +290,8 @@ _moe_activate_env_part() {
     _moe_env_line STAMP "$2"
     _moe_env_line NAME "$3"
     _moe_env_line LAYER "$7"
+    _moe_env_line ACT_DTYPE "${8:-unknown}"
+    _moe_env_line BASE_ACT_DTYPE "${9:-unknown}"
     _moe_env_line SHA256 "$4"
     _moe_env_line PREVIOUS "$5"
     _moe_env_line ACTIVATED_AT "$(_moe_iso)"
@@ -310,7 +329,7 @@ _moe_activate_layer() {
 # the previous file back (or removes the new one when none was active), so the state never says one thing and holds another; a hard kill between the swap and
 # the rename is finished by the next activate (or by the start of an A/B). 0, or 2 with one line.
 moe_activate_verb() {
-  local outdir="$1" model="$2" stamp="$3" force="$4" layer="${5:-}" ex name active sha
+  local outdir="$1" model="$2" stamp="$3" force="$4" layer="${5:-}" ex name active sha act base_act
   _moe_activate_record "$outdir/merged/$stamp" || return 2
   _moe_activate_layer "$outdir/merged/$stamp" "$layer" || return 2
   layer="$_MOE_ACT_LAYER"
@@ -328,7 +347,10 @@ moe_activate_verb() {
   moe_sweep_part_files "$ex/previous" || return 2
   _moe_activate_keep "$ex" "$name" || { echo "moe-tune: activate: the previous file cannot be kept under $ex/previous" >&2; return 2; }
   sha="$(_moe_sha "$_MOE_REC_FILE")"
-  _moe_activate_env_part "$ex" "$stamp" "$name" "$sha" "$_MOE_PREVIOUS" "$_MOE_FORCED" "$layer" || { echo "moe-tune: activate: activate.env cannot be written in $ex" >&2; return 2; }
+  # the dtypes the record says (merge.env); a record made by hand or by an older version says none, and that is written as `unknown`
+  act="$(_moe_env_value "$outdir/merged/$stamp/merge.env" ACT_DTYPE)"
+  base_act="$(_moe_env_value "$outdir/merged/$stamp/merge.env" BASE_ACT_DTYPE)"
+  _moe_activate_env_part "$ex" "$stamp" "$name" "$sha" "$_MOE_PREVIOUS" "$_MOE_FORCED" "$layer" "${act:-unknown}" "${base_act:-unknown}" || { echo "moe-tune: activate: activate.env cannot be written in $ex" >&2; return 2; }
   _moe_activate_swap "$_MOE_REC_FILE" "$active" || { rm -f -- "$_MOE_ENV_PART"; return 2; } # a failed swap removes its own part; nothing was changed
   _moe_activate_hold after
   if ! mv -T -- "$_MOE_ENV_PART" "$ex/activate.env" 9>&- 2> /dev/null; then

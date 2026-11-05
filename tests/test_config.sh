@@ -287,6 +287,27 @@ t_the_moe_fields_load_with_their_defaults_and_refuse_values_outside_their_legal_
   assert_contains "$ERR" "auto fp8_w8a8 int8_w8a16 int4_w4a16 none" "naming the five legal values"
 }
 
+t_the_moe_activation_dtype_loads_its_two_legal_values_defaults_to_bfloat16_and_refuses_another() {
+  local root dtype; root="$(case_root "$FUNCNAME")"; machine "$root"
+  assert_exit 0 "the 35B file loads" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "bfloat16" "$R9700_MOE_ACT_DTYPE" "the 35B file carries bfloat16 (§ 15.3: it serves BF16)"
+  model "$MODEL_35B" "$root" MOE_ACT_DTYPE ""
+  assert_exit 0 "a model file without the key loads" -- config_load "$root/machine.env" "$root/model.env"
+  assert_eq "bfloat16" "$R9700_MOE_ACT_DTYPE" "MOE_ACT_DTYPE default"
+  assert_exit 0 "the 27B file loads" -- config_load "$root/machine.env" "$MODEL_27B"
+  assert_eq "bfloat16" "$R9700_MOE_ACT_DTYPE" "the 27B file does not set it: the default (not measured for that model)"
+  for dtype in bfloat16 float16; do
+    model "$MODEL_35B" "$root" MOE_ACT_DTYPE "MOE_ACT_DTYPE=$dtype"
+    assert_exit 0 "MOE_ACT_DTYPE=$dtype loads" -- config_load "$root/machine.env" "$root/model.env"
+    assert_eq "$dtype" "$R9700_MOE_ACT_DTYPE" "and is the value read ($dtype)"
+  done
+  for dtype in fp16 float32 ""; do
+    model "$MODEL_35B" "$root" MOE_ACT_DTYPE "MOE_ACT_DTYPE=$dtype"
+    assert_exit 2 "MOE_ACT_DTYPE=[$dtype] is refused" -- config_load "$root/machine.env" "$root/model.env"
+    assert_contains "$ERR" "bfloat16 float16" "[$dtype] naming the two legal values"
+  done
+}
+
 t_a_try_limit_above_the_stop_limit_is_refused_because_every_try_stops_the_server() {
   local root; root="$(case_root "$FUNCNAME")"
   machine "$root" MAX_FAILED_TRIES "MAX_FAILED_TRIES=4"

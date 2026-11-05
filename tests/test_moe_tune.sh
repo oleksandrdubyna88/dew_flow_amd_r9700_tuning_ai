@@ -147,6 +147,51 @@ t_u3_a_recorded_chunk_is_counted_before_admission() {
   assert_eq "no step" "$(ls "$(last_run_dir)/steps" 2> /dev/null | grep . > /dev/null && echo steps || echo 'no step')" "the second invocation's run folder holds no step"
 }
 
+# no_container_since <n> <name>: the verb after call <n> neither stopped the operator's server, nor restored it, nor started a container
+no_container_since() {
+  assert_eq "0" "$(since_count "$1" wslc stop)" "$2: no stop"
+  assert_eq "0" "$(since_count "$1" pwsh.exe -Detach)" "$2: no restore"
+  assert_eq "0" "$(since_count "$1" wslc run)" "$2: no container of any kind"
+}
+
+t_u3b_a_recorded_chunk_of_another_activation_dtype_is_refused_before_admission_and_the_same_dtype_is_nothing_to_do() {
+  mv_setup "$FUNCNAME"
+  assert_exit 0 "the first verb chunk (the 35B file serves bfloat16)" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  assert_eq "bfloat16" "$(env_get "$OUTD/chunks/experts-full-24/chunk.env" ACT_DTYPE)" "the record says bfloat16"
+  local before
+  before="$(calls_n)"
+  mv_variant "MOE_ACT_DTYPE=float16"
+  assert_exit 2 "the same command under a model that serves float16" -- mv_verb chunk "$MVM" --keys "24" --out m
+  assert_contains "$ERR" "moe-tune: chunk experts-full-24 is recorded with ACT_DTYPE bfloat16 but this run tunes for float16" "the line names the chunk, the recorded and the wanted dtype"
+  assert_contains "$ERR" "use another --out" "and the remedy"
+  no_container_since "$before" "float16 over a bfloat16 record"
+  assert_exit 0 "the operator's server still runs" -- test -f "$STUB/containers/vllm.pid"
+  assert_exit 0 "the record is still there" -- test -s "$OUTD/chunks/experts-full-24/chunk.env"
+  before="$(calls_n)"
+  assert_exit 0 "the same command with the same dtype" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  assert_contains "$OUT" "moe-tune: chunk experts-full-24 is recorded, nothing to do" "it says so"
+  no_container_since "$before" "bfloat16 over a bfloat16 record"
+}
+
+t_u3c_an_old_record_with_an_empty_or_absent_activation_dtype_is_refused_for_both_wanted_dtypes_before_admission() {
+  local dtype form before
+  for dtype in bfloat16 float16; do
+    for form in empty absent; do
+      mv_setup "$FUNCNAME-$dtype-$form"
+      assert_exit 0 "[$dtype, $form] the first verb chunk" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+      grep -v '^ACT_DTYPE=' "$OUTD/chunks/experts-full-24/chunk.env" > "$CASE/chunk.env.new"
+      [ "$form" = empty ] && echo "ACT_DTYPE=" >> "$CASE/chunk.env.new" # what an experts chunk of the older versions holds
+      mv "$CASE/chunk.env.new" "$OUTD/chunks/experts-full-24/chunk.env"
+      mv_variant "MOE_ACT_DTYPE=$dtype"
+      before="$(calls_n)"
+      assert_exit 2 "[$dtype, $form] the same command over an old record" -- mv_verb chunk "$MVM" --keys "24" --out m
+      assert_contains "$ERR" "moe-tune: chunk experts-full-24 is recorded with no activation dtype" "[$dtype, $form] the line says the record names none"
+      assert_contains "$ERR" "use another --out" "[$dtype, $form] and the remedy"
+      no_container_since "$before" "[$dtype, $form] an old record"
+    done
+  done
+}
+
 # ---- U4: the arguments are refused before the lock ---------------------------------------------------------------------------------------------
 
 # refused_before_lock <name> <expected stderr text> <args...>: exit 2, the text on stderr, no lock file, no call at all
@@ -225,6 +270,7 @@ t_u6_a_dry_run_prints_the_container_lines_and_starts_nothing() {
   local dry_out="$OUT"
   assert_eq "1" "$(printf '%s\n' "$dry_out" | grep -c '^dry-run: wslc run --rm --name r9700tune-moe-tune-experts-coarse-24 ')" "one chunk line"
   assert_contains "$dry_out" "-e MOE_TUNE_CANDIDATES=/work/r9700/coarse_candidates.json" "with the candidates word"
+  assert_contains "$dry_out" "-e MOE_TUNE_ACT_DTYPE=bfloat16" "and the activation hook of the 35B file (MOE_ACT_DTYPE=bfloat16)"
   assert_contains "$dry_out" "--batch-size 24 " "and the keys"
   assert_eq "1" "$(printf '%s\n' "$dry_out" | grep -c '^dry-run: wslc run --rm --name r9700tune-moe-clear ')" "and the clear's line"
   assert_eq "0" "$(since_count "$before" wslc run)" "no container was started"
@@ -389,6 +435,59 @@ t_u10_a_second_merge_is_a_second_record_and_nothing_is_replaced() {
   assert_eq "$time_before" "$(stat -c '%n %Y' "$OUTD/merged/$first"/* | sort)" "and the same times"
   assert_eq "2" "$(ls "$OUTD"/merged/*/merge.env | wc -l | tr -d ' ')" "two merge.env files"
   assert_missing "$EX/merged" "the exchange folder is still untouched"
+}
+
+# old_chunk <chunk> <empty|absent|nolayer>: the chunk.env of a recorded chunk as an older version wrote it: ACT_DTYPE empty, or not there; `nolayer` drops the LAYER line
+old_chunk() {
+  local env="$OUTD/chunks/$1/chunk.env"
+  case $2 in
+    nolayer) grep -v '^LAYER=' "$env" > "$env.new" ;;
+    *) grep -v '^ACT_DTYPE=' "$env" > "$env.new"; [ "$2" != empty ] || echo "ACT_DTYPE=" >> "$env.new" ;;
+  esac
+  mv "$env.new" "$env"
+}
+
+t_u10b_a_merge_says_and_records_a_base_of_unknown_dtype_and_still_merges() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 32 || return
+  base_place
+  assert_exit 0 "the default merge: --base auto merges the production file, whose dtype nobody recorded" -- mv_verb merge "$MOE_MODEL" --out m experts-full-24 experts-full-32
+  local env="$OUTD/merged/$(stamp_of_merge)/merge.env"
+  assert_eq "bfloat16" "$(env_get "$env" ACT_DTYPE)" "merge.env: ACT_DTYPE is the chunks' common value"
+  assert_eq "unknown" "$(env_get "$env" BASE_ACT_DTYPE)" "merge.env: BASE_ACT_DTYPE is unknown (a base file is not a record)"
+  assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c '^note: ')" "one note"
+  assert_contains "$OUT" "note: the base $R9700_WORK_DIR/moe/tune/merged/$FIX_B2_NAME is merged and the activation dtype it was tuned for is unknown; pass --base none to keep it out" "it names the base and the way to keep it out"
+  assert_eq "merged: $(stamp_of_merge) (activate it with: moe-tune activate $MOE_MODEL $(stamp_of_merge) --out m)" "$(printf '%s\n' "$OUT" | tail -n 1)" "the last line is still the merged line"
+  assert_exit 0 "--base none: the same chunks" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 experts-full-32
+  env="$OUTD/merged/$(stamp_of_merge)/merge.env"
+  assert_eq "none" "$(env_get "$env" BASE_ACT_DTYPE)" "BASE_ACT_DTYPE=none without a base"
+  assert_eq "bfloat16" "$(env_get "$env" ACT_DTYPE)" "and the chunks' dtype is still there"
+  assert_not_contains "$OUT" "note: " "no note at all when nothing is mixed in"
+}
+
+t_u10c_a_merge_of_chunks_that_name_no_dtype_says_unknown_and_still_merges() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 32 || return
+  old_chunk experts-full-24 empty
+  old_chunk experts-full-32 empty
+  assert_exit 0 "chunks of an older version (ACT_DTYPE empty, as they were written)" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 experts-full-32
+  assert_eq "unknown" "$(env_get "$OUTD/merged/$(stamp_of_merge)/merge.env" ACT_DTYPE)" "merge.env: ACT_DTYPE=unknown"
+  assert_contains "$OUT" "note: the chunks name no activation dtype (records of an older version); what the merged file was tuned for is unknown" "the note says so"
+  assert_not_contains "$OUT" "differs from" "and it is not also called a difference"
+}
+
+t_u10d_a_merge_of_chunks_tuned_for_another_dtype_than_the_models_says_so_for_experts_only() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 || return
+  mv_variant "MOE_ACT_DTYPE=float16"
+  assert_exit 0 "experts chunks tuned for bfloat16, merged under a model that serves float16" -- mv_verb merge "$MVM" --out m --base none experts-full-24
+  assert_eq "bfloat16" "$(env_get "$OUTD/merged/$(stamp_of_merge)/merge.env" ACT_DTYPE)" "merge.env: ACT_DTYPE is what the chunks say"
+  assert_contains "$OUT" "note: the chunks were tuned for the activation dtype bfloat16, the model's MOE_ACT_DTYPE is float16" "the note names both"
+  chunk_json_for b1 256
+  assert_exit 0 "a draft chunk" -- mv_verb chunk "$MOE_MODEL" --keys 256 --layer draft --out m
+  assert_exit 0 "merged under the same float16 model: the draft layer is always bfloat16" -- mv_verb merge "$MVM" --out m --base none draft-full-256
+  assert_not_contains "$OUT" "note: " "no note for the draft layer"
+  assert_eq "bfloat16" "$(env_get "$OUTD/merged/$(stamp_of_merge)/merge.env" ACT_DTYPE)" "its ACT_DTYPE is bfloat16"
 }
 
 # ---- U13-U15: activate -----------------------------------------------------------------------------------------------------------------------
@@ -768,6 +867,119 @@ t_u12_the_verb_is_listed_and_a_model_that_is_not_there_is_refused_by_the_shared_
   assert_contains "$ERR" 'r9700: model "nosuchmodel" not found; legal: ' "E1's model_resolve line"
   assert_eq "0" "$(since_count "$before" wslc stop)" "nothing was stopped"
   assert_exit 2 "the underscore spelling is not a verb" -- r9700 moe_tune chunk "$MOE_MODEL" --keys 1
+}
+
+# ---- the dtype of a merged file travels with it: merge.env, activate.env, ab.env ----------------------------------------------------------------------
+
+t_u13h_activate_copies_the_dtypes_of_the_record_and_says_unknown_for_a_record_that_has_none() {
+  mv_setup "$FUNCNAME"
+  wslc stop vllm > /dev/null
+  mv_chunks 24 || return
+  assert_exit 0 "a merge with no base" -- mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24
+  local stamp
+  stamp="$(stamp_of_merge)"
+  assert_exit 0 "activate it" -- mv_verb activate "$MOE_MODEL" "$stamp" --out m
+  assert_eq "bfloat16" "$(env_get "$EX/merged/activate.env" ACT_DTYPE)" "activate.env: ACT_DTYPE is the record's"
+  assert_eq "none" "$(env_get "$EX/merged/activate.env" BASE_ACT_DTYPE)" "activate.env: BASE_ACT_DTYPE is the record's"
+  mv_record hand b2 # merge.env of a record made by hand, or by an older version: no dtype keys
+  assert_exit 0 "activate a record whose merge.env names no dtype" -- mv_verb activate "$MOE_MODEL" hand --out m
+  assert_eq "unknown" "$(env_get "$EX/merged/activate.env" ACT_DTYPE)" "activate.env: ACT_DTYPE=unknown"
+  assert_eq "unknown" "$(env_get "$EX/merged/activate.env" BASE_ACT_DTYPE)" "activate.env: BASE_ACT_DTYPE=unknown"
+}
+
+# latest_merge: the newest stamp under merged/ (for a merge made by a call that is not an assert_exit)
+latest_merge() { ls "$OUTD/merged" | LC_ALL=C sort | tail -n 1; }
+
+# ab_of_record: the experts A/B through the verb over the activated record; sets AB (its folder)
+ab_of_record() {
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$FIX_B2_NAME" b2
+  mv_verb ab "$MOE_MODEL" --keys "8 16 20 24 32 48 64 96 128 192 256" --rule median --rule-keys "24" --layer experts --out m > /dev/null 2>&1 || return 1
+  AB="$(ls -d "$OUTD"/ab/*/ | tail -n 1)"
+  AB="${AB%/}"
+}
+
+t_u11c_ab_records_the_dtypes_of_the_activated_file_and_notes_one_that_is_not_the_runs_kind() {
+  mv_setup "$FUNCNAME"
+  mv_chunks 24 || return
+  base_place
+  # 1: a record with no base, made from chunks of the run's dtype: recorded, no note
+  mv_verb merge "$MOE_MODEL" --out m --base none experts-full-24 > /dev/null 2>&1 || return
+  mv_verb activate "$MOE_MODEL" "$(latest_merge)" --out m --force > /dev/null 2>&1 || return
+  ab_of_record || return
+  assert_eq "bfloat16" "$(env_get "$AB/ab.env" ACT_DTYPE)" "[no base] ACT_DTYPE stays what the A/B ran with"
+  assert_eq "bfloat16" "$(env_get "$AB/ab.env" FILE_ACT_DTYPE)" "[no base] FILE_ACT_DTYPE is the file's"
+  assert_eq "none" "$(env_get "$AB/ab.env" FILE_BASE_ACT_DTYPE)" "[no base] FILE_BASE_ACT_DTYPE=none"
+  assert_eq "0" "$(worker_log 1 | grep -c '^note: ')" "[no base] no note"
+  # 2: a record with the production file as base: still measured, with one note and the base's dtype recorded as unknown
+  mv_verb merge "$MOE_MODEL" --out m experts-full-24 > /dev/null 2>&1 || return
+  mv_verb activate "$MOE_MODEL" "$(latest_merge)" --out m --force > /dev/null 2>&1 || return
+  ab_of_record || return
+  assert_eq "unknown" "$(env_get "$AB/ab.env" FILE_BASE_ACT_DTYPE)" "[base] FILE_BASE_ACT_DTYPE=unknown"
+  assert_eq "1" "$(worker_log 1 | grep -c '^note: ')" "[base] one note"
+  assert_contains "$(worker_log 1)" "note: the activated file's activation dtype is bfloat16 and its base's is unknown; this A/B runs with bfloat16" "[base] it names the file's, the base's and the run's"
+  assert_exit 0 "[base] the A/B was not refused: it has a decision" -- test -s "$AB/decision.txt"
+  # 3: a record that names no dtype at all (by hand, or an older version)
+  mv_record hand b2
+  mv_verb activate "$MOE_MODEL" hand --out m --force > /dev/null 2>&1 || return
+  ab_of_record || return
+  assert_eq "unknown" "$(env_get "$AB/ab.env" FILE_ACT_DTYPE)" "[older record] FILE_ACT_DTYPE=unknown"
+  assert_eq "unknown" "$(env_get "$AB/ab.env" FILE_BASE_ACT_DTYPE)" "[older record] FILE_BASE_ACT_DTYPE=unknown"
+  assert_eq "1" "$(worker_log 1 | grep -c '^note: ')" "[older record] one note"
+  assert_contains "$(worker_log 1)" "activation dtype is unknown and its base's is unknown; this A/B runs with bfloat16" "[older record] it says unknown"
+}
+
+t_u13i_an_activate_env_leftover_of_an_older_version_is_recovered_and_the_ab_calls_its_dtypes_unknown() {
+  mv_setup "$FUNCNAME"
+  killed_after_the_swap || return
+  local part
+  part="$(ls "$EX/merged"/activate.env.part-* | head -n 1)"
+  assert_exit 0 "the leftover of the killed verb is there, with the dtype keys of this version" -- grep -q '^ACT_DTYPE=' "$part"
+  sed -i '/^ACT_DTYPE=/d; /^BASE_ACT_DTYPE=/d' "$part" # what a verb of the older version wrote
+  moe_ab_answers "/work/r9700/moe/$MOE_MODEL/merged" "$NAME" b2
+  assert_exit 0 "an A/B after the kill" -- mv_verb ab "$MOE_MODEL" --keys "8 16 20 24 32 48 64 96 128 192 256" --rule median --rule-keys "24" --layer experts --out m
+  assert_contains "$(worker_log 1)" "recovered activate.env from" "the worker finished the rename first"
+  assert_eq "$S2" "$(env_get "$EX/merged/activate.env" STAMP)" "activate.env names the new activation"
+  assert_eq "unknown" "$(env_get "$(ls -d "$OUTD"/ab/*/ | tail -n 1)ab.env" FILE_ACT_DTYPE)" "the A/B calls the dtype of that file unknown"
+  assert_eq "unknown" "$(env_get "$(ls -d "$OUTD"/ab/*/ | tail -n 1)ab.env" FILE_BASE_ACT_DTYPE)" "and its base's"
+}
+
+# ---- a recorded chunk is checked for its layer too, and the dry run asks the same question -----------------------------------------------------------
+
+t_u3d_a_recorded_chunk_of_another_layer_or_of_none_is_refused_and_a_resume_of_each_layer_is_not() {
+  mv_setup "$FUNCNAME"
+  assert_exit 0 "an experts chunk named mine" -- mv_verb chunk "$MOE_MODEL" --keys "24" --chunk mine --out m
+  chunk_json_for b1 256
+  assert_exit 0 "a draft chunk" -- mv_verb chunk "$MOE_MODEL" --keys "256" --layer draft --out m
+  local before
+  before="$(calls_n)"
+  assert_exit 0 "resume of the experts chunk" -- mv_verb chunk "$MOE_MODEL" --keys "24" --chunk mine --out m
+  assert_contains "$OUT" "moe-tune: chunk mine is recorded, nothing to do" "the experts resume is nothing to do"
+  assert_exit 0 "resume of the draft chunk" -- mv_verb chunk "$MOE_MODEL" --keys "256" --layer draft --out m
+  assert_contains "$OUT" "moe-tune: chunk draft-full-256 is recorded, nothing to do" "the draft resume is nothing to do (its record holds bfloat16)"
+  assert_exit 2 "the experts chunk's name asked for the draft layer" -- mv_verb chunk "$MOE_MODEL" --keys "24" --layer draft --chunk mine --out m
+  assert_contains "$ERR" "moe-tune: chunk mine is recorded for the layer experts but this run is of the layer draft: a record is never replaced, use another --out" "the line names both layers"
+  assert_exit 2 "the draft chunk's name asked for the experts layer" -- mv_verb chunk "$MOE_MODEL" --keys "256" --chunk draft-full-256 --out m
+  assert_contains "$ERR" "is recorded for the layer draft but this run is of the layer experts" "and the other way round"
+  old_chunk mine nolayer
+  assert_exit 2 "a record with no LAYER" -- mv_verb chunk "$MOE_MODEL" --keys "24" --chunk mine --out m
+  assert_contains "$ERR" "moe-tune: chunk mine is recorded with no layer (a record that names none is not taken for experts): use another --out" "the line says the layer is unknown"
+  assert_eq "0" "$(since_count "$before" wslc stop)" "no stop for any of them"
+  assert_eq "0" "$(since_count "$before" wslc run)" "and no container"
+}
+
+t_u3e_a_dry_run_of_a_chunk_the_real_run_refuses_is_refused_and_one_it_accepts_prints_the_container_line() {
+  mv_setup "$FUNCNAME"
+  assert_exit 0 "the first verb chunk (the 35B file serves bfloat16)" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m
+  mv_variant "MOE_ACT_DTYPE=float16"
+  assert_exit 2 "the dry run under a model that serves float16" -- mv_verb chunk "$MVM" --keys "24" --out m --dry-run
+  assert_contains "$ERR" "moe-tune: chunk experts-full-24 is recorded with ACT_DTYPE bfloat16 but this run tunes for float16" "the same line as the real run"
+  assert_not_contains "$OUT" "dry-run: wslc run" "and no container line"
+  assert_exit 2 "the real run is refused too" -- mv_verb chunk "$MVM" --keys "24" --out m
+  assert_exit 0 "the dry run of the same dtype" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m --dry-run
+  assert_contains "$OUT" "dry-run: wslc run --rm --name r9700tune-moe-tune-experts-full-24 " "it prints the container line as before"
+  old_chunk experts-full-24 empty
+  assert_exit 2 "the dry run over an old record" -- mv_verb chunk "$MOE_MODEL" --keys "24" --out m --dry-run
+  assert_contains "$ERR" "recorded with no activation dtype" "refused"
 }
 
 run_all_tests
