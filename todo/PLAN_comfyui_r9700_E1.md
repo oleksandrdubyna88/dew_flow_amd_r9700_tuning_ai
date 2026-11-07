@@ -41,7 +41,7 @@ which part each writes. Nothing below is in two stories.
 | The admission refusal of every existing GPU verb while `COMFY_CONTAINER` is listed (prepare, before any stop; every admission in `step_run`) | S2 | — |
 | `lib/comfy.sh` and the verb `bin/r9700 comfy` with its mode dispatch; the modes `start`, `stop`, `status` | S2 | S3 adds the modes `build` and `fetch` to the same dispatch |
 | `comfyui/Containerfile`, `comfyui/entrypoint.sh`, `comfyui/fetch_model.sh`, `comfyui/models.conf` moved in with the machine values taken out; `comfy_assets` placement through `moe_place` | S3 | — |
-| `comfy build` (the lock, the placement, `wslc_build`, the check container) and `comfy fetch` (no lock, no GPU, the non-prefixed name) | S3 | the lock entry and the owner check it calls are S2's |
+| `comfy build` (the lock, the placement, `wslc_build`, the check container) and `comfy fetch` (its own lock, not the GPU lock; no GPU; the non-prefixed name) | S3 | the lock entry and the owner check it calls are S2's |
 | The tests of the Tests section for these items, and the `fetch_model.sh` fixtures | each story its own | — |
 | `research/module_config.md` (the fields) | S1 | S2 writes the rule text into the `COMFY_CONTAINER` row |
 | `research/architecture.md` (a module row, a verb row, the exit table) | S2 (the rows exist the moment `lib/comfy.sh` and `verb_comfy` do: `tests/test_docs.sh:141`, `:154`) | S3 extends both rows with `build`, `fetch` and the `comfyui/` files, and the exit row 1 |
@@ -1060,8 +1060,17 @@ operator's session.
 The image recipe, the program that starts ComfyUI inside it, the model download and the pinned model sets live in
 `comfyui/`, with no machine value in them. `bin/r9700 comfy build` makes the image on any PC this toolkit's `machine.env`
 describes and checks the ARTEFACT — a throwaway container of the built image must see a ROCm device — not the build's exit
-code. `bin/r9700 comfy fetch <set>...` puts a named model set where ComfyUI reads it, every file accepted only when its
-sha256 equals the one pinned in the repository. The hand-made folder is no longer needed to run ComfyUI on this PC.
+code. It enters through S2's `comfy_locked build card-free …`, so it refuses (exit 2) while the operator's ComfyUI or the
+operator's vLLM is listed, before anything is placed or built (a build takes minutes). It builds to a stamped tag
+`<repository of COMFY_IMAGE>:<UTC stamp>`, checks THAT tag, and only a passed check points `COMFY_IMAGE` at it; a rejected
+build leaves `COMFY_IMAGE` and the earlier stamped tags as they were. The newest four stamped tags are kept (the current one
+plus three to roll back to) and older ones are removed by their exact tag. `bin/r9700 comfy fetch <set>...` puts a named model
+set where ComfyUI reads it, every file accepted only when its own sha256 equals the one pinned in the repository; a fetch takes
+a lock of its own (never the GPU lock, so it still runs beside a series) and refuses while a fetch container is still listed,
+so no two downloads ever write one `.part`. The hand-made folder is no longer needed to run ComfyUI on this PC.
+
+Out of scope: `comfy build --rollback`. A rollback is one command by hand, written in the README's ComfyUI section and in
+`research/module_comfyui.md`: `wslc tag <repository>:<older stamp> <COMFY_IMAGE>`, then `bin/r9700 comfy start`.
 
 ### Files
 
@@ -1071,10 +1080,13 @@ sha256 equals the one pinned in the repository. The hand-made folder is no longe
 | `comfyui/entrypoint.sh` | new: the hand-made `entrypoint.sh` with two test knobs (brief 2) |
 | `comfyui/fetch_model.sh` | new: the hand-made `tests/fetch_model.sh` rewritten around the pinned hash (brief 3) |
 | `comfyui/models.conf` | new: the three sets with pinned sha256 (brief 4) |
-| `lib/comfy.sh` | `comfy_assets`, `comfy_win_dir`, `comfy_models_conf`, `comfy_models_load`, `comfy_sets`, the `build` and `fetch` bodies, the check program (brief 5) |
-| `bin/r9700` | the rows `build` and `fetch` in S2's mode dispatch; the exit comment rows 1 and 2 (brief 6) |
-| `tests/stubs/wslc`, `tests/stubs/stub_common.sh` | the check container's and the fetch container's foreground answers (brief 7) |
-| `tests/test_comfy.sh` | scenarios IM1–IM5, FM1–FM12, MC1–MC3, BU1–BU8, FE1–FE7 (appended to S2's file) |
+| `lib/comfy.sh` | `comfy_assets`, `comfy_win_dir`, `comfy_models_conf`, `comfy_models_load`, `comfy_sets`, `comfy_build_stamp`, `comfy_images_prune`, the `build` and `fetch` modes and bodies, the check program (brief 5) |
+| `lib/adapter.sh` | `wslc_tag`, `wslc_rmi`, `wslc_image_list` after S2's `wslc_inspect`; three rows in the header table (brief 5a) |
+| `lib/run_guarded.sh` | `lock_take` gains an optional second argument, the lock file's name in the state directory; S2's `_rg_listing_tries` an optional lister (brief 5b) |
+| `bin/r9700` | the rows `build` and `fetch` in S2's mode dispatch; the exit comment rows 1, 2 and 4 (brief 6) |
+| `tests/stubs/wslc`, `tests/stubs/stub_common.sh` | the image records (`build -t`, `tag`, `image list`, `rmi`), the check container's answer, the fetch container as a recorded foreground container (brief 7) |
+| `tests/test_comfy.sh` | scenarios IM1–IM5, FM1–FM12, MC1–MC3, BU1–BU16, FE1–FE9 (appended to S2's file) |
+| `tests/test_adapter.sh`, `tests/test_stubs.sh`, `tests/test_restore.sh` | AI1–AI5; SI1–SI5; FL1 |
 | `tests/fixtures/comfy/file_server.py` | new: the local file server of the `fetch_model.sh` tests (brief 8) |
 | `research/module_comfyui.md` | new (brief 9) |
 | `research/README.md` | its row (`tests/test_docs.sh:101`) |
@@ -1118,7 +1130,8 @@ way the source does; `Range: bytes=<n>-` answers `206`; every request is logged 
   present, the request through `/r/`: exit 0; `<store>/vae/x.bin` and `<models>/vae/x.bin` hold the bytes; no `.part` is
   left; the last line is `fetch: done vae/x.bin <size> sha256 <hash>`.
 - FM2 *A source that publishes no sha256 is accepted when the bytes match the pin.* No `.etag` file: exit 0, one line says
-  the source publishes none and the pin decides.
+  the source publishes none and the pin decides; the file is kept because the download's own sha256 equals the pin (the
+  header's absence never refuses, and its presence never replaces the check of FM4).
 - FM3 *A source that publishes another sha256 is refused before anything is downloaded.* `.etag` holds another hash:
   exit 3; one line names `vae/x.bin`, both hashes and `nothing downloaded`; the server log holds only `HEAD` requests for it;
   no file and no `.part` in the store or the models folder. RED first: against the hand-made script's logic (it trusts the
@@ -1157,33 +1170,98 @@ way the source does; `Range: bytes=<n>-` answers `206`; every request is logged 
   them with an `awk` over the same file, not with a typed list).
 
 **`comfy build`** (the stub answers the check container with `answers/comfy_check`, default the four lines of an R9700:
-`torch 2.13.0+rocm10.1.0`, `hip 10.1.0`, `device AMD Radeon AI PRO R9700`, `matmul ok`)
+`torch 2.13.0+rocm10.1.0`, `hip 10.1.0`, `device AMD Radeon AI PRO R9700`, `matmul ok`; the stub keeps its images as records,
+SI1–SI4; every build scenario sets `R9700_TEST_COMFY_STAMP` so its stamp is known, `20261107T120000Z` unless it says
+otherwise; "the stamped tag" is `comfyui-r9700:<that stamp>` with the default `COMFY_IMAGE=comfyui-r9700:local`; "four
+planted stamped tags" are records `comfyui-r9700:2026110<k>T100000Z` for k = 1..4, each with an image id of its own, and
+`comfyui-r9700:local` on the id of k = 4, the state a run of four passed builds leaves)
 
 - BU1 *The build places its files, hash-checked, before it builds.* With no placed copy: after `bin/r9700 comfy build` (exit
   0), `$WORK_DIR/r9700/comfyui/{Containerfile,entrypoint.sh,fetch_model.sh}` equal the repository's files by sha256. With a
   stale placed copy (other bytes): it is rewritten before the `build` call (the call log's order).
-- BU2 *The build argv is the config's, one word each.* `argv_of wslc` for the `build` call is exactly `build -t
-  <COMFY_IMAGE> -f <WIN>\r9700\comfyui\Containerfile --build-arg BASE=<COMFY_BASE_IMAGE> --build-arg COMFYUI_REF=<COMFY_REF>
-  <WIN>\r9700\comfyui`, the values read from the loaded config; `--no-cache` appears only with `comfy build --no-cache`.
-  A `WORK_DIR_WIN` that ends in `\` (`X:\`) gives `X:\r9700\comfyui`, never a doubled backslash.
-- BU3 *The built image is checked by a throwaway container on the card.* After the build, one foreground `run --rm --name
-  <CONTAINER_PREFIX>comfy-check --gpus all --entrypoint python3 <COMFY_IMAGE> -c <program>` (its words read with `argv_of`);
-  stdout holds `comfy: build: device AMD Radeon AI PRO R9700`; exit 0.
-- BU4 *A built image without a ROCm device is refused.* `answers/comfy_check` with `hip None`, then with
-  `device none`, then with `matmul nan`: each exit 1 and one line `r9700: comfy: build: the built image <COMFY_IMAGE> is not
-  usable on the card: <the check's line>`. `answers/comfy_check_rc` 1: exit 1 too. RED first.
-- BU5 *A failed build starts no check container.* `answers/build_rc` 1: exit 1, one line naming the build's code, no `run`
-  call in the log. A build cut by its ceiling (`answers/build_seconds` 100, `COMFY_BUILD_MAX_S=600` with
+- BU2 *The build argv is the config's, one word each, and it names the stamped tag, never `COMFY_IMAGE`.* `argv_of wslc` for
+  the `build` call is exactly `build -t comfyui-r9700:20261107T120000Z -f <WIN>\r9700\comfyui\Containerfile --build-arg
+  BASE=<COMFY_BASE_IMAGE> --build-arg COMFYUI_REF=<COMFY_REF> <WIN>\r9700\comfyui`, the values read from the loaded config
+  (the repository is `COMFY_IMAGE` without its `:<tag>`, computed from the config, not typed); `--no-cache` appears only with
+  `comfy build --no-cache`. A `WORK_DIR_WIN` that ends in `\` (`X:\`) gives `X:\r9700\comfyui`, never a doubled backslash.
+  Without the knob the stamp is the UTC clock's, `^[0-9]{8}T[0-9]{6}Z$`.
+- BU3 *The stamped image is checked by a throwaway container on the card.* After the build, one foreground `run --rm --name
+  <CONTAINER_PREFIX>comfy-check --gpus all --entrypoint python3 comfyui-r9700:20261107T120000Z -c <program>` (its words read
+  with `argv_of`: the check runs the STAMPED tag, the image just built, never `COMFY_IMAGE`); stdout holds `comfy: build:
+  device AMD Radeon AI PRO R9700`; exit 0.
+- BU4 *A built image without a ROCm device is refused, and nothing it was about to replace moves.* Four planted stamped tags;
+  `answers/comfy_check` with `hip None`, then with `device none`, then with `matmul nan`: each exit 1 and one line `r9700:
+  comfy: build: the built image comfyui-r9700:20261107T120000Z is not usable on the card: <the check's line>; comfyui-r9700:local
+  was not moved`; no `tag` call; exactly one `rmi`, its argv exactly `rmi comfyui-r9700:20261107T120000Z` (the rejected
+  stamped tag, by its exact name); afterwards the stub's records are the planted ones exactly (the four stamped tags and
+  `comfyui-r9700:local` on the id of k = 4, compared record by record). `answers/comfy_check_rc` 1: the same. RED first: the
+  build written the old way (`-t <COMFY_IMAGE>`) leaves `comfyui-r9700:local` on the rejected image.
+- BU5 *A failed build starts no check container and moves nothing.* Four planted stamped tags. `answers/build_rc` 1: exit 1,
+  one line naming the build's code, no `run` call in the log, no `tag` call, the records unchanged (the stub records no tag
+  for a failed build, so no `rmi` is made; a stamped tag the image list DOES show after a failed build is removed by its
+  exact name: `answers/build_tags_on_failure` 1, the stub's way to say the engine tagged before it failed, gives one `rmi
+  comfyui-r9700:20261107T120000Z`). A build cut by its ceiling (`answers/build_seconds` 100, `COMFY_BUILD_MAX_S=600` with
   `R9700_CEILING_SCALE=100`: a 6 s ceiling; not `mode`, which would hang the verb's other calls too): exit 1, the line says
-  the ceiling ended it, and no check container is started.
-- BU6 *A placement that cannot be written is refused before any call.* `$WORK_DIR/r9700` is a file: exit 2 with the
-  placement's line, no `wslc` call at all.
+  the ceiling ended it, no check container is started, no `tag` call.
+- BU6 *A placement that cannot be written is refused before any engine call after the admission.* `$WORK_DIR/r9700` is a
+  file: exit 2 with the placement's line; the call log holds the entry's container `list` calls (S2's card-free admission
+  comes first) and no `image`, `build`, `run`, `tag` or `rmi` call.
 - BU7 *`build` takes the lock.* Another holder of the lock (the shape of the lifecycle tests' held lock): exit 4, no `wslc`
-  call; after a successful build the lock is free (a second `build` takes it).
+  call; after a successful build the lock is free (a second `build`, with another stamp, takes it).
 - BU8 *The grammar is checked before the lock.* `comfy build --frob` and `comfy build extra`: exit 2, one line with the legal
   options, no lock file, no call. No `--model` is needed with two model files in `models/` (the machine config alone).
+- BU9 *A build is refused while the operator's ComfyUI is listed, before the placement and before the build.* `comfyui`
+  listed (S2's shape): exit 2; exactly one stderr line, S2's owner line with `comfyui` and `bin/r9700 comfy stop`; no placed
+  copy under `$WORK_DIR/r9700/comfyui/` (none was there before); no `image`, `build`, `run`, `tag` or `rmi` call; no `stop`;
+  `comfyui` still listed; the lock free afterwards. A container named `comfyuix` listed instead: exit 0 (a whole name, S2's
+  rule). RED first: the build runs beside `comfyui` (a `build` call in the log).
+- BU10 *A build is refused while the operator's vLLM is listed, naming it — and a standing marker restores vLLM first and is
+  then refused.* `vllm` listed: exit 2; exactly one stderr line, S2's server line with `vllm`; no placement, no `image`,
+  `build` or `run` call, no `stop`, no `pwsh.exe`; `vllm` still listed. Then `write_marker` (vLLM was running, down now),
+  nothing listed: the restore ran first (one `pwsh.exe -Detach`, `vllm` listed, the marker gone), THEN exit 2 with the server
+  line, and no `build` call: the build never starts beside the server the restore just brought back. Both `comfyui` and
+  `vllm` listed: the owner line (ComfyUI's), one line only. RED first: the build runs beside `vllm`.
+- BU11 *A good build is promoted only after its check, and the image it replaces keeps its stamped tag.* Four planted stamped
+  tags; `answers/build_id` names the new image's id: exit 0; the call order is `build` < the check's `run` < `tag`; the `tag`
+  argv is exactly `tag comfyui-r9700:20261107T120000Z comfyui-r9700:local`; afterwards `comfyui-r9700:local` is on the new id
+  and `comfyui-r9700:20261104T100000Z` still on the id `comfyui-r9700:local` had before (the replaced image is not left
+  untagged); stdout holds `comfy: build: comfyui-r9700:local now names comfyui-r9700:20261107T120000Z`. With no planted record
+  at all (the first build on a PC): exit 0, the two records `comfyui-r9700:20261107T120000Z` and `comfyui-r9700:local`, no
+  `rmi`. RED first (the promotion).
+- BU12 *A fifth passed build removes exactly the oldest stamped tag, by its exact name, after the promotion.* Four planted
+  stamped tags plus `rocm/pytorch:<tag>` and an untagged `<none> <none>` record (another repository and the engine's leftovers,
+  never ours to remove): exit 0; exactly one `rmi`, its argv exactly `rmi comfyui-r9700:20261101T100000Z`, after the `tag`
+  call; stdout `comfy: build: removed comfyui-r9700:20261101T100000Z`; afterwards four stamped tags (k = 2..4 and the new one),
+  `rocm/pytorch` and the untagged record untouched. Six planted (k = 1..6, `comfyui-r9700:local` on k = 6): two `rmi` calls,
+  k = 1 and k = 2, each one exact tag. Every `rmi` argv of the file's scenarios is two words, `rmi` and one
+  `comfyui-r9700:<stamp>` — never an id, never a pattern, never `-f` (the test reads every `rmi` line of `calls.argv`). A
+  record `comfyui-r9700:old-build` (not stamp-shaped) is never removed. RED first (the retention).
+- BU13 *A stamped tag whose image is the one `COMFY_IMAGE` names is never removed.* Five planted stamped tags (k = 1..5) where
+  `answers/build_id` gives the new build the id of k = 1 (a cached rebuild of the same image): after the promotion
+  `comfyui-r9700:local` is on that id, and k = 1, the oldest, is NOT removed: no `rmi` of it, stdout `comfy: build: kept
+  comfyui-r9700:20261101T100000Z: it is the image comfyui-r9700:local names`; k = 2, the next oldest past the four, is removed.
+  The same guard on the rejected tag: `answers/build_id` = the id `comfyui-r9700:local` names, and the check fails (`hip
+  None`): exit 1, no `rmi` at all, the line says the rejected tag `is the image comfyui-r9700:local already names; kept`.
+- BU14 *The retention runs only on a view it can trust.* A passed build with `fail-image-list "1 3"` (the list before the
+  build answers, the three after the promotion fail): exit 0 (the image passed and is promoted), one stderr line `r9700: comfy:
+  build: warning: the image list failed 3 times (<the stub's line>); no old image was removed`, no `rmi`. `answers/image_list`
+  (a scripted listing, SI3) that lacks the new stamped tag after the promotion: exit 0, one warning line `the image list does
+  not show comfyui-r9700:20261107T120000Z; no old image was removed`, no `rmi`. An `rmi` that fails (`answers/rmi_rc 1`): exit
+  0, one warning line naming the tag and the code, the other removals still made.
+- BU15 *The stamp is checked before anything is built.* `COMFY_IMAGE=comfyui-r9700:20261101T100000Z` (a stamp-shaped tag:
+  the retention would count it as one of its own) → exit 2, one line `r9700: comfy: build: COMFY_IMAGE's tag
+  "20261101T100000Z" has the shape of a build stamp; give it another tag`, no placement,
+  no `image` or `build` call. `R9700_TEST_COMFY_STAMP=bad` → exit 2 naming the knob. The stamped tag already listed (planted
+  with the knob's stamp: two builds in one second, or a clock that went back) → exit 1, one line `the tag
+  comfyui-r9700:20261107T120000Z exists already; nothing was built`, no `build` call. A pre-build image list that fails 3
+  times → exit 1, the line names the list, no `build` call.
+- BU16 *A promotion that fails leaves the passed image to tag by hand.* `answers/tag_rc 1`: exit 1, one line `r9700: comfy:
+  build: comfyui-r9700:20261107T120000Z passed its check but comfyui-r9700:local was not moved (code 1): <the stub's line>; tag
+  it by hand (README, ComfyUI)`; no `rmi` (neither the passed tag nor an old one), the records otherwise unchanged.
 
-**`comfy fetch`** (the stub answers the fetch container with `answers/comfy_fetch.log` and `answers/comfy_fetch_rc`)
+**`comfy fetch`** (the stub answers the fetch container with `answers/comfy_fetch.log`, `answers/comfy_fetch_rc` and
+`answers/comfy_fetch_seconds`, and records it as a listed container for as long as it runs, SI5; "the fetch lock" is
+`<state dir>/comfy-fetch.lock`, "the GPU lock" `<state dir>/lock`)
 
 - FE1 *One foreground container, not prefixed, without the card, with the pinned triples.* `comfy fetch zimage`: one call
   `run --rm --name <COMFY_CONTAINER>-fetch -v <COMFY_MODELS_VOLUME>:/models -v <WORK_DIR_WIN>:/work:ro --entrypoint bash
@@ -1198,9 +1276,86 @@ way the source does; `Range: bytes=<n>-` answers `206`; every request is logged 
 - FE5 *The container's verdict becomes the verb's.* `answers/comfy_fetch_rc` 3: exit 2, the container's lines printed and one
   line saying the source publishes another sha256 than `comfyui/models.conf` pins; 4: exit 1; 124 (the ceiling): exit 1 and
   the line says the ceiling ended it.
-- FE6 *`fetch` takes no lock.* While another holder has the lock, `comfy fetch zimage` runs (exit 0, the `run` call made).
+- FE6 *`fetch` takes its own lock and never the GPU lock.* While a `step_bg … worker.sh child` holds the GPU lock, `comfy
+  fetch zimage` runs (exit 0, the `run` call made) and the GPU lock's holder line is still the step's; while a fetch runs
+  (`comfy_bg fetch zimage`, `answers/comfy_fetch_seconds` 30, wait for the `run` call), `r9700 step --model <35B> t --
+  worker.sh ok` takes the GPU lock and exits 0. After a fetch the fetch lock is free (`flock -n <state>/comfy-fetch.lock
+  true`) and holds the holder line `<pid> comfy-fetch <UTC time>`. RED first: a fetch without the lock of its own passes FE8's
+  second-fetch case.
 - FE7 *The models volume is made when it is missing, and only then.* No stub volume: one `volume create <COMFY_MODELS_VOLUME>`
   before the `run`; the volume present: no create.
+- FE8 *A second fetch while one runs is refused with exit 4, naming the holder.* `comfy_bg fetch zimage` with
+  `answers/comfy_fetch_seconds` 30; `wait_for` the first `run` call; `comfy fetch wan5b` → exit 4, exactly one stderr line
+  `r9700: another run holds <state>/comfy-fetch.lock: pid <the first fetch's pid>, comfy-fetch, since <UTC time>` (the
+  `lock_take` line, FL1); one `run` call in the log, not two; no placement rewrite and no `volume` call by the second; `comfy_end`
+  of the first → 0. A `comfy fetch` refused for an unknown set (FE4) while the first runs is still exit 2: the grammar and
+  the sets are checked before the lock. RED first.
+- FE9 *A fetch container left running by a killed fetch is refused — the next fetch never touches its `.part`.* `comfy_bg
+  fetch zimage` (`answers/comfy_fetch_seconds` 30), `wait_for` the stub's record `containers/comfyui-fetch.pid` alive, `kill
+  -KILL $SUP`: the stub's fetch container lives on (its `timeout` group is not the verb's), and the fetch lock is FREE
+  (`flock -n <state>/comfy-fetch.lock true` → 0: descriptor 9 is closed for every child, amendment A1, so a killed verb leaves
+  no lock behind). Then `comfy fetch zimage` → exit 4, exactly one stderr line `r9700: comfy: fetch: a fetch container is
+  still running: comfyui-fetch; wait for it or stop it`; one `run` call in the log (the first's), no second; the fetch lock
+  free afterwards; the test ends the container (`kill_recorded_pids`). The same with the fetch container planted by hand
+  (`wslc run -d --rm --name comfyui-fetch img`, no fetch ever ran, no lock held): exit 4 and the line. A container named
+  `comfyui-fetchx` listed: exit 0 (a whole name). `fail-list 3`: exit 2, one line `r9700: comfy: fetch: the container list
+  failed 3 times (<the stub's line>)`, no `run`, the fetch lock free. RED first: the second fetch starts a `run` whose
+  container would write the first's `.part` (in the stub it is refused by name, exit 1 — the engine's backstop, not ours).
+
+**The image calls of the adapter (`tests/test_adapter.sh`)** — `setup_case` puts the stubs first on `PATH`.
+
+- AI1 *`wslc_tag` hands on two references and refuses anything else before a call.* `wslc_tag comfyui-r9700:20261107T120000Z
+  comfyui-r9700:local` → `argv_of wslc` is exactly `tag comfyui-r9700:20261107T120000Z comfyui-r9700:local`, the child's code,
+  its lines without CR. `wslc_tag -x a:b`, `wslc_tag a:b ''`, `wslc_tag 'a b' c:d`, `wslc_tag a:b` (one word) → 2, one line
+  naming `wslc_tag` and `reference`, no call.
+- AI2 *`wslc_rmi` removes ONE exact tag and nothing that could mean more.* `wslc_rmi comfyui-r9700:20261107T120000Z` → argv
+  exactly `rmi comfyui-r9700:20261107T120000Z`. Refused with 2, one line naming `wslc_rmi` and `exact image tag
+  (<repository>:<tag>; never an id, a pattern or an option)`, and no call: `comfyui-r9700` (no tag: the engine would read
+  `:latest`), `sha256:5662f4cbd417` (an id form), `5662f4cbd417`, `-f`, `comfyui-r9700:*`, `''`, and two words (`wslc_rmi a:b
+  c:d`). RED first: a first version that only checks the reference shape of AI1 passes `sha256:…` and `5662f4cbd417`.
+- AI3 *`wslc_image_list` prints repository, tag and id, one image per line.* `answers/image_list` holds the header and three rows
+  of the `--no-trunc` listing observed on 2026-11-07 (brief 5a, copied into the fixture as they stand there) with CRLF ends:
+  the output is exactly three lines, `comfyui-r9700 local sha256:5662f4cb…`, `<none> <none> sha256:7ce514fe…`, `<none> <none>
+  sha256:b6251d53…` (the whole ids; the expected words are cut from the fixture's own rows by the test, not typed a second
+  time), no header, no CR, no CREATED or SIZE word (`6 hours ago` is three words and is never read); argv `image list
+  --no-trunc`. `fail-image-list 1`: non-zero, nothing on stdout.
+- AI4 *The ceilings are the documented ones* (`:297`, as S1 and S2 extended it): `wslc_tag a:b c:d`, `wslc_rmi a:b`,
+  `wslc_image_list` add `5 60 5 60 5 60`.
+- AI5 *No carriage return from the three* (`:84` extended).
+
+**The stub's images and the fetch container (`tests/test_stubs.sh`)**
+
+- SI1 *A build records its tag only when it succeeds.* `wslc build -t r:t1 -f F C` → `images` gains the record `r t1 <id>`,
+  the id `sha256:` and 64 hex characters (`answers/build_id` when present, else made from the stub's call counter, distinct per
+  build); a second build with `-t r:t1` moves the record to the new id (the engine's way: the old image would be left
+  untagged); `answers/build_rc 1` → no record, unless `answers/build_tags_on_failure` 1.
+- SI2 *`tag` points a second name at an existing image.* `wslc tag r:t1 r:local` → `r local <id of r:t1>`, 0, prints nothing;
+  a missing source → 1 with `stub: tag: no such image: <source>`; `answers/tag_rc 1` → 1, one `stub: tag failed (scripted)`
+  line, no record changed.
+- SI3 *`image list` prints the observed table.* The header `REPOSITORY      TAG      IMAGE ID      CREATED       SIZE` and one
+  row per record, `<repository>   <tag>   <id>   6 hours ago   27.3GB`, CRLF ends; with `--no-trunc` the id is the whole
+  `sha256:<64 hex>`, without it the first 12 hex characters (both observed, brief 5a); `answers/image_list` present → that
+  file printed instead (CRLF added); `fail-image-list` → the counting shape of `fail-volume-list` (`"<count>"` or `"<skip>
+  <count>"`, as `fail-list`), one `stub:` line, exit 1.
+- SI4 *`rmi` removes exactly the named record.* `wslc rmi r:t1` with records `r t1`, `r local` on one id → only `r t1` goes,
+  `r local` stays, 0, prints `Untagged: r:t1` with CRLF; a missing reference → 1 with `stub: rmi: no such image: <ref>`;
+  `answers/rmi_rc 1` → 1, `stub: rmi failed (scripted)`, nothing removed; more than one reference or a word starting `-` → 2
+  (`stub: rmi: one exact reference only`, so a caller that passes `-f` or a list fails loudly in CI).
+- SI5 *The fetch container is a listed container for as long as it runs.* `wslc run --rm --name f --entrypoint bash img
+  /work/r9700/comfyui/fetch_model.sh a b c` with `answers/comfy_fetch_seconds` 3: `wslc list` from another process shows `f`
+  within the first second, the record goes when the run ends (however it ends: the shape of `moe_foreground`), the output is
+  `answers/comfy_fetch.log` (default one `stub fetch` line) with CRLF, the code `answers/comfy_fetch_rc` (default 0); a second
+  such run named `f` while the first lives → 1, `stub: container name in use: f`; a KILL of the process that started the
+  first leaves `f` listed until its own sleep ends.
+
+**The lock file argument (`tests/test_restore.sh`, beside `t_lock_take_writes_the_holder_line_…`, `:33`)**
+
+- FL1 *`lock_take` takes a named lock file of the state directory and the default is unchanged.* `holder comfy-fetch` with
+  `lock_take comfy-fetch comfy-fetch.lock`: `<state>/comfy-fetch.lock` holds `<pid> comfy-fetch <time>`; a second `lock_take
+  comfy-fetch comfy-fetch.lock` → 4 with `r9700: another run holds <state>/comfy-fetch.lock: pid <pid>, comfy-fetch, since
+  <time>`; meanwhile `lock_take step` in another process takes `<state>/lock` (0): the two files are two locks. A name with a
+  `/`, a leading `.` or `-`, or empty → 2, one line `lock_take: "<x>" is not a lock file name`, no file made. Every existing
+  lock test of the file passes without an edit (one argument: `lock`, as today).
 
 ### Brief for the Sonnet coder
 
@@ -1208,10 +1363,14 @@ Read first: this section and *Facts every story uses*; the parent's *The `comfyu
 `fetch`, *Records and growth*; the hand-made files (the main session gives their location); `lib/moe_verb.sh:31–49`
 (`moe_place`), `lib/moe.sh:35–61` and `:94–99` (`_MOE_REPO`, `moe_placed_dir`, `_moe_sha`, `moe_assets`), `lib/kernels.sh:40`
 and `lib/kernels_verb.sh:166–169` (how another assets function reuses `moe_place`); S2's merged `lib/comfy.sh` and
-`verb_comfy`; `tests/stubs/wslc:143–173`. Reuse, never copy: `moe_place <assets fn>` for the placement, `container_name`
-(`lib/serve.sh:104`) for the check container's name, `wslc_build` / `wslc_run_once` / `wslc_volume_list` /
-`wslc_volume_create` for every call, S2's lock entry and volume helper (if S2 wrote no volume helper, write
-`comfy_volume_ensure <name>` here and make `start` call it — one helper, not two).
+`verb_comfy` (`comfy_locked`, `comfy_owners_check`, `_rg_listing_tries`, `comfy_fetch_name`, `comfy_volume_ensure`);
+`lib/run_guarded.sh:88–116` (`lock_take`, `lock_release`); `lib/adapter.sh:111–116` (`_adapter_drop_lock`) and `:244–334`
+with S2's `wslc_inspect` and `_ADAPTER_REF_RE`; `tests/stubs/wslc:28–60` (`moe_foreground`) and `:143–173`. Reuse, never copy:
+`moe_place <assets fn>` for the placement, `container_name` (`lib/serve.sh:104`) for the check container's name, `wslc_build` /
+`wslc_run_once` / `wslc_volume_list` / `wslc_volume_create` and this story's `wslc_tag` / `wslc_rmi` / `wslc_image_list` for
+every call, S2's lock entry, its two-owner admission and its volume helper (if S2 wrote no volume helper, write
+`comfy_volume_ensure <name>` here and make `start` call it — one helper, not two), `lock_take` for the fetch lock (widened,
+5b — never a second flock routine).
 
 **1. `comfyui/Containerfile`.** The hand-made lines 11–57, with: a header that says what the file is and that
 `bin/r9700 comfy build` (`lib/comfy.sh`) builds it from `$WORK_DIR/r9700/comfyui/` with `BASE` and `COMFYUI_REF` from
@@ -1230,9 +1389,11 @@ the first request (FM10; exit 2). `STORE="${R9700_TEST_FETCH_STORE:-/store}"`, `
 the store is used when the folder exists, never made. Per file, in order:
 
 - `name` = the URL's basename without a query; the published hash = the LAST `x-linked-etag` value of
-  `curl -sIL --connect-timeout 30 --max-time 120 "$url"` (the hand-made line 25 pattern; a failed `HEAD` gives none: `|| true`).
-  Published and different from the pin → exit 3 with the FM3 line, before any GET. Published equal, or none → go on (FM2's
-  line when none).
+  `curl -sIL --connect-timeout 30 --max-time 120 "$url"` (the hand-made line 25 pattern; a failed `HEAD` gives none: `|| true`),
+  its quotes and spaces stripped and lower-cased before the comparison. Published and different from the pin → exit 3 with
+  the FM3 line, before any GET. Published equal, or none → go on (FM2's line when none). The pin is the authority either way:
+  the file is kept only when the download's own sha256 equals it (FM4); the header is a pre-flight cross-check, never the
+  acceptance.
 - Store present: `ok_hash store` → `fetch: store ok`; else `ok_hash models` → checked copy models → store (FM8); else a
   `.part` that already has the pin → `mv` (FM6); else `curl -sSfL --connect-timeout 30 -C - -o "$store.part" "$url"`, then
   `ok_hash .part` or remove the `.part` and exit 4 with both hashes (FM4), then `mv`. Then the models copy: `ok_hash models` →
@@ -1274,33 +1435,142 @@ to these; the header says so in one line.
 - `comfy_models_conf`: `${R9700_COMFY_MODELS_CONF:-<repo>/comfyui/models.conf}` (a test knob, the shape of
   `series_arms_conf`). `comfy_models_load <file>`: every problem of MC2 with `<file>:<line>`, all in one pass, 2; on 0 the
   arrays of the lines in file order. `comfy_sets`: the names, file order, once each.
-- The build body: the lock through S2's entry (it also does what S2's spec says about the recovery marker and a listed
-  `COMFY_CONTAINER`); `config_load_machine`; the placement (2 on failure, before any call); `wslc_build "$R9700_COMFY_BUILD_MAX_S"
-  -t … -f "$(comfy_win_dir)\Containerfile" --build-arg BASE=… --build-arg COMFYUI_REF=… [--no-cache] "$(comfy_win_dir)"`;
-  rc ≠ 0 → exit 1 (`timeout after <n> s` for 124/137, else the code); then the check: `wslc_run_once 600 --name
-  "$(container_name comfy-check)" --gpus all --entrypoint python3 "$R9700_COMFY_IMAGE" -c "$_COMFY_CHECK_PY"`. The program
-  (a constant, stdlib + torch) prints exactly four lines: `torch <torch.__version__>`, `hip <torch.version.hip>`, `device
-  <torch.cuda.get_device_name(0) or none>`, `matmul ok|nan` (a 1024×1024 fp16 `x @ x` on the device, its float sum finite),
-  and exits 1 when `hip` is `None`, no device is available or the sum is not finite. The verb accepts only rc 0 AND `hip`
-  not `None` AND a device line not `none` AND `matmul ok` (BU4: the artefact, not the exit code), then prints `comfy: build:
-  device <name>` and releases the lock.
-- The fetch body: no lock; `config_load_machine`; the sets checked against `comfy_sets` (FE4) after `comfy_models_load` (MC2);
-  the placement; the models volume ensured (FE7); `wslc_run_once "$R9700_COMFY_FETCH_MAX_S" --name "$R9700_COMFY_CONTAINER-fetch"
-  -v "$R9700_COMFY_MODELS_VOLUME:/models" [-v "$R9700_COMFY_STORE_WIN:/store"] -v "$R9700_WORK_DIR_WIN:/work:ro"
-  --entrypoint bash "$R9700_COMFY_IMAGE" /work/r9700/comfyui/fetch_model.sh <triples>`; the output printed; rc 0 → 0, 3 → 2,
-  anything else → 1 (FE5). The fetch name is the one S2's name rules check; do not build it anywhere else.
-- Messages start `r9700: comfy: build:` / `r9700: comfy: fetch:`; no line of the file names `wslc` as a word (the seam).
+- Two constants: `_COMFY_STAMP_RE='^[0-9]{8}T[0-9]{6}Z$'` (a build stamp, `YYYYMMDDTHHMMSSZ`, UTC: its text order is its time
+  order, so the retention sorts the TAG, never the engine's `CREATED`, which is relative words) and `_COMFY_IMAGES_KEEP=4` (the
+  current image plus three to roll back to: development-workflow's rollback depth, and the retention IS that trail).
+- `comfy_build_stamp`: `${R9700_TEST_COMFY_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}` (the knob is environment only, a *Test knobs*
+  row); a value that is not `_COMFY_STAMP_RE` → one line naming `R9700_TEST_COMFY_STAMP`, 2.
+- `comfy_mode_build [--no-cache]`: the grammar first (any other word: 2, `r9700: comfy: build: unknown argument "<x>"; legal:
+  --no-cache`, no lock — BU8), then `comfy_locked build card-free comfy_build_body`. The entry is S2's and does, in this
+  order, the lock (4), `restore_first`, `config_load_machine` (2) and the two-owner admission `comfy_owners_check` (2: the
+  owner line or the server line) — all BEFORE the body, so a refused build has placed nothing and built nothing (BU9, BU10).
+  The build writes no admission of its own.
+- `comfy_build_body`, in this order (every failure path ends with the entry's `lock_release`, which `comfy_locked` does):
+  1. `repo="${R9700_COMFY_IMAGE%:*}"`, `tag="${R9700_COMFY_IMAGE##*:}"` (S1's `image` type admits no `:` in the repository
+     part, `lib/config.sh:82`, so the last `:` is the tag's). `tag` matching `_COMFY_STAMP_RE` → the BU15 line, 2.
+  2. `stamp="$(comfy_build_stamp)" || return 2`; `stamped="$repo:$stamp"`.
+  3. The placement (2 on failure, before any engine call — BU6).
+  4. The view before the build: `images="$(_rg_listing_tries wslc_image_list)"` (S2's three tries, widened with the lister as
+     an optional argument, default `wslc_list` — one loop, not a second); a failure → `the image list failed 3 times
+     ($_RG_LIST_ERR); nothing was built`, 1. `$stamped` already a row (`$1 == repo && $2 == stamp`) → the BU15 line, 1.
+     `cur_id` = the id of the row `repo tag` (empty when `COMFY_IMAGE` does not exist yet).
+  5. `wslc_build "$R9700_COMFY_BUILD_MAX_S" -t "$stamped" -f "$(comfy_win_dir)\Containerfile" --build-arg BASE=…
+     --build-arg COMFYUI_REF=… [--no-cache] "$(comfy_win_dir)"` — the stamped tag, NEVER `COMFY_IMAGE` (a fixed tag moved by
+     every build is what left three untagged 27.3 GB images on the operator's PC, observed 2026-11-07); rc ≠ 0 →
+     `comfy_build_reject "the build failed (<timeout after <n> s> for 124/137, else code <rc>)"`, 1.
+  6. The check of the STAMPED tag: `wslc_run_once 600 --name "$(container_name comfy-check)" --gpus all --entrypoint python3
+     "$stamped" -c "$_COMFY_CHECK_PY"`. The program (a constant, stdlib + torch) prints exactly four lines: `torch
+     <torch.__version__>`, `hip <torch.version.hip>`, `device <torch.cuda.get_device_name(0) or none>`, `matmul ok|nan` (a
+     1024×1024 fp16 `x @ x` on the device, its float sum finite), and exits 1 when `hip` is `None`, no device is available or
+     the sum is not finite. Accepted only on rc 0 AND `hip` not `None` AND a device line not `none` AND `matmul ok` (BU4: the
+     artefact, not the exit code); else `comfy_build_reject "the built image $stamped is not usable on the card: <the check's
+     line>; $R9700_COMFY_IMAGE was not moved"`, 1.
+  7. The promotion, only now: `wslc_tag "$stamped" "$R9700_COMFY_IMAGE"`; rc ≠ 0 → the BU16 line, 1 (the passed tag is kept:
+     it is a good image, one hand command from being current; no removal runs).
+  8. stdout `comfy: build: device <name>` and `comfy: build: $R9700_COMFY_IMAGE now names $stamped`.
+  9. `comfy_images_prune "$repo" "$stamped"`; return 0 whatever it reports (the new image passed and is current; a removal
+     that did not happen is a warning line, and the next build's retention catches up).
+- `comfy_build_reject <line>`: the rejected stamped tag goes, by its exact name, and nothing else: `_rg_listing_tries
+  wslc_image_list`; the list failed → the line gains `; whether $stamped was tagged is not known (the image list failed):
+  remove it by hand if the list shows it`; `$stamped` not a row → nothing to remove (a failed build normally tags nothing);
+  a row whose id is `cur_id` → kept, the line gains `; $stamped is the image $R9700_COMFY_IMAGE already names; kept` (BU13);
+  else `wslc_rmi "$stamped"` (a failure: the line gains `; $stamped could not be removed (code <rc>): remove it by hand`).
+  Then the one stderr line `r9700: comfy: build: <line>`.
+- `comfy_images_prune <repository> <new stamped>`: never before the promotion, never on a view it cannot trust (development-
+  workflow: retention must never empty the shelf). `_rg_listing_tries wslc_image_list`; failed → the BU14 warning, 0; the
+  new stamped not a row → the BU14 warning, 0. `cur_id` = the id of the `COMFY_IMAGE` row. The stamped tags = the rows with
+  `$1 == repository` and `$2` matching `_COMFY_STAMP_RE` (nothing else is ever a candidate: another repository, an untagged
+  `<none>` row and a tag of another shape are not ours), sorted by the tag, newest first (`LC_ALL=C sort -r`); the first
+  `_COMFY_IMAGES_KEEP` are kept; for each older one: its id is `cur_id` → stdout `kept <tag>: it is the image <COMFY_IMAGE>
+  names` (a cached rebuild has the id of an older build; whether the engine's `rmi` of a shared id only untags is not observed,
+  so it is never asked); else `wslc_rmi "<repository>:<tag>"` — one exact tag per call, never an id, a pattern or `-f` — rc 0 →
+  stdout `removed <repository>:<tag>`; else the warning `r9700: comfy: build: warning: <repository>:<tag> could not be removed
+  (code <rc>): <last line>`. Return 0.
+- `comfy_mode_fetch <set>...`, in decision 4's order without the restore (parse → lock → config → work): no set → 2, `r9700:
+  comfy: fetch: usage: bin/r9700 comfy fetch <set>...; legal sets: <comfy_sets, space-separated>`; `comfy_models_load
+  "$(comfy_models_conf)"` (MC2, 2); every set in `comfy_sets` (FE4, 2) — all before the lock, so a refused argument never
+  waits on a running fetch (FE8). Then `lock_take comfy-fetch comfy-fetch.lock || return $?` (5b: 4 with the holder line when
+  another fetch holds it). Then, each failure releasing the fetch lock first: `config_load_machine` (2);
+  `listing="$(_rg_listing_tries)"` (2, `r9700: comfy: fetch: the container list failed 3 times ($_RG_LIST_ERR)`);
+  `$(comfy_fetch_name)` a whole line of the listing → 4, `r9700: comfy: fetch: a fetch container is still running: <name>;
+  wait for it or stop it` (FE9: a fetch whose host process was killed leaves its container running, the lock released with the
+  process; starting a second container would resume the same `.part` beside the first — the engine's refusal of a second run
+  of the name is the backstop, never the check); the placement (2); `wslc_volume_list` and `comfy_volume_ensure
+  "$R9700_COMFY_MODELS_VOLUME"` (FE7, 1); `wslc_run_once "$R9700_COMFY_FETCH_MAX_S" --name "$(comfy_fetch_name)" -v
+  "$R9700_COMFY_MODELS_VOLUME:/models" [-v "$R9700_COMFY_STORE_WIN:/store"] -v "$R9700_WORK_DIR_WIN:/work:ro" --entrypoint bash
+  "$R9700_COMFY_IMAGE" /work/r9700/comfyui/fetch_model.sh <triples>`; the output printed; `lock_release`; rc 0 → 0, 3 → 2,
+  anything else → 1 (FE5). `fetch` never calls `restore_first`: it holds no GPU lock, and the next GPU verb restores. The fetch
+  name is `comfy_fetch_name` (S2's, the one its name rules check); do not build it anywhere else.
+- Messages start `r9700: comfy: build:` / `r9700: comfy: fetch:`; no line of the file names `wslc` as a word (the seam: the
+  BU16 line says `tag it by hand (README, ComfyUI)`, the README holds the command).
+
+**5a. `lib/adapter.sh`** — three calls after S2's `wslc_inspect`, each starting with `_adapter_drop_lock`, the shapes of the
+neighbours; three rows in the header table (`:7–20`). The argv shapes were read from the engine's own help on the operator's
+PC on 2026-11-07 (`wslc tag [options] <source> <target>`, alias `wslc image tag`; `wslc rmi [options] <image>...`, aliases
+`wslc image remove|delete|rm`, with `-f` and `--no-prune`, neither used here; `wslc image list` with `--no-trunc`, alias
+`wslc images`), and the `image list` output was observed the same day, `--no-trunc` (the whole header and the first three rows;
+the fixture of AI3 is these lines):
+
+```text
+REPOSITORY      TAG                                                        IMAGE ID                                                                  CREATED       SIZE
+comfyui-r9700   local                                                      sha256:5662f4cbd4173b5a2b276b1c58a47a1309f4e632e3dab2e5a84bdd0d02c0d1e1   6 hours ago   27.3GB
+<none>          <none>                                                     sha256:7ce514fe9121a6d276d5cab9abd4b19b7130c67ebde69c39ed92694156afe72d   6 hours ago   27.3GB
+<none>          <none>                                                     sha256:b6251d5327b051b0a71560fb87cc960f249861611c6a0cd1a665d95b2da4bebc   6 hours ago   27.3GB
+```
+
+(without `--no-trunc` the id is its first 12 hex characters, `5662f4cbd417`). The two untagged rows, and a third not shown,
+are what three builds with the fixed tag `comfyui-r9700:local` left: 27.3 GB each as listed, the ROCm base layers shared, about
+2 GB each of their own (the parent's *Records and growth*). The output of `tag` and `rmi` on success and on failure was NOT
+observed; the acceptance run 1 records it.
+
+- `wslc_tag <source> <target>` (60 s): both words through S2's reference check (`_ADAPTER_REF_RE`; the refusal `wslc_tag:
+  "<x>" is not a reference (…)`, 2, no call); exactly two words (else 2); `_adapter_call --merge 60 "$R9700_WSLC" tag "$1"
+  "$2" | tr -d '\r' 9>&-`, `return "${PIPESTATUS[0]}"`.
+- `wslc_rmi <exact tag>` (60 s): exactly one word, matching `_ADAPTER_TAGGED_RE='^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+$'`
+  and not starting `sha256:` (an id form) — so no bare repository (the engine would read `:latest`), no id, no pattern, no
+  option; else `wslc_rmi: "<x>" is not an exact image tag (<repository>:<tag>; never an id, a pattern or an option)`, 2, no
+  call; `_adapter_call --merge 60 "$R9700_WSLC" rmi "$1" | tr -d '\r' 9>&-`, `return "${PIPESTATUS[0]}"`.
+- `wslc_image_list` (60 s): `_adapter_call --quiet 60 "$R9700_WSLC" image list --no-trunc | tr -d '\r' 9>&- | awk 'NR > 1 &&
+  NF { print $1, $2, $3 }' 9>&-`, `return "${PIPESTATUS[0]}"`: the first three columns (no space inside any of them), the
+  header dropped, `CREATED` (several words) and `SIZE` never read. A comment cites the observation above.
+
+**5b. `lib/run_guarded.sh`** — `lock_take <verb> [<lock file name>]`: the second argument (default `lock`) is a file name of
+the state directory, `^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$` (no `/`, no leading `.` or `-`; else `lock_take: "<x>" is
+not a lock file name`, 2); everything else is as it is — descriptor 9, the holder line, the refusal text with the file's path,
+`_RG_LOCK_OWNER`. The fetch lock uses descriptor 9 ON PURPOSE: the adapter already closes 9 in every child and every fork
+(`_adapter_drop_lock`, `9>&-` in `_adapter_call`, amendment A1), so a SIGKILL of the fetch verb releases its lock at once and
+no long-running fetch client holds it (FE9). A process holds at most one of the two locks — `fetch` never takes the GPU lock
+and no verb under the GPU lock calls `fetch` — and the header comment of the file says so in one line. `lock_release` is
+unchanged. `_rg_listing_tries [<lister>]` (S2's): the optional lister function, default `wslc_list`; nothing else changes.
 
 **6. `bin/r9700`.** The rows `build [--no-cache]` and `fetch <set>...` in S2's dispatch, with their grammar checked before any
-lock (BU8, FE4). The exit comment (`:10–27`): row 1 gains `comfy build: the build or the check of the built image failed;
-comfy fetch: a file did not arrive with its pinned sha256`; row 2 gains `comfy fetch: an unknown set, a malformed
-comfyui/models.conf, or a source that publishes another sha256 than the pinned one`.
+lock (BU8, FE4). The exit comment (`:10–27`): row 1 gains `comfy build: the build or the check of the built image failed
+(COMFY_IMAGE is not moved and the rejected stamped tag is removed), the image list could not be read before the build, the
+stamped tag exists already, or the promotion's tag failed; comfy fetch: a file did not arrive with its pinned sha256`; row 2
+gains `comfy build: the operator's ComfyUI or the operator's server is listed (nothing was placed or built), or COMFY_IMAGE's
+tag has the shape of a build stamp; comfy fetch: an unknown set, a malformed comfyui/models.conf, a source that publishes
+another sha256 than the pinned one, or a container list that failed three times` (the `card-free` words S2 left to this
+story); row 4 gains `comfy fetch: another fetch holds <state dir>/comfy-fetch.lock, or a fetch container is still running`. The
+three places of the exit table agree (`tests/test_lifecycle.sh:432`; brief 9).
 
-**7. The stub.** In `run_container` (`tests/stubs/wslc:145`), for a foreground run, BEFORE the generic `answers/find` branch
-(`:156`): an argv with `--entrypoint python3` whose `-c` program contains `torch.version.hip` → print `answers/comfy_check`
-(default the four R9700 lines) with CRLF, exit `$(moe_answer comfy_check_rc 0)`; an argv with a word ending in
-`/fetch_model.sh` → print `answers/comfy_fetch.log` (default one `stub fetch` line) with CRLF, exit
-`$(moe_answer comfy_fetch_rc 0)`. Header lines in `stub_common.sh`.
+**7. The stub** (`tests/stubs/wslc`; every new file in the header of `stub_common.sh`).
+
+- The images: one file `$R9700_STUB_DIR/images`, a line `<repository> <tag> <id>` per tagged image (the id `sha256:` and 64
+  hex). S1's `build_image`: on rc 0 (or `answers/build_tags_on_failure` 1) and a `-t <ref>` word pair, the record of `<ref>` is
+  set to `answers/build_id` when present, else `sha256:` + the stub's call counter zero-padded to 64 digits (SI1). `tag)`:
+  SI2. `image)` with `list [--no-trunc]`: SI3 (`fail-image-list`, `answers/image_list`), any other `image` word → 2 with one
+  `stub: wslc: unknown image subcommand` line. `rmi)`: SI4 (`answers/rmi_rc`). A test plants records by writing the file.
+- In `run_container` (`:145`), for a foreground run, BEFORE the generic `answers/find` branch (`:156`): an argv with
+  `--entrypoint python3` whose `-c` program contains `torch.version.hip` → print `answers/comfy_check` (default the four R9700
+  lines) with CRLF, exit `$(moe_answer comfy_check_rc 0)`; an argv with a word ending in `/fetch_model.sh` → the fetch
+  container, recorded the way `moe_foreground` records a foreground container (`containers/<name>.pid` = the stub's own pid,
+  removed on EXIT; a live record of the name → `stub: container name in use: <name>`, exit 1), then a sleeper of
+  `$(moe_answer comfy_fetch_seconds 0)` seconds in the background and `wait` (a ceiling or a TERM ends it), then
+  `answers/comfy_fetch.log` (default one `stub fetch` line) with CRLF, exit `$(moe_answer comfy_fetch_rc 0)` (SI5). Reuse
+  `stub_record_pid` and the EXIT-trap shape of `moe_foreground`; do not copy its MoE branches.
+- Header lines: `images`, `answers/build_id`, `answers/build_tags_on_failure`, `answers/tag_rc`, `answers/image_list`,
+  `fail-image-list`, `answers/rmi_rc`, `answers/comfy_check`, `answers/comfy_check_rc`, `answers/comfy_fetch.log`,
+  `answers/comfy_fetch_rc`, `answers/comfy_fetch_seconds`.
 
 **8. `tests/fixtures/comfy/file_server.py`.** Stdlib only (`http.server`, `ThreadingHTTPServer`); argv: the folder, the log
 file, the port file; binds `127.0.0.1` port 0 and writes the port to the port file; `HEAD` and `GET`; `<name>.etag` → the
@@ -1315,22 +1585,31 @@ it at the end of the test. No temp files (`tempfile` is the raw-temp class).
   why it and not AMD's `rocm/comfyui`, from the parent's *What exists today*); the three traps, each with its observation and
   where the repository keeps the fix (trap 1: the Containerfile comment; trap 2: `entrypoint.sh`; trap 3: the venv on
   `/data`); the flows of `build`, `fetch`, `start`, `stop`, `status` (S2's three from S2's merged code); a Mermaid diagram of
-  the five modes against the lock, the operator's vLLM and the volumes; `models.conf` and the pinned-hash rule; *Growth*
-  (the rows of this document's growth table that are S3's and S2's); *Acceptance on the R9700 (E1)* (below). Not a word about
-  `bench`.
+  the five modes against the lock, the fetch lock, the operator's vLLM and the volumes; the stamped tags, the promotion after
+  the check and the retention of four (with the observation of 2026-11-07 that a fixed tag left three untagged images); the
+  rollback by hand in one line, `wslc tag <repository>:<older stamp> <COMFY_IMAGE>`, then `bin/r9700 comfy start` (no
+  `--rollback` mode exists); `models.conf` and the pinned-hash rule; *Growth* (the rows of this document's growth table that
+  are S3's and S2's); *Acceptance on the R9700 (E1)* (below). Not a word about `bench`.
 - `research/README.md`: its row. `research/architecture.md`: the `comfyui/` files and `lib/comfy.sh`'s new functions in S2's
-  module row; `build` and `fetch` in S2's verb row; exit row 1 and row 2 extended. `research/module_tests.md`: the row of
-  `tests/test_comfy.sh` with this story's scenario ids; the flow catalogue rows `bin/r9700 comfy build` and `bin/r9700 comfy
-  fetch` (covered: `tests/test_comfy.sh` …) and three `not covered` rows — the real build, the real start, the real fetch —
-  each with its reason (the card, the network and hours of download) and the acceptance section that records it; the knobs
+  module row, and `wslc_tag`, `wslc_rmi`, `wslc_image_list` and `lock_take`'s lock file argument in it; `build` (the GPU lock,
+  the card-free admission, the stamped tag, the promotion) and `fetch` (its own lock, `<state dir>/comfy-fetch.lock`) in S2's
+  verb row; exit rows 1, 2 and 4 extended in brief 6's words. `research/module_tests.md`: the row of `tests/test_comfy.sh` with
+  this story's scenario ids and the rows of `tests/test_adapter.sh` (AI1–AI5), `tests/test_stubs.sh` (SI1–SI5) and
+  `tests/test_restore.sh` (FL1); the flow catalogue rows `bin/r9700 comfy build` and `bin/r9700 comfy fetch` (covered:
+  `tests/test_comfy.sh` …) and three `not covered` rows — the real build, the real start, the real fetch — each with its reason
+  (the card, the network and hours of download) and the acceptance section that records it; the knobs
   `R9700_COMFY_MODELS_CONF`, `R9700_TEST_COMFY_ROOT`, `R9700_TEST_ENTRY_DRY`, `R9700_TEST_FETCH_STORE`,
-  `R9700_TEST_FETCH_MODELS` and the stub files. `README.md`: a ComfyUI section (the five modes, the fields, the sets, the
-  pinned hashes, one owner of the card). None of the four documents of `check_static.sh --unfinished` may hold `planned`.
+  `R9700_TEST_FETCH_MODELS`, `R9700_TEST_COMFY_STAMP` and the stub files of brief 7; in *What it does not prove*: the outputs
+  of `tag` and `rmi` are the stub's, not observed (the acceptance run 1 records them), and whether the engine's `rmi` of a tag
+  that shares its id with another only untags is not known (the retention never asks it). `README.md`: a ComfyUI section (the
+  five modes, the fields, the sets, the pinned hashes, one owner of the card, the stamped tags and the one-line rollback by
+  hand); the exit list's `1`, `2` and `4` items in brief 6's words. None of the four documents of `check_static.sh
+  --unfinished` may hold `planned`.
 
 **Commands.**
 
 ```bash
-node tests/run.mjs tests/test_comfy.sh
+node tests/run.mjs tests/test_comfy.sh tests/test_adapter.sh tests/test_stubs.sh tests/test_restore.sh
 node tests/run.mjs
 bash tests/check_static.sh
 node .agents/conventions/tools/leftovers-check.mjs --repo . --token r9700 --identity "the R9700 vLLM tuning toolkit" --profile node
@@ -1347,8 +1626,11 @@ settle. Not an `ACCEPTANCE_*.md` file: the parent gives its one acceptance recor
 `POST_DEPLOY.md`, whose change the parent restricts, through `tests/test_docs.sh:110`.
 
 1. `bin/r9700 comfy build` — prediction: the check prints `device AMD Radeon AI PRO R9700` and `matmul ok`; the build takes
-   under `COMFY_BUILD_MAX_S`. Recorded: the wall time, the check's four lines, the image size the PC reports (the growth row's
-   number).
+   under `COMFY_BUILD_MAX_S`; `COMFY_IMAGE` then names the stamped tag, and the image it named before (the hand-made build)
+   is left untagged, the one untagged image this story adds, removed by the operator by its id. Recorded: the wall time, the
+   check's four lines, the raw `wslc image list` before and after (it checks AI3's parse and the size the growth row
+   carries), and the raw output of the promotion's `tag`. A real `rmi` runs first at the fifth passed build; its output is
+   added to the same section then (until then the stub's text stands, as *What it does not prove* says).
 2. `bin/r9700 comfy fetch zimage wan5b` with `COMFY_STORE_WIN` set — prediction: every file ends `fetch: done … sha256 <the
    pin>`, the store first. Recorded: the lines, the wall time, the raw output of `wslc volume list` once (it checks S1's
    parse; a different shape is a fix and a deviation).
@@ -1363,8 +1645,17 @@ The hand-made folder is not used for any of the three; the operator decides whet
 
 ### Done when
 
-- IM1–IM5, FM1–FM12, MC1–MC3, BU1–BU8 and FE1–FE7 pass through `node tests/run.mjs`; each refusal marked RED first was seen
-  failing first; every other test unchanged and green.
+- IM1–IM5, FM1–FM12, MC1–MC3, BU1–BU16, FE1–FE9, AI1–AI5, SI1–SI5 and FL1 pass through `node tests/run.mjs`; each refusal
+  marked RED first was seen failing first; every other test unchanged and green.
+- `comfy build` is refused (exit 2) while the operator's ComfyUI or vLLM is listed, before anything is placed or built, and a
+  standing marker restores vLLM first and is then refused (BU9, BU10); it builds to a stamped tag, checks that tag, and only a
+  passed check moves `COMFY_IMAGE`; a rejected build leaves `COMFY_IMAGE` and every earlier stamped tag as they were and
+  removes its own stamped tag by exact name (BU4, BU5, BU11); after a passed build the newest four stamped tags stay and older
+  ones are removed by exact tag, never the image `COMFY_IMAGE` names, never on a view the list could not give (BU12–BU14).
+- `comfy fetch` holds `<state dir>/comfy-fetch.lock` and never the GPU lock: a second fetch is exit 4 naming the holder, and a
+  fetch container still listed after its fetch was killed is exit 4 naming it — the next fetch never writes the same `.part`
+  (FE6, FE8, FE9); a file is kept only when its own sha256 equals the pin, a source that publishes another refuses before
+  any download (FM2–FM4, FE5).
 - `comfyui/` holds no machine value: `bash tests/check_static.sh` exits 0 (personal paths, syntax, seam, documents); CI green.
 - `research/module_comfyui.md` exists and is linked; the architecture rows, the flow catalogue and the README section name
   `build` and `fetch`; nothing in them describes `bench`.
@@ -1376,13 +1667,14 @@ The hand-made folder is not used for any of the three; the operator decides whet
 
 | Surface | Story | Size | Who retires it | Interrupted |
 |---|---|---|---|---|
-| The volume `COMFY_MODELS_VOLUME` | S3 (`fetch`) | 2.1 GB (`sd15`), 20.7 GB (`zimage`), 18.1 GB (`wan5b`): ≈ 41 GB with the three sets | the operator, by hand (`wslc volume remove`); the toolkit never removes a volume (a download costs hours) | a killed fetch leaves `<name>.part`; the next fetch of the set resumes it, and a wrong one is removed when it fails its pin |
+| The volume `COMFY_MODELS_VOLUME` | S3 (`fetch`) | 2.1 GB (`sd15`), 20.7 GB (`zimage`), 18.1 GB (`wan5b`): ≈ 41 GB with the three sets | the operator, by hand (`wslc volume remove`); the toolkit never removes a volume (a download costs hours) | a killed fetch leaves `<name>.part`; the next fetch of the set resumes it, and a wrong one is removed when it fails its pin; a fetch whose host process was killed while its container lives on is not resumed beside it: the next fetch refuses while `<COMFY_CONTAINER>-fetch` is listed (FE9) |
 | The store `COMFY_STORE_WIN` | S3 | the same ≈ 41 GB | the operator | as above |
 | The volume `COMFY_DATA_VOLUME` | S2 (`start` makes it) | ≈ 0 until a custom node installs packages; one `venv.python-<version>.<stamp>` folder per change of the image's Python | the operator, by hand | — |
 | The volume `COMFY_CACHE_VOLUME` | S2 | at most 2 GB projected (the parent), measured in E2 | the operator, by hand (ComfyUI rebuilds the caches) | — |
 | The placed copies `$WORK_DIR/r9700/comfyui/` | S3 | three files, ≈ 9 KB | rewritten when the repository's file changes (`moe_place`) | a `.part` left by a kill is replaced by the next placement |
 | The failed-start log tail in the state folder | S2 | ≈ 20 KB per failed start (200 lines) | the retention S2's spec names | — |
-| The image `COMFY_IMAGE` | S3 | measured at acceptance run 1 and written into the growth row; each rebuild leaves the previous image untagged | the operator, by hand; the toolkit removes no image | a killed build leaves the build cache of `wslc` |
+| The images of `COMFY_IMAGE`'s repository, one stamped tag `<repository>:<YYYYMMDDTHHMMSSZ>` per passed build | S3 (`build`) | 27.3 GB each as listed, but the ROCm base layers are shared, so a kept build costs its own layers, about 2 GB: four kept ≈ 8 GB beyond the base (the parent's measurement, 2026-11-07). The stamped tags replace what the fixed tag did: on the operator's PC on 2026-11-07 three builds with the fixed tag left three untagged images of 27.3 GB listed size (observed with `wslc image list`) | the build itself, after the new image passed its check and `COMFY_IMAGE` names it: the newest four stamped tags stay (the current one plus three to roll back to), older ones are removed by their exact tag — never by pattern or id, never the image `COMFY_IMAGE` names, never on a list that failed or does not show the new tag; a rejected build's stamped tag is removed at once. The three untagged leftovers of the hand-made builds, and the image the first stamped build untags, are the operator's to remove by id; the toolkit never prunes the engine's untagged images (other images' parents are among them) | a build killed, or cut by its ceiling, may leave its stamped tag (the engine can finish after the client is gone): never `COMFY_IMAGE`, counted by the next passed build's retention like any other; the engine's build cache is the engine's |
+| The fetch lock `<state dir>/comfy-fetch.lock` | S3 (`fetch`) | one file, one holder line (≈ 50 B) | kept, like the GPU lock file; each taker rewrites its line | a SIGKILL releases the flock with the process (descriptor 9 is never inherited by a child); the stale holder line is rewritten by the next taker |
 | Test files | S1, S3 | a few KB per run (the fetch tests' files, the fixture server's log) | the runner removes its run folder | the runner's sweep |
 
 ## Build order
@@ -1399,7 +1691,9 @@ The hand-made folder is not used for any of the three; the operator decides whet
 - [ ] S1: CF1–CF9, AD1–AD8, SB1–SB3 pass in CI; every field is in the table, `machine.env.example` and `module_config.md`;
       the RED observations are in the summary.
 - [ ] S2: the refusals and the start path of its *Done when* pass in CI with the stub, each seen failing first (spec by Fable).
-- [ ] S3: IM, FM, MC, BU, FE pass in CI; `comfyui/` holds no machine value; `research/module_comfyui.md` exists; the three
-      acceptance runs are recorded.
+- [ ] S3: IM, FM, MC, BU, FE, AI, SI and FL pass in CI; `build` refuses beside either owner before it places or builds,
+      promotes only a checked stamped tag and keeps four; `fetch` holds its own lock and refuses beside a live fetch
+      container; `comfyui/` holds no machine value; `research/module_comfyui.md` exists; the three acceptance runs are
+      recorded.
 - [ ] Every story: the seam and personal-path checks pass; `research/architecture.md` and `research/module_tests.md` describe
       what exists; `node .agents/conventions/tools/plan-lifecycle.mjs` is clean.

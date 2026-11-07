@@ -30,7 +30,7 @@ What must be true when it is done:
 
 1. `bin/r9700 comfy build` makes the image from `comfyui/` on any PC this toolkit's `machine.env` describes; `comfy start` /
    `comfy stop` run the operator's ComfyUI; `comfy fetch <set>` puts a named model set where ComfyUI reads it, every file
-   checked against the sha256 its source publishes.
+   checked against the sha256 pinned in `comfyui/models.conf` (read once from what the source publishes).
 2. `bin/r9700 comfy bench` measures ComfyUI arms (server flags and environment) under the same supervisor as every other
    GPU verb — one lock, the operator's vLLM stopped once and restored once, the guards — and records each arm-round only
    when it is complete; `bin/r9700 verdict` gives the ship test over those records for speed.
@@ -141,8 +141,8 @@ what every GPU verb already takes, so it is what decides between ComfyUI and vLL
 - `COMFY_CONTAINER` must not start with `CONTAINER_PREFIX` and must differ from `PROD_CONTAINER` — the same cross-field
   rule as `PROD_CONTAINER`'s (`lib/config.sh:375`), because `container_stop_all` (`lib/restore.sh:152`) stops every
   container with the prefix.
-- `fetch` uses no GPU and takes no lock, so its container is NOT prefixed (`<COMFY_CONTAINER>-fetch`): a prefixed one
-  would be stopped by another run's cleanup halfway through a download.
+- `fetch` uses no GPU and does not take the GPU lock (it takes its own, entry 1.1), so its container is NOT prefixed
+  (`<COMFY_CONTAINER>-fetch`): a prefixed one would be stopped by another run's cleanup halfway through a download.
 
 | Mode | Lifecycle | What it does |
 |---|---|---|
