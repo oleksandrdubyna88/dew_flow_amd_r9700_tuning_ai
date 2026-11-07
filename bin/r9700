@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
 # verdict (E1.S3: the arm-round records of a series and the ship test read back from them), moe-tune (E2.S3: chunk, merge, activate, ab), linear-bench and
-# prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each), run (E3.S2: a plan file of steps under ONE supervisor).
+# prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each), run (E3.S2: a plan file of steps under ONE supervisor), comfy (E1.S2 of the
+# ComfyUI plan: start, stop, status of the operator's ComfyUI on the same card, one owner of the card at a time).
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
@@ -9,13 +10,19 @@
 #
 # Exit codes (the table with the stderr line of each is in research/architecture.md; README.md lists them too):
 #   0 ok
-#   1 verdict: at least one arm is INCOMPLETE (verdict.py's own code)
+#   1 verdict: at least one arm is INCOMPLETE (verdict.py's own code); comfy start: the operator's server could not be stopped, or a volume, the remove or the run call failed
+#     (nothing of ComfyUI is left running; the operator's server was restored when this invocation had stopped it); comfy stop: the container did not stop; comfy status: a state
+#     could not be read
 #   2 config or arguments refused; a series refused to go on (the identity changed, no fingerprint over records); verdict input error;
 #     moe-tune: a refused argument, a model with MOE_DTYPE=none, a merge input error, an activation refused (not a record, or a server is listed);
 #     linear-bench: a model with no LINEAR_SHAPES; linear-bench and prefixtest: a refused argument, a length that does not fit the context, a --name that
-#     names the record of another experiment, a placed file that differs from its source
-#   4 another run holds the lock
-#   5 the restore did not become ready
+#     names the record of another experiment, a placed file that differs from its source; comfy: a refused argument or mode, a machine config refused (the two name rules of
+#     COMFY_CONTAINER among them), a start beside the operator's listed server without --stop-vllm, a container list that failed three times; every verb under the supervisor:
+#     the operator's ComfyUI is listed (the line names bin/r9700 comfy stop)
+#   4 another run holds the lock (comfy start holds it through its readiness wait)
+#   5 the restore did not become ready, or was not started beside the operator's ComfyUI (the marker stays); comfy start: ComfyUI did not become ready (its log tail is saved, it is
+#     stopped, the operator's server is restored when this invocation stopped it), or the container list could not be read after the launch (nothing stopped; the line names
+#     comfy stop and init; the marker stays when the operator's server is owed)
 #   6 the deadline stopped the step, or the worker said nothing more fits
 #   7 the step failed MAX_FAILED_TRIES times
 #   8 not quiet before the deadline, or the operator's server was already stopped MAX_SERVER_STOPS times in this invocation (the next stop is refused), or a worker exited 3 more often than the repeat bound
@@ -29,7 +36,7 @@ set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb comfy; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
@@ -568,6 +575,24 @@ verb_run() {
   _RUN_FILE="$file" _RUN_DRY="$dry"
   if [ "$check" = yes ]; then run_check "$file"; exit $?; fi
   supervise run run_prepare run_body
+  exit $?
+}
+
+# ---------- comfy (E1.S2 of the ComfyUI plan) ----------
+# verb_comfy <mode> [arguments]: the modes are the functions comfy_mode_<mode> of lib/comfy.sh (the list is derived from them, never typed): start [--stop-vllm] [-- <main.py args>]
+# holds the lock through its readiness wait; stop and status take none. The mode and its arguments are checked before the lock.
+verb_comfy() {
+  local mode="${1:-}"
+  if [ -z "$mode" ]; then
+    echo "r9700: comfy: a mode is needed; legal: $(comfy_modes | tr '\n' ' ' | sed 's/ $//')" >&2
+    exit 2
+  fi
+  if ! [[ $mode =~ ^[a-z]+$ ]] || ! declare -F "comfy_mode_$mode" > /dev/null; then
+    echo "r9700: comfy: unknown mode \"$mode\"; legal: $(comfy_modes | tr '\n' ' ' | sed 's/ $//')" >&2
+    exit 2
+  fi
+  shift
+  "comfy_mode_$mode" "$@"
   exit $?
 }
 

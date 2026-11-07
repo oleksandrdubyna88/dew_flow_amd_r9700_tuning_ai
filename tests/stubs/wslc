@@ -164,11 +164,27 @@ run_container() {
     echo "stub: run without --name" >&2
     exit 2
   fi
+  # stopped/<name>: a stopped container keeps its name, as the real engine's does until `remove` (E1.S2: the hand-made start script needed a remove before every start)
+  if [ -f "$R9700_STUB_DIR/stopped/$name" ]; then
+    echo "stub: container name in use (a stopped container): $name" >&2
+    exit 1
+  fi
   if stub_alive "$R9700_STUB_DIR/containers/$name.pid"; then
     echo "stub: container name in use: $name" >&2 # the live record is never overwritten
     exit 1
   fi
   stub_container_start "$name"
+  # The engine's half is done here (the container is real and listed); the client's half is what these two files script (E1.S2: the call can time out, fail or be cut
+  # after the container exists). run-delay-<name>: seconds, READ and not removed, slept before the three lines; run-fail-<name>: a count, then the client fails.
+  if [ -f "$R9700_STUB_DIR/run-delay-$name" ]; then sleep "$(cat "$R9700_STUB_DIR/run-delay-$name")"; fi
+  if [ -f "$R9700_STUB_DIR/run-fail-$name" ]; then
+    read -r _left < "$R9700_STUB_DIR/run-fail-$name"
+    if [ "${_left:-0}" -gt 0 ]; then
+      printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/run-fail-$name"
+      echo "stub: run: the client failed after the container started (scripted): $name" >&2
+      exit 1
+    fi
+  fi
   printf 'stub-line-1%s\nstub-line-2%s\nstub-line-3 %s%s\n' "$CRLF" "$CRLF" "$name" "$CRLF"
 }
 
@@ -190,6 +206,8 @@ list_containers() {
     printf '%s %s\n' "$(date +%s.%N)" "$delay" >> "$R9700_STUB_DIR/list-delayed.log"
     sleep "$delay"
   done
+  # hang-list: a number n; the n-th `list` call counted from the file's making hangs like `mode` would (the recorded sleeper, the caller's ceiling ends it); the others answer
+  if [ -f "$R9700_STUB_DIR/hang-list" ] && [ "$(stub_next list-hang)" = "$(head -n 1 "$R9700_STUB_DIR/hang-list")" ]; then stub_hang; fi
   if [ -f "$R9700_STUB_DIR/fail-list" ]; then
     read -r skip count < "$R9700_STUB_DIR/fail-list"
     if [ -z "$count" ]; then count="$skip"; skip=0; fi
@@ -276,6 +294,16 @@ exec_in() {
     prefix_call "$name" "$@"
   elif [ "${1:-}" = python3 ] && [[ ${2:-} == */harness.py ]]; then
     harness_call "$2" "${3:-}" "${@:4}"
+  elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *system_stats* ]]; then
+    # the ComfyUI readiness probe (E1.S2): answers/comfy_ready, call k takes line k, the last repeats; ok | fail | hang
+    word="$(stub_answer comfy_ready)" || exit 99 # the file is missing: the test scripted nothing (stub_answer exits in its own subshell only)
+    [ "$word" = hang ] && stub_hang
+    if [ "$word" = ok ]; then
+      printf 'device cuda:0 AMD Radeon AI PRO R9700 : native%s\nready%s\n' "$CRLF" "$CRLF"
+    else
+      printf 'system_stats: URLError%s\n' "$CRLF"
+      return 1
+    fi
   elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *urlopen*/metrics* ]]; then
     [ -f "$R9700_STUB_DIR/answers/metrics" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/metrics"
     return 0
@@ -356,8 +384,32 @@ volume_call() {
   esac
 }
 
+# remove <name> (E1.S2): removes a STOPPED container (a file stopped/<name>, planted by the test); a running one and an unknown one are refused with a line.
+#   answers/remove_rc   a non-zero code: `remove` fails with it (one `stub:` line) and removes nothing
+remove_container() {
+  local name="${1:-}" rc
+  rc="$(moe_answer remove_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: remove failed (scripted)" >&2; return "$rc"; fi
+  if stub_alive "$R9700_STUB_DIR/containers/$name.pid"; then echo "stub: cannot remove a running container: $name" >&2; return 1; fi
+  if [ ! -f "$R9700_STUB_DIR/stopped/$name" ]; then echo "stub: no such container: $name" >&2; return 1; fi
+  rm -f "$R9700_STUB_DIR/stopped/$name"
+  printf '%s%s\n' "$name" "$CRLF"
+}
+
+# inspect <reference> (E1.S2): the JSON of an image or container. answers/inspect is printed as it is (CRLF ends added), else one default record with a Created time;
+# answers/inspect_rc is the exit code (non-zero: one `stub: inspect:` line and nothing else).
+inspect_reference() {
+  local rc
+  rc="$(moe_answer inspect_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: inspect: no such reference (scripted): ${1:-}" >&2; return "$rc"; fi
+  if [ -f "$R9700_STUB_DIR/answers/inspect" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/inspect"
+  else printf '[{"Id": "sha256:stub", "Created": "2026-11-07T10:00:00.000000000Z"}]%s\n' "$CRLF"; fi
+}
+
 case "${1:-}" in
   run) shift; run_container "$@" ;;
+  remove) shift; remove_container "$@" ;;
+  inspect) shift; inspect_reference "$@" ;;
   list) list_containers ;;
   build) shift; build_image "$@" ;;
   volume) shift; volume_call "$@" ;;

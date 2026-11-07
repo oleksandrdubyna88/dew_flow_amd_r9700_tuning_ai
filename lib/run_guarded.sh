@@ -27,10 +27,17 @@
 #   rg_log <text> / rg_err <text>   a supervisor line: to stdout (stderr) and to <run dir>/supervisor.log
 #   run_dir_new           RUN_DIR and RUN_ID under RESULTS_DIR/runs, with steps/ guard/ supervisor.log status; sets MARKER_FILE
 #   _rg_sleep <seconds>   a sleep a trapped signal ends at once (a foreground sleep would delay the trap until it ends)
-#   _rg_run <var> <cmd...>   an adapter call a trapped signal ends at once (the same reason: a $(...) or a pipeline would hold the trap)
+#   _rg_run <var> <cmd...>   an adapter call a trapped signal ends at once (the same reason: a $(...) or a pipeline would hold the trap). Its output file is in
+#                         <run dir>, or in $_RG_CALL_DIR for a verb that has no run folder (`comfy start` names the state directory there)
 #   cleanup_hook_set <function>   registers ONE function the cleanup runs once, after the containers are stopped and before the restore (E2.S2
 #                         decision 6: the Triton cache clear of the MoE units); 2 for a name that is not a function. Register it BEFORE `supervise`
 #                         (which forgets it again when it ends). It runs only when a step was admitted.
+#   comfy_owner_check <listing>   0 unless the operator's ComfyUI (COMFY_CONTAINER) is a whole line of <listing>; else the one owner line on stderr and 2 (E1.S2). Called by
+#                         `supervise` (right after the prepare, through _rg_card_free) and by _step_admit (lib/step.sh), so no verb under the supervisor starts a run beside it
+#   comfy_owners_check <listing>  the card-free admission of the ComfyUI verb's locked entry (lib/comfy.sh): comfy_owner_check, then the same for the operator's server
+#                         (PROD_CONTAINER); 2 and one line for the first owner found. NOT called by `supervise` or _step_admit: those verbs stop the server themselves
+#   _rg_listing_tries     the container list with up to 3 tries, t_scale 10 apart; sets _RG_LISTING (0) or _RG_LIST_ERR (1: the first line of the last answer, else `code <n>`)
+#   _rg_card_free         _rg_listing_tries, then comfy_owner_check: `supervise`'s check; 2 with one line when ComfyUI is listed or the list cannot be read
 #   _rg_cleanup_hook_run  what cleanup_once calls: the hook as a background fork under an ENFORCED ceiling (t_ceiling 60 + the 5 s grace) that ends
 #                         its whole tree with _rg_tree_kill; neither a failed nor a killed hook changes the cleanup's result: the restore runs
 
@@ -364,7 +371,7 @@ _rg_run() {
   local var="$1" file rc
   shift
   _RG_CALLS=$((${_RG_CALLS:-0} + 1))
-  file="${RUN_DIR:?}/.call.$$.$_RG_CALLS"
+  file="${_RG_CALL_DIR:-${RUN_DIR:?}}/.call.$$.$_RG_CALLS" # a verb with no run folder (comfy start) names the folder of its calls in _RG_CALL_DIR
   "$@" > "$file" 2>&1 9>&- &
   _RG_BG=$!
   wait "$_RG_BG"
@@ -424,12 +431,65 @@ _rg_fork_sleep() {
   _rg_sleep "$1"
 }
 
+# ---------- one owner of the card (E1.S2) ----------
+# comfy_owner_check <listing>: 0 when the operator's ComfyUI is not listed (a whole line of the listing, never a substring); else the owner line and 2. An empty COMFY_CONTAINER
+# means the config was not loaded: a programming error, said and refused, never a silent pass.
+comfy_owner_check() {
+  if [ -z "${R9700_COMFY_CONTAINER:-}" ]; then
+    rg_err "r9700: comfy_owner_check: COMFY_CONTAINER is empty (the config was not loaded)"
+    return 2
+  fi
+  grep -Fxq -- "$R9700_COMFY_CONTAINER" <<< "${1:-}" || return 0
+  rg_err "r9700: the operator's ComfyUI ($R9700_COMFY_CONTAINER) is listed and holds the card; run bin/r9700 comfy stop first"
+  return 2
+}
+
+# comfy_owners_check <listing>: the two-owner check of the card-free admission (see the header). ComfyUI's line wins when both are listed.
+comfy_owners_check() {
+  comfy_owner_check "${1:-}" || return 2
+  if [ -z "${R9700_PROD_CONTAINER:-}" ]; then
+    rg_err "r9700: comfy_owners_check: PROD_CONTAINER is empty (the config was not loaded)"
+    return 2
+  fi
+  grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "${1:-}" || return 0
+  rg_err "r9700: the operator's server ($R9700_PROD_CONTAINER) is listed and holds the card; stop it by hand first (no verb of the toolkit stops it for a build)"
+  return 2
+}
+
+# _rg_listing_tries: up to 3 tries of the container list, t_scale 10 apart (the A22 shape of _restore_prepare: a transient fault of the engine must not decide a refusal). 0 and the
+# listing in _RG_LISTING; 1 and _RG_LIST_ERR = the first line of the last answer (`code <n>` when it said nothing: the list call keeps no stderr of the child). Called in the
+# caller's own shell, not in a command substitution, so that both variables reach the caller. A plain call, not _rg_run: there is no run folder yet.
+_rg_listing_tries() {
+  local i out rc
+  _RG_LISTING="" _RG_LIST_ERR=""
+  for i in 1 2 3; do
+    out="$(wslc_list 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then _RG_LISTING="$out"; return 0; fi
+    [ "$i" -lt 3 ] && sleep "$(t_scale 10)" 9>&-
+  done
+  _RG_LIST_ERR="${out%%$'\n'*}"
+  [ -n "$_RG_LIST_ERR" ] || _RG_LIST_ERR="code $rc"
+  return 1
+}
+
+# _rg_card_free: `supervise`'s check, after the prepare (the config is loaded, nothing is stopped, no run folder or trap exists yet). 2 with one line.
+_rg_card_free() {
+  if ! _rg_listing_tries; then
+    rg_err "r9700: the container list failed 3 times ($_RG_LIST_ERR): cannot tell whether the operator's ComfyUI runs; nothing was started"
+    return 2
+  fi
+  comfy_owner_check "$_RG_LISTING"
+}
+
 # ---------- supervise and the one cleanup (decision 1, amendment A5) ----------
 # supervise <verb> <prepare function> <body function> [body arguments...]: the lifecycle of one invocation that may change the machine:
-#   lock -> restore-first (restore_first, lib/restore.sh) -> <prepare> (loads and validates the config; non-zero refuses, exit 2) -> the deadline
+#   lock -> restore-first (restore_first, lib/restore.sh) -> <prepare> (loads and validates the config; non-zero refuses, exit 2) -> the owner check (_rg_card_free:
+#   the operator's ComfyUI listed, or a container list that cannot be read, refuses with exit 2 before anything is stopped) -> the deadline
 #   -> the run folder -> the INT, TERM and HUP traps -> <body> -> cleanup_once. The body calls step_run (lib/step.sh) any number of times; the
 #   server is restored once, at the end, by cleanup_once, and between steps only by the wait rule of decision 15. Returns the body's code, or
-#   5 when the restore at the end did not become ready, or 130/143 after an interrupt (the handler exits itself).
+#   5 when the restore at the end did not become ready, or 130/143 after an interrupt (the handler exits itself). A signal before the traps ends the supervisor at once;
+#   an adapter call in flight ends at its own ceiling; the lock goes with the process.
 supervise() {
   local verb="${1:-}" prepare="${2:-}" body="${3:-}" rc kind crc registered="${_RG_CLEANUP_HOOK:-}"
   shift 3
@@ -438,6 +498,7 @@ supervise() {
   lock_take "$verb" || return $?
   restore_first
   if ! "$prepare"; then lock_release; return 2; fi
+  if ! _rg_card_free; then lock_release; return 2; fi
   if ! deadline_compute; then lock_release; return 2; fi
   if ! run_dir_new; then lock_release; return 2; fi
   [ -n "$_RG_CLEANUP_HOOK" ] || _RG_CLEANUP_HOOK="$registered" # a hook the body set (cleanup_hook_set) wins; one registered before supervise is kept

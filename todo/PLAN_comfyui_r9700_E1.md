@@ -1450,7 +1450,7 @@ to these; the header says so in one line.
      part, `lib/config.sh:82`, so the last `:` is the tag's). `tag` matching `_COMFY_STAMP_RE` → the BU15 line, 2.
   2. `stamp="$(comfy_build_stamp)" || return 2`; `stamped="$repo:$stamp"`.
   3. The placement (2 on failure, before any engine call — BU6).
-  4. The view before the build: `images="$(_rg_listing_tries wslc_image_list)"` (S2's three tries, widened with the lister as
+  4. The view before the build: `_rg_listing_tries wslc_image_list` then `images="$_RG_LISTING"` (S2's three tries, widened with the lister as
      an optional argument, default `wslc_list` — one loop, not a second); a failure → `the image list failed 3 times
      ($_RG_LIST_ERR); nothing was built`, 1. `$stamped` already a row (`$1 == repo && $2 == stamp`) → the BU15 line, 1.
      `cur_id` = the id of the row `repo tag` (empty when `COMFY_IMAGE` does not exist yet).
@@ -1491,7 +1491,7 @@ to these; the header says so in one line.
   "$(comfy_models_conf)"` (MC2, 2); every set in `comfy_sets` (FE4, 2) — all before the lock, so a refused argument never
   waits on a running fetch (FE8). Then `lock_take comfy-fetch comfy-fetch.lock || return $?` (5b: 4 with the holder line when
   another fetch holds it). Then, each failure releasing the fetch lock first: `config_load_machine` (2);
-  `listing="$(_rg_listing_tries)"` (2, `r9700: comfy: fetch: the container list failed 3 times ($_RG_LIST_ERR)`);
+  `_rg_listing_tries` then `listing="$_RG_LISTING"` (2, `r9700: comfy: fetch: the container list failed 3 times ($_RG_LIST_ERR)`);
   `$(comfy_fetch_name)` a whole line of the listing → 4, `r9700: comfy: fetch: a fetch container is still running: <name>;
   wait for it or stop it` (FE9: a fetch whose host process was killed leaves its container running, the lock released with the
   process; starting a second container would resume the same `.part` beside the first — the engine's refusal of a second run
@@ -1541,7 +1541,7 @@ not a lock file name`, 2); everything else is as it is — descriptor 9, the hol
 (`_adapter_drop_lock`, `9>&-` in `_adapter_call`, amendment A1), so a SIGKILL of the fetch verb releases its lock at once and
 no long-running fetch client holds it (FE9). A process holds at most one of the two locks — `fetch` never takes the GPU lock
 and no verb under the GPU lock calls `fetch` — and the header comment of the file says so in one line. `lock_release` is
-unchanged. `_rg_listing_tries [<lister>]` (S2's): the optional lister function, default `wslc_list`; nothing else changes.
+unchanged. `_rg_listing_tries [<lister>]` (S2's): the optional lister function, default `wslc_list`; it is called directly, never in `$(…)`, and hands its result back in `_RG_LISTING` (on success) or `_RG_LIST_ERR` (on failure) — a command substitution would lose `_RG_LIST_ERR` in its subshell (the S2 review, 2026-11-07).
 
 **6. `bin/r9700`.** The rows `build [--no-cache]` and `fetch <set>...` in S2's dispatch, with their grammar checked before any
 lock (BU8, FE4). The exit comment (`:10–27`): row 1 gains `comfy build: the build or the check of the built image failed
@@ -1697,3 +1697,12 @@ The hand-made folder is not used for any of the three; the operator decides whet
       recorded.
 - [ ] Every story: the seam and personal-path checks pass; `research/architecture.md` and `research/module_tests.md` describe
       what exists; `node .agents/conventions/tools/plan-lifecycle.mjs` is clean.
+
+## Follow-ups found while building E1 (not in E1's scope)
+
+- **A signal before `supervise`'s traps** (the S2 review, 2026-11-07). Between `lock_take` and `_rg_traps_on`, `supervise` keeps
+  the default signal handling: a TERM ends it at once while `restore_first` (up to `READY_TIMEOUT_S`) or the owner check's list
+  calls are in flight; each call then ends at its own ceiling (`timeout --kill-after`), the lock goes with the process, and
+  nothing has been stopped yet, so nothing is owed. Bounded, and older than E1 (E1 adds up to ~3×60 s + 20 s to the window).
+  The fix — a handler set right after `lock_take` that kills `_RG_BG` and exits 128+n, with the pre-trap calls going through
+  `_rg_run` — belongs to its own change; S2 states the window in `supervise`'s header.

@@ -101,6 +101,7 @@ _RE_HHMM='^([01][0-9]|2[0-3]):[0-5][0-9]$'
 _RE_CMD='^[A-Za-z0-9][A-Za-z0-9._+-]*$'
 _RE_ARM='^[a-z0-9]+$'
 _RE_ENVWORD='^[A-Z_][A-Z0-9_]*=[^[:space:]]*$'
+_COMFY_FETCH_SUFFIX='-fetch' # the fetch container is <COMFY_CONTAINER>-fetch: the ONE place the suffix is written (lib/comfy.sh builds the name from it)
 _VALUE_LEGAL='a bare value without spaces or quotes, or one pair of double quotes'
 _BANNED='"$" and "`" are not allowed (values are never expanded)'
 _OUTPUT_TOKENS=128
@@ -380,6 +381,33 @@ _cfg_fill_and_check() {
 # _cfg_where <key>: the file of a key's value (the file of its scope when the value is a default).
 _cfg_where() { printf '%s' "${_C_FILE[$1]:-${_C_SRC[${_F_SCOPE[$1]}]}}"; }
 
+# _cfg_cross_comfy_names: the two name rules of the operator's ComfyUI container (E1.S2), over COMFY_CONTAINER and the fetch name made from it. Neither name may start with
+# CONTAINER_PREFIX (container_stop_all and init stop every container with that prefix) and neither may be PROD_CONTAINER (the toolkit stops and restores that one). Each rule
+# reports once, at the first name that breaks it (a COMFY_CONTAINER under the prefix always has a fetch name under it too). A machine rule: both scopes run it.
+_cfg_cross_comfy_names() {
+  local name label i
+  local -a names=("${_C_VAL[COMFY_CONTAINER]-}" "${_C_VAL[COMFY_CONTAINER]-}$_COMFY_FETCH_SUFFIX") labels=("" " (the fetch container's name)")
+  [ -z "${_C_BAD[COMFY_CONTAINER]+set}${_C_BAD[CONTAINER_PREFIX]+set}${_C_BAD[PROD_CONTAINER]+set}" ] || return 0
+  for i in 0 1; do
+    name="${names[$i]}" label="${labels[$i]}"
+    if [[ $name == "${_C_VAL[CONTAINER_PREFIX]}"* ]]; then
+      _cfg_error "$(_cfg_where COMFY_CONTAINER)" "${_C_LINE[COMFY_CONTAINER]-}" COMFY_CONTAINER \
+        "\"$name\"$label starts with the container prefix \"${_C_VAL[CONTAINER_PREFIX]}\"" \
+        "COMFY_CONTAINER must not start with CONTAINER_PREFIX (the toolkit stops every container with that prefix)"
+      break
+    fi
+  done
+  for i in 0 1; do
+    name="${names[$i]}" label="${labels[$i]}"
+    if [ "$name" = "${_C_VAL[PROD_CONTAINER]}" ]; then
+      _cfg_error "$(_cfg_where COMFY_CONTAINER)" "${_C_LINE[COMFY_CONTAINER]-}" COMFY_CONTAINER \
+        "\"$name\"$label is also PROD_CONTAINER" \
+        "COMFY_CONTAINER must differ from PROD_CONTAINER (the toolkit stops and restores one, never the other)"
+      break
+    fi
+  done
+}
+
 # Cross-field checks: only over fields that passed their own check. _cfg_cross [all|machine]: the machine scope skips the rules that read a model key.
 _cfg_cross() {
   local n word source k scope="${1:-all}"
@@ -412,6 +440,7 @@ _cfg_cross() {
       "\"${_C_VAL[PROD_CONTAINER]}\" starts with the container prefix \"${_C_VAL[CONTAINER_PREFIX]}\"" \
       "PROD_CONTAINER must not start with CONTAINER_PREFIX (the toolkit stops every container with that prefix)"
   fi
+  _cfg_cross_comfy_names
   if [ -z "${_C_BAD[MAX_FAILED_TRIES]+set}${_C_BAD[MAX_SERVER_STOPS]+set}" ] && ((_C_VAL[MAX_FAILED_TRIES] > _C_VAL[MAX_SERVER_STOPS])); then
     _cfg_error "$(_cfg_where MAX_FAILED_TRIES)" "${_C_LINE[MAX_FAILED_TRIES]-}" MAX_FAILED_TRIES \
       "${_C_VAL[MAX_FAILED_TRIES]} is more than MAX_SERVER_STOPS ${_C_VAL[MAX_SERVER_STOPS]}" \

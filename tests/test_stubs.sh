@@ -470,4 +470,123 @@ t_an_unknown_or_incomplete_volume_call_is_refused() {
   assert_eq "1" "$(grep -c '^stub: wslc:' <<< "$ERR")" "one stub: wslc: line"
 }
 
+# ---- E1.S2: the stub learns remove, inspect, the ComfyUI probe and the detached run that starts and still fails or delays (SW1-SW6) ------------------------
+
+t_the_stub_remove_answers_by_the_state_of_the_container() {
+  setup_case "$FUNCNAME"
+  mkdir -p "$STUB/stopped"
+  : > "$STUB/stopped/a"
+  assert_exit 0 "remove of a stopped container" -- wslc remove a
+  assert_eq "a$CR" "$OUT" "prints the name with a CRLF end"
+  assert_missing "$STUB/stopped/a" "and the stopped record is gone"
+  wslc run -d --rm --name a img > /dev/null
+  assert_exit 1 "remove of a running container" -- wslc remove a
+  assert_contains "$ERR" "stub: cannot remove a running container: a" "says so"
+  assert_exit 0 "and it still runs" -- test -f "$STUB/containers/a.pid"
+  assert_contains "$(wslc list)" "a" "listed"
+  wslc stop a > /dev/null
+  assert_exit 1 "remove of a container that is neither" -- wslc remove a
+  assert_contains "$ERR" "stub: no such container: a" "says so"
+  : > "$STUB/stopped/a"
+  printf '1\n' > "$STUB/answers/remove_rc"
+  assert_exit 1 "a scripted failure" -- wslc remove a
+  assert_contains "$ERR" "stub: remove failed (scripted)" "says so"
+  assert_exit 0 "and the stopped record is kept" -- test -f "$STUB/stopped/a"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_stopped_container_keeps_its_name_in_the_stub() {
+  setup_case "$FUNCNAME"
+  mkdir -p "$STUB/stopped"
+  : > "$STUB/stopped/a"
+  assert_exit 1 "a detached run of the name" -- wslc run -d --rm --name a img
+  assert_contains "$ERR" "stub: container name in use (a stopped container): a" "refused with the line"
+  assert_missing "$STUB/containers/a.pid" "nothing was started"
+  wslc remove a > /dev/null
+  assert_exit 0 "after the remove the run works" -- wslc run -d --rm --name a img
+  assert_exit 0 "and the container is there" -- test -f "$STUB/containers/a.pid"
+  kill_recorded_pids "$CASE"
+}
+
+t_the_stub_inspect_is_scripted() {
+  setup_case "$FUNCNAME"
+  assert_exit 0 "the default inspect" -- wslc inspect img:x
+  assert_eq '[{"Id": "sha256:stub", "Created": "2026-11-07T10:00:00.000000000Z"}]'"$CR" "$OUT" "the default answer with a CRLF end"
+  printf '[{"Created": "2025-01-01T00:00:00Z"}]\n' > "$STUB/answers/inspect"
+  assert_exit 0 "a scripted answer" -- wslc inspect img:x
+  assert_eq '[{"Created": "2025-01-01T00:00:00Z"}]'"$CR" "$OUT" "is that file"
+  printf '1\n' > "$STUB/answers/inspect_rc"
+  assert_exit 1 "a scripted code" -- wslc inspect img:x
+  assert_eq "1" "$(grep -c '^stub: inspect:' <<< "$ERR")" "with one stub: inspect: line"
+}
+
+t_the_comfyui_readiness_probe_is_answered_from_the_comfy_ready_file() {
+  setup_case "$FUNCNAME"
+  wslc run -d --rm --name a img > /dev/null
+  printf 'ok\nfail\n' > "$STUB/answers/comfy_ready"
+  assert_exit 0 "call 1 is ok" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8188/system_stats")'
+  assert_eq "device cuda:0 AMD Radeon AI PRO R9700 : native$CR|ready$CR" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "the device line and ready, CRLF ends"
+  assert_exit 1 "call 2 is fail" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8188/system_stats")'
+  assert_eq "system_stats: URLError$CR" "$OUT" "the failing step"
+  assert_exit 1 "call 3 repeats the last line" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8188/system_stats")'
+  printf 'ok\n' > "$STUB/answers/ready"
+  assert_exit 0 "the vLLM probe is untouched" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/v1/models")'
+  rm -f "$STUB/answers/comfy_ready"
+  assert_exit 99 "without the file the stub exits 99" -- wslc exec a python3 -c 'urlopen("http://127.0.0.1:8188/system_stats")'
+  printf 'hang\n' > "$STUB/answers/comfy_ready"
+  timeout 2 wslc exec a python3 -c 'urlopen("http://127.0.0.1:8188/system_stats")' > /dev/null 2>&1
+  assert_eq "124" "$?" "hang: the stub sleeps until the caller's ceiling ends it"
+  assert_exit 0 "the recorded sleeper is there" -- test -f "$STUB/hung/containers/1.pid"
+  kill_recorded_pids "$CASE"
+}
+
+t_a_detached_run_can_start_the_container_and_still_fail() {
+  setup_case "$FUNCNAME"
+  printf '1\n' > "$STUB/run-fail-a"
+  assert_exit 1 "run of a" -- wslc run -d --rm --name a img
+  assert_contains "$ERR" "stub: run: the client failed after the container started (scripted): a" "the line"
+  assert_exit 0 "a IS running afterwards" -- test -f "$STUB/containers/a.pid"
+  assert_contains "$(wslc list)" "a" "and listed"
+  assert_exit 0 "a second run of b works as before" -- wslc run -d --rm --name b img
+  wslc stop a > /dev/null
+  assert_exit 0 "the count is used up: a runs again" -- wslc run -d --rm --name a img
+  kill_recorded_pids "$CASE"
+}
+
+t_a_detached_run_can_start_the_container_and_then_delay_its_answer() {
+  setup_case "$FUNCNAME"
+  local i pid
+  printf '2\n' > "$STUB/run-delay-a"
+  wslc run -d --rm --name a img > "$CASE/run.out" 2>&1 &
+  pid=$!
+  guard_pid "$pid" "runner-$pid"
+  for i in $(seq 1 30); do [ -f "$STUB/containers/a.pid" ] && break; sleep 0.05; done
+  assert_exit 0 "the container is recorded within the first second" -- test -f "$STUB/containers/a.pid"
+  assert_eq "0" "$(wc -l < "$CASE/run.out" | tr -d ' ')" "and the three lines have not come yet"
+  wait "$pid"
+  assert_eq "3" "$(wc -l < "$CASE/run.out" | tr -d ' ')" "the three lines come after the sleep"
+  assert_exit 0 "the file is read, not removed" -- test -f "$STUB/run-delay-a"
+  wslc stop a > /dev/null
+  printf '30\n' > "$STUB/run-delay-a"
+  wslc run -d --rm --name a img > "$CASE/run2.out" 2>&1 &
+  pid=$!
+  guard_pid "$pid" "runner2-$pid"
+  for i in $(seq 1 30); do [ -f "$STUB/containers/a.pid" ] && break; sleep 0.05; done
+  kill -TERM "$pid"
+  wait "$pid" 2> /dev/null
+  assert_exit 0 "a TERM during the sleep leaves the container running" -- kill -0 "$(pid_of a)"
+  kill_recorded_pids "$CASE"
+}
+
+t_the_hang_list_file_makes_the_nth_list_call_hang() {
+  setup_case "$FUNCNAME"
+  printf '2\n' > "$STUB/hang-list"
+  assert_exit 0 "the first list answers" -- wslc list
+  timeout 2 wslc list > /dev/null 2>&1
+  assert_eq "124" "$?" "the second list hangs until the caller's ceiling"
+  assert_exit 0 "the hung process was recorded" -- test -f "$STUB/hung/containers/1.pid"
+  assert_exit 0 "the third list answers" -- wslc list
+  kill_recorded_pids "$CASE"
+}
+
 run_all_tests

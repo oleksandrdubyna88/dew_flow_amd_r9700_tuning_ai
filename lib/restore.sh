@@ -10,19 +10,24 @@
 #   marker_remove <file>                          after sync
 #   marker_run_dir                                where a restore of the marker in MARKER saves its log tails
 #   container_stop_all <run dir>                  for every prefixed container: the last 200 lines of its log, then stop
-#   ready_wait <container> <timeout s>            decision 5; 0 ready, 5 not ready (one stderr line)
+#   ready_wait <container> <timeout s> [<probe function> [<ready word> [<line prefix>]]]   decision 5; 0 ready, 5 not ready (one stderr line).
+#                                                 The defaults are the restore's own (restore_probe, the word `completion`, the prefix `r9700: restore:`); the ComfyUI
+#                                                 start passes its probe, `ready` and `r9700: comfy: start:` (the prefix `-` prints no line). It sets READY_ANSWER (the
+#                                                 probe's whole output on 0, else empty), READY_ELAPSED_S (the production seconds the wait took) and READY_LINE
+#                                                 (`<container> not ready after <n> s (<reason>)` on 5, else empty), for a caller that prints its own lines
 #   restore_from_marker <marker file> <run dir>   0 restored, 2 marker unreadable, 5 not restored (the marker stays)
 #   restore_now                                   restore_from_marker "$MARKER_FILE" "$RUN_DIR" (the supervisor's own path, worker already stopped)
 #   restore_first                                 when a marker exists: restore from it before anything else (exits 11 when it cannot be read, or the
 #                                                 code of a restore that did not become ready); supervise and the verbs init and verdict call it
 #
 # The marker is a KEY=VALUE file in the config grammar (no $, no backtick). Keys: MARKER_VERSION RUN_ID WRITTEN_AT PROD_CONTAINER
-# PROD_WAS_RUNNING WSLC RESTORE_SHELL RESTORE_SCRIPT_WIN RESTORE_ARGS CONTAINER_PREFIX READY_TIMEOUT_S, then RUN_DIR (optional: where the
+# PROD_WAS_RUNNING WSLC RESTORE_SHELL RESTORE_SCRIPT_WIN RESTORE_ARGS CONTAINER_PREFIX READY_TIMEOUT_S, then COMFY_CONTAINER (optional: the name of the operator's
+# ComfyUI, so that the restore can refuse to start the server beside it without a loaded config; a marker written before E1.S2 has none and restores as it always did), then RUN_DIR (optional: where the
 # run's own folder is, so the tails of a restore after a hard kill land beside the run's evidence), then the three worker keys together:
 # WORKER_PGID WORKER_START_TICKS BOOT_ID (the worker is `setsid`, so its pid is its process group id and its session id).
 
 declare -gA MARKER=()
-_MARKER_ORDER=(MARKER_VERSION RUN_ID WRITTEN_AT PROD_CONTAINER PROD_WAS_RUNNING WSLC RESTORE_SHELL RESTORE_SCRIPT_WIN RESTORE_ARGS CONTAINER_PREFIX READY_TIMEOUT_S RUN_DIR WORKER_PGID WORKER_START_TICKS BOOT_ID)
+_MARKER_ORDER=(MARKER_VERSION RUN_ID WRITTEN_AT PROD_CONTAINER PROD_WAS_RUNNING WSLC RESTORE_SHELL RESTORE_SCRIPT_WIN RESTORE_ARGS CONTAINER_PREFIX READY_TIMEOUT_S COMFY_CONTAINER RUN_DIR WORKER_PGID WORKER_START_TICKS BOOT_ID)
 _MARKER_REQUIRED=(MARKER_VERSION RUN_ID WRITTEN_AT PROD_CONTAINER PROD_WAS_RUNNING WSLC RESTORE_SHELL RESTORE_SCRIPT_WIN RESTORE_ARGS CONTAINER_PREFIX READY_TIMEOUT_S)
 _MARKER_WORKER=(WORKER_PGID WORKER_START_TICKS BOOT_ID)
 _MARKER_RUN_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
@@ -45,6 +50,7 @@ _marker_check() {
     CONTAINER_PREFIX) _cfg_check prefix "$v" ;;
     # wider than the loader's cap (3235, config.sh) on purpose: a marker written by an older version may hold up to 3300 and crash recovery must accept it
     READY_TIMEOUT_S) _cfg_check int:60:3300 "$v" ;;
+    COMFY_CONTAINER) _cfg_check name "$v" ;;
     RUN_DIR) [[ $v =~ ^/[^\"\$\`[:cntrl:]]*$ ]] || _PE="\"$v\" is not an absolute path without quotes, \$ or a backtick" ;;
     WORKER_PGID) _cfg_check int:2:999999999 "$v" ;;
     WORKER_START_TICKS) [[ $v =~ ^[0-9]{1,18}$ ]] || _PE="\"$v\" is not a number of clock ticks" ;;
@@ -120,7 +126,8 @@ marker_write_base() {
   mapfile -t exes < <(adapter_marker_words) # WSLC=... and RESTORE_SHELL=...: only the adapter reads those variables
   marker_write "$file" MARKER_VERSION=1 "RUN_ID=$run_id" "WRITTEN_AT=$(date -u +%FT%TZ)" "PROD_CONTAINER=$R9700_PROD_CONTAINER" \
     "PROD_WAS_RUNNING=$was" "${exes[0]}" "${exes[1]}" "RESTORE_SCRIPT_WIN=$R9700_RESTORE_SCRIPT_WIN" \
-    "RESTORE_ARGS=$R9700_RESTORE_ARGS" "CONTAINER_PREFIX=$R9700_CONTAINER_PREFIX" "READY_TIMEOUT_S=$R9700_READY_TIMEOUT_S" "RUN_DIR=$run_dir"
+    "RESTORE_ARGS=$R9700_RESTORE_ARGS" "CONTAINER_PREFIX=$R9700_CONTAINER_PREFIX" "READY_TIMEOUT_S=$R9700_READY_TIMEOUT_S" \
+    "COMFY_CONTAINER=$R9700_COMFY_CONTAINER" "RUN_DIR=$run_dir"
 }
 
 marker_add_worker() {
@@ -171,11 +178,15 @@ container_stop_all() {
   return "$status"
 }
 
-# ready_wait <container> <timeout s>: decision 5. restore_probe every 10 s (t_scale) until the window is up; a container that is not listed
-# three times in a row is reported at once. The window is also an R9700_T_STOP for every call inside it (amendment A13), so the wait ends
-# within one grace of its end.
+# ready_wait <container> <timeout s> [<probe function> [<ready word> [<line prefix>]]]: decision 5. The probe (default restore_probe; called with the container's
+# name) every 10 s (t_scale) until the window is up; the wait is over when the LAST line of a successful probe is the ready word (default `completion`); a container
+# that is not listed three times in a row is reported at once. The window is also an R9700_T_STOP for every call inside it (amendment A13), so the wait ends within
+# one grace of its end. The line of a failed wait is `<prefix> <container> not ready after <n> s (<reason>)` on stderr (default prefix `r9700: restore:`; the prefix `-`
+# prints none). READY_ANSWER, READY_ELAPSED_S and READY_LINE are set for the caller (see the header).
 ready_wait() {
-  local prod="${1:-}" limit_s="${2:-}" limit interval start now miss=0 last="no probe answered" note="" out rc elapsed n reason R9700_T_STOP
+  local prod="${1:-}" limit_s="${2:-}" probe="${3:-restore_probe}" word="${4:-completion}" prefix="${5:-r9700: restore:}"
+  local limit interval start now miss=0 last="no probe answered" note="" out rc elapsed n reason R9700_T_STOP
+  READY_ANSWER="" READY_ELAPSED_S="" READY_LINE=""
   _adapter_name_ok ready_wait "$prod" || return 2
   [[ $limit_s =~ ^[1-9][0-9]*$ ]] || { echo "ready_wait: \"$limit_s\" is not a number of seconds" >&2; return 2; }
   limit="$(t_scale "$limit_s")" || return 2
@@ -187,9 +198,13 @@ ready_wait() {
   while :; do
     if out="$(wslc_list 2>&1)" && grep -Fxq -- "$prod" <<< "$out"; then miss=0; else miss=$((miss + 1)); fi
     if [ "$miss" -ge 3 ]; then last="$prod not listed 3 times in a row"; break; fi
-    out="$(restore_probe "$prod" 2>&1)"
+    out="$("$probe" "$prod" 2>&1)"
     rc=$?
-    if [ "$rc" -eq 0 ] && [ "${out##*$'\n'}" = completion ]; then return 0; fi
+    if [ "$rc" -eq 0 ] && [ "${out##*$'\n'}" = "$word" ]; then
+      READY_ANSWER="$out"
+      READY_ELAPSED_S="$(_restore_elapsed "$start")"
+      return 0
+    fi
     # A call the window refused or cut says nothing about the server: it is a NOTE next to the last real answer, never a replacement.
     if [ -z "${out##*$'\n'}" ]; then
       if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then note="the probe timed out"; else note="the probe failed (code $rc)"; fi
@@ -205,10 +220,11 @@ ready_wait() {
     # the sleep never runs past the window, and the window's end is the end of the wait (A13)
     sleep_in_window "$(awk -v a="$start" -v l="$limit" 'BEGIN { printf "%.3f\n", a + l }')" "$interval" || break
   done
-  now="$(date +%s.%N)"
-  n="$(awk -v a="$start" -v b="$now" -v k="${R9700_TIME_SCALE:-1}" 'BEGIN { printf "%d", (b - a) * k + 0.5 }')"
+  READY_ELAPSED_S="$(_restore_elapsed "$start")"
+  n="$READY_ELAPSED_S"
   if [ -z "$note" ]; then reason="$last"; elif [ "$last" = "no probe answered" ]; then reason="$note"; else reason="$note; last answer: $last"; fi
-  echo "r9700: restore: $prod not ready after $n s ($reason)" >&2
+  READY_LINE="$prod not ready after $n s ($reason)"
+  [ "$prefix" = - ] || echo "$prefix $READY_LINE" >&2
   return 5
 }
 
@@ -275,6 +291,18 @@ _restore_server() {
   ready_wait "$prod" "$R9700_READY_TIMEOUT_S"
 }
 
+# _restore_comfy_free <prod>: the restore's own half of "one owner of the card" (E1.S2). 0 when the marker names no ComfyUI (a marker written before this key existed), its
+# container is not a whole line of the listing the preparation just read (_RESTORE_LISTING), or the server itself is listed (nothing would be started); else the one line below on stderr and 5: the server is NOT started beside the
+# operator's ComfyUI, the marker stays, the next verb after `comfy stop` restores. Config-free, like every value of the restore: the name comes from the marker.
+_restore_comfy_free() {
+  local prod="$1" comfy="${MARKER[COMFY_CONTAINER]:-}"
+  [ -n "$comfy" ] || return 0
+  grep -Fxq -- "$comfy" <<< "$_RESTORE_LISTING" || return 0
+  grep -Fxq -- "$prod" <<< "$_RESTORE_LISTING" && return 0 # the server is listed too: nothing would be started, and "not started" would be false
+  echo "r9700: restore: $prod not started: the operator's ComfyUI ($comfy) is listed; run bin/r9700 comfy stop, then any verb restores $prod (the marker stays)" >&2
+  return 5
+}
+
 restore_from_marker() {
   local marker="$1" run="$2"
   marker_read "$marker" || return 2
@@ -284,7 +312,10 @@ restore_from_marker() {
   local R9700_READY_TIMEOUT_S="${MARKER[READY_TIMEOUT_S]}" prod="${MARKER[PROD_CONTAINER]}" was="${MARKER[PROD_WAS_RUNNING]}"
   worker_stop_recorded
   _restore_prepare "$prod" "$run" || return 5
-  if [ "$was" = yes ]; then _restore_server "$prod" || return 5; fi
+  if [ "$was" = yes ]; then
+    _restore_comfy_free "$prod" || return 5
+    _restore_server "$prod" || return 5
+  fi
   marker_remove "$marker"
 }
 

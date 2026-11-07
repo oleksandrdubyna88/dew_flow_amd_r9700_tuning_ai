@@ -17,6 +17,7 @@ A run stops the operator's own vLLM server for its own duration and restores it 
 | `bin/r9700 linear-bench <model>` | times the model's linear shapes (the hybrid W4A16 kernel) |
 | `bin/r9700 prefixtest <model>` | twelve prefix-cache requests against one measured server |
 | `bin/r9700 run <plan>` | a night: the steps of a plan file under ONE supervisor |
+| `bin/r9700 comfy <mode>` | the operator's ComfyUI on the same card, one owner at a time: `start`, `stop`, `status` |
 | `bin/r9700 step <label> -- <command...>` | one command as a guarded step (the engine under the other verbs; for tests and by hand) |
 | `bin/r9700 commands` | prints the verbs |
 
@@ -161,10 +162,10 @@ by the toolkit.
 Exit codes of `bin/r9700` (the table with the line each prints is in `research/architecture.md`):
 
 - `0` done.
-- `1` `verdict`: at least one arm is INCOMPLETE (a round is missing).
-- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a recorded chunk of another activation dtype (or of none, as the older ones), a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment; `run`: a refused plan (a line that is not a step, a refused character, a refused argument, no step), or a step whose config or identity is refused when it starts.
-- `4` another run holds the lock.
-- `5` the restore of your own server did not become ready: look at the server by hand; the recovery marker stays.
+- `1` `verdict`: at least one arm is INCOMPLETE (a round is missing); `comfy start`: your server could not be stopped, or a volume, the remove or the run call failed (nothing of ComfyUI is left running; your server was restored when this invocation had stopped it); `comfy stop`: the container did not stop; `comfy status`: a state could not be read.
+- `2` refused: a bad argument or config, a series whose identity changed (`fingerprint differs: …`), a `verdict` input error; `moe-tune`: a bad argument, a model with `MOE_DTYPE=none`, a recorded chunk of another activation dtype (or of none, as the older ones), a merge input error, an activation that is refused; `linear-bench`: a model with no `LINEAR_SHAPES`; `linear-bench` and `prefixtest`: a bad argument, a length that does not fit the context, a `--name` that names the record of another experiment; `run`: a refused plan (a line that is not a step, a refused character, a refused argument, no step), or a step whose config or identity is refused when it starts; `comfy`: a refused argument or mode, a machine config refused (`COMFY_CONTAINER` must not start with `CONTAINER_PREFIX` and must differ from `PROD_CONTAINER`), a start beside your listed server without `--stop-vllm`, a container list that failed three times; every verb that runs under the supervisor: your ComfyUI is listed (the line names `bin/r9700 comfy stop`).
+- `4` another run holds the lock (`comfy start` holds it through its readiness wait).
+- `5` the restore of your own server did not become ready, or was not started beside your ComfyUI (the marker stays: `bin/r9700 comfy stop`, then any verb restores it): look at the server by hand; `comfy start`: ComfyUI did not become ready (its log tail is saved, it is stopped, your server is restored when this invocation stopped it), or the container list could not be read after the launch (nothing was stopped; the line names `comfy stop` and `init`).
 - `6` the deadline stopped the run (or the next arm-round no longer fits before it): run the same command again.
 - `7` the step failed `MAX_FAILED_TRIES` times.
 - `8` the PC was not quiet before the deadline, your server was already stopped `MAX_SERVER_STOPS` times in this run (the next stop is refused), or a worker exited 3 more often than the repeat bound.
