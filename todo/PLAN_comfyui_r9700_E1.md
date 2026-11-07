@@ -362,9 +362,14 @@ While the operator's ComfyUI (`COMFY_CONTAINER`) is listed, no GPU verb of the t
 with exit 2 and one line naming `bin/r9700 comfy stop`, before anything is stopped, and again at every admission of a long
 run. `bin/r9700 comfy start` brings the operator's ComfyUI up under the toolkit's lock, held through the readiness wait, so
 no check-then-start window is left; a start that does not become ready leaves nothing running and puts the operator's vLLM
-back when this invocation stopped it. `comfy stop` and `comfy status` work without the lock. No verb ever stops the
-operator's ComfyUI by itself, and the cleanup of a run never reaches it or a fetch in progress. And the one place that starts
-the operator's vLLM — the restore from the recovery marker — never starts it beside the operator's ComfyUI either.
+back when this invocation stopped it — and "nothing running" is decided by the container list, never by what the launch
+call returned: a detached run the engine completed while the client timed out, returned non-zero or was cut by a signal is
+found listed, stopped, and only then is vLLM restored. `comfy stop` and `comfy status` work without the lock. No verb ever
+stops the operator's ComfyUI by itself, and the cleanup of a run never reaches it or a fetch in progress. And the one place
+that starts the operator's vLLM — the restore from the recovery marker — never starts it beside the operator's ComfyUI
+either. The locked entry the modes share has a card-free admission for a mode that needs the card without taking either
+owner down (S3's `build`): it refuses, before the body starts, while EITHER the operator's ComfyUI or the operator's vLLM is
+listed, naming what to stop.
 
 ### Scope
 
@@ -403,8 +408,20 @@ In (the parent's verb section *One owner of the card at a time, decided under th
 - `lib/comfy.sh` (new), sourced by `bin/r9700` (the library list, `:32`); `verb_comfy` in `bin/r9700` with its mode dispatch
   over the functions `comfy_mode_<mode>` of `lib/comfy.sh` (the legal-modes list derived from `declare -F`, the shape of
   `verb_commands`, `bin/r9700:75–77`, never typed), so S3 adds `build` and `fetch` as two functions; the lock entry
-  `comfy_locked <mode> <body function> [args...]` the modes that take the lock share (lock, restore-first, the machine config,
-  the body, the release; S3's `build` uses it).
+  `comfy_locked <mode> <admit> <body function> [args...]` the modes that take the lock share (lock, restore-first, the machine
+  config, the admission named by `<admit>`, the body, the release; S3's `build` uses it).
+- The two-owner check of the entry. `<admit>` is one of two words: `body` (the body admits itself: `start`, whose steps 2–4
+  decide between a listed ComfyUI, a listed vLLM and `--stop-vllm`) and `card-free` (the entry refuses while EITHER owner is
+  listed: `build`, which runs its GPU check container under the lock and stops nobody). `card-free` is a second check
+  function, `comfy_owners_check <listing>` (`lib/run_guarded.sh`, beside `comfy_owner_check`): the owner line of ComfyUI when
+  `COMFY_CONTAINER` is a whole line of the listing, else the server line `r9700: the operator's server (<PROD_CONTAINER>) is
+  listed and holds the card; stop it by hand first (no verb of the toolkit stops it for a build)` when `PROD_CONTAINER` is,
+  else 0. It runs right after the machine config is loaded and BEFORE the body (a build takes minutes; a refusal after it is
+  waste): exit 2, one line, the body never called — no placement, no `build` call, no check container. The recovery-marker
+  case is correct as it falls out of the order lock → `restore_first` → config → check: a marker that records vLLM as owed
+  restores it FIRST (`bin/r9700:6–8` holds for every verb), and the check then refuses because vLLM is now listed — the
+  operator's server is back and the line names it; a marker beside a listed ComfyUI ends the entry at 5 by `restore_first`'s
+  own exit (the RM2 line), before the check. S3's own `build` scenario is S3's; S2 proves the entry and the function (OC6–OC8).
 - `comfy start [--stop-vllm] [-- <main.py args>]`, `comfy stop`, `comfy status`, exactly as the parent's verb table says,
   with the machine config only (`config_load_machine`).
 - The readiness of ComfyUI: `ready_wait` (`lib/restore.sh:177–213`) probes vLLM through `restore_probe` (`/v1/models` and a
@@ -439,8 +456,19 @@ In (the parent's verb section *One owner of the card at a time, decided under th
   failure). On a start that became ready the marker is REMOVED: the operator asked for vLLM down with `--stop-vllm`, this is
   the manual workstation mode, and a marker left standing would make every reading verb refuse its restore while ComfyUI runs.
   The line says that vLLM stays down until the operator starts it. `comfy stop` never starts vLLM (the parent's row).
+- The failure path reconciles against the container list, not against a flag. `wslc_run` is a detached `run -d` under the
+  adapter's 120 s client ceiling (`lib/adapter.sh:251–258`): the engine can create the container and the client still time
+  out (124), return non-zero, or be cut by TERM before any "it ran" flag could be set. So the launch ATTEMPT is recorded
+  before the run call (`_COMFY_LAUNCHED=yes`), and the one failure path, whenever a launch was attempted, lists
+  (`_rg_listing_tries`) whatever the call returned: `COMFY_CONTAINER` listed → its tail saved, `wslc_stop`, listed again and
+  found gone; not listed → nothing to stop, said in one stdout line; and only after ComfyUI is known gone is vLLM restored
+  (when this invocation stopped it — the restore's guard would otherwise refuse, correctly, and leave vLLM down with the
+  marker standing and ComfyUI running after a start that reported failure). A listing that cannot be read during that
+  cleanup stops nothing, leaves the marker where it stands and says so: exit 5, one line naming `bin/r9700 comfy stop` and
+  `bin/r9700 init` (the next reading verb restores). CS15–CS18.
 - The stub answers these modes need (`tests/stubs/wslc`): the ComfyUI probe in `exec_in` (`:262`), `remove`, `inspect`, a
-  stopped container that keeps its name.
+  stopped container that keeps its name, and a detached run that starts the container and still fails or delays
+  (`run-fail-<name>`, `run-delay-<name>`: the engine's half done, the client's half not).
 - The exit-table rows of `start`, `stop` and `status` in `bin/r9700`'s header comment (`:10–27`), `research/architecture.md`
   (`:106–117`) and `README.md` (`:161–176`; no NEW code: rows 1, 2, 4 and 5 are extended); the verb row and the module row of
   `research/architecture.md` (`:7–39`, and the sentence of `:5` that counts the verbs); the `bin/r9700 comfy` line of
@@ -454,12 +482,12 @@ volumes' contents; a `comfy stop` that starts vLLM (not in the parent's table).
 ### Files
 
 `lib/comfy.sh` (new); `bin/r9700` (the library list, `verb_comfy`, the header's verb list and exit comment);
-`lib/run_guarded.sh` (`comfy_owner_check`, `_rg_listing_tries`, `_rg_card_free`, one line in `supervise`); `lib/step.sh` (one check in
+`lib/run_guarded.sh` (`comfy_owner_check`, `comfy_owners_check`, `_rg_listing_tries`, `_rg_card_free`, one line in `supervise`); `lib/step.sh` (one check in
 `_step_admit`); `lib/restore.sh` (the marker key `COMFY_CONTAINER`, `_restore_comfy_free`, the three optional arguments of
 `ready_wait`); `lib/adapter.sh` (`wslc_remove`, `wslc_inspect`, `comfy_probe`, `comfy_probe_program`, the header table);
 `lib/config.sh` (`_cfg_cross`, `_COMFY_FETCH_SUFFIX`); `tests/stubs/wslc` and `tests/stubs/stub_common.sh`;
-`tests/test_comfy.sh` (new: OC, NR7, RM2–RM4, CS, CT, CU); `tests/test_config.sh` (NR1–NR6); `tests/test_restore.sh` (RM1,
-AW6); `tests/test_adapter.sh` (AW1–AW5); `tests/test_stubs.sh` (SW1–SW4); `tests/test_lifecycle.sh` (L20's legal-verb line);
+`tests/test_comfy.sh` (new: OC1–OC8, NR7, RM2–RM4, CS1–CS18, CT, CU); `tests/test_config.sh` (NR1–NR6); `tests/test_restore.sh` (RM1,
+AW6); `tests/test_adapter.sh` (AW1–AW5); `tests/test_stubs.sh` (SW1–SW6); `tests/test_lifecycle.sh` (L20's legal-verb line);
 `research/architecture.md`, `research/module_config.md`, `research/module_tests.md`, `README.md` (the rows above).
 
 ### Test scenarios
@@ -511,6 +539,32 @@ r9700: the operator's ComfyUI (<COMFY_CONTAINER>) is listed and holds the card; 
   line>): cannot tell whether the operator's ComfyUI runs; nothing was started`, three `list` calls `t_scale 10` apart, no stop,
   no run folder. `fail-list 2`: the third list answers, the step runs (exit 0). RED first for the retry: a check with one try
   refuses the `fail-list 2` case.
+
+**The two-owner mode of the locked entry (`tests/test_comfy.sh`)** — `comfy_setup`; `lib/comfy.sh` sourced in the test shell
+with the machine fixture's config; the body is a double `body_double` that writes `$CASE/body.ran` and returns 0; the entry is
+called as `comfy_locked probe card-free body_double` (the mode word `probe` is only the lock's holder word) so the scenarios need
+no `build`, which S3 writes. The server line is, exactly:
+
+```text
+r9700: the operator's server (<PROD_CONTAINER>) is listed and holds the card; stop it by hand first (no verb of the toolkit stops it for a build)
+```
+
+- OC6 *The card-free admission refuses while the operator's ComfyUI is listed, before the body.* `comfyui` listed: return 2,
+  exactly one stderr line equal to the owner line (with `comfyui`), `body.ran` absent, no `stop`, no `run`, no marker, the lock
+  free afterwards (`flock -n <state>/lock true`); `comfy_owners_check` alone with a listing that holds `comfyui` → 2 and the
+  owner line, with a listing that holds `comfyuix` and `vllmx` → 0 (whole lines, OC4's rule). RED first (the function).
+- OC7 *The card-free admission refuses while the operator's vLLM is listed, naming it, and a standing marker restores vLLM
+  first and is then refused — correctly.* `vllm` listed: return 2, one stderr line equal to the server line (with `vllm`),
+  `body.ran` absent, no `stop`, no `pwsh.exe`. Then `write_marker` (vLLM was running, down now), nothing listed: the restore
+  ran (one `pwsh.exe -Detach`, `vllm` listed, the marker gone), THEN return 2 with the server line, `body.ran` absent — the
+  operator's server is back and the entry says what holds the card. With both `comfyui` and `vllm` listed: the owner line
+  (ComfyUI's), one line only. RED first: the body runs beside `vllm`.
+- OC8 *With neither owner listed the body runs under the lock, and a list that cannot be read refuses.* Nothing listed:
+  return 0, `body.ran` exists, the lock was held while the body ran (the double records `flock -n <state>/lock true` failing
+  from a subshell) and is free afterwards; a container named `comfyuix` listed: the same. `fail-list 3`: return 2, one line
+  `r9700: comfy: probe: the container list failed 3 times (<the stub's line>)`, `body.ran` absent. And `comfy_locked probe
+  body body_double` with `comfyui` and `vllm` both listed: return 0 and `body.ran` exists — the `body` word admits nothing
+  (that is `start`'s own business, CS4–CS5).
 
 **The name rules (`tests/test_config.sh`, beside `t_the_operator_server_name_must_not_start_with_the_container_prefix`,
 `:549`; and `tests/test_comfy.sh` for NR7)**
@@ -608,7 +662,9 @@ gives ARGV of the `run -d --rm --name comfyui` call (the shape of `serve_argv`, 
   stopped container the remove is still called before every run (the hand-made shape) and its failure prints nothing (exit 0
   overall). `answers/remove_rc 1` with the stopped container planted: the run is refused by the stub (`name in use (a stopped
   container)`), exit 1, one stderr line `r9700: comfy: start: the run of comfyui failed (code 1): <the stub's last line>`, no
-  `stop comfyui` (nothing ran), the lock free. RED first: without the remove, the planted stopped container makes the run fail.
+  `stop comfyui` (the failure path listed after the launch and found `comfyui` absent: a stopped record is not a listed
+  container; stdout says `comfyui is not listed after the failed launch; nothing to stop`), the lock free. RED first: without
+  the remove, the planted stopped container makes the run fail.
 - CS8 *A start that does not become ready saves the log tail, stops the container, sees it gone, restores vLLM only when this
   invocation stopped it, releases the lock last, and exits 5 with one line naming the saved log.* `answers/comfy_ready` = `fail`,
   `READY_TIMEOUT_S=60` (the window is the subject, as in L4), 250 lines in `answers/logs`: exit 5; exactly one stderr line
@@ -639,6 +695,36 @@ gives ARGV of the `run -d --rm --name comfyui` call (the shape of `serve_argv`, 
   now), `comfy start` → the restore ran (one `pwsh.exe -Detach`, `vllm` listed, marker gone), then refused 2 by CS4's line
   (vLLM is listed and no `--stop-vllm`). `comfy start --stop-vllm` → the restore ran, then one `stop vllm`, ComfyUI started,
   exit 0: the cost after a hard kill is one load of vLLM, and the invariant of `bin/r9700:6–8` holds for this verb too.
+- CS15 *A run call that fails AFTER the engine created the container leaves nothing running: the failure path reconciles
+  against the list, not against a flag.* Server not running; `run-fail-comfyui 1` (SW5: the stub starts `comfyui` and still
+  returns 1 with its line): `comfy start` → exit 1; exactly one stderr line `r9700: comfy: start: the run of comfyui failed
+  (code 1): <the stub's line>; comfyui was listed after the failed launch and was stopped; its last 200 log lines are in
+  <state dir>/comfy-start-<stamp>-<pid>.tail.log`; the call order is `run` < `logs comfyui` < `stop comfyui` < the last `list`;
+  stdout has `saved the last 200 log lines` and `stopped comfyui`; `comfyui` is not alive; no marker; no `pwsh.exe`; the lock
+  free. RED first: `comfyui` is alive after the exit (the "it ran" flag was never set, so the failure path stopped nothing) —
+  the coder records that symptom.
+- CS16 *The same with `--stop-vllm` beside the operator's server: vLLM is restored only after ComfyUI is gone.* Server
+  running, `run-fail-comfyui 1`: `comfy start --stop-vllm` → exit 1, the CS15 line; exactly one `stop vllm`, then `stop
+  comfyui`, then one `pwsh.exe -Detach` AFTER the `stop comfyui` (call-log order); `vllm` listed, `comfyui` not alive, no
+  marker, the lock free. RED first: the restore's guard refuses (the RM2 line beside `comfyui`), exit 5, the marker stays and
+  `vllm` is down while `comfyui` runs — a start that reported failure and left the card to the wrong owner; the coder records
+  that symptom too.
+- CS17 *A run call cut by TERM after the engine created the container is reconciled the same way.* Server not running;
+  `run-delay-comfyui 30` (SW6: the stub starts `comfyui`, then sleeps before it answers): `comfy_bg start`, `wait_for` the
+  recorded container (`$STUB/containers/comfyui.pid` alive), `kill -TERM $SUP`; `comfy_end 15` → 143, stderr `r9700: comfy:
+  start: interrupted by TERM` (the one line; the tail file named when `logs` answered), `stop comfyui` in the log after the
+  `run`, `comfyui` not alive, no marker, the lock free. With `--stop-vllm` and the server running: the same plus one `pwsh.exe
+  -Detach` after the `stop comfyui`, `vllm` listed, no marker. RED first: `comfyui` alive after the exit; with `--stop-vllm`
+  also the refused restore and the standing marker.
+- CS18 *A listing that cannot be read during that cleanup stops nothing, leaves the marker where it stands and names both
+  commands.* Server running, `run-fail-comfyui 1`, and `fail-list` armed to pass the lists before the launch and fail the three
+  after it (`fail-list "<skip> 3"`, the skip count being the lists the start makes before the run call — the test counts them
+  from the CS16 log rather than typing a number): `comfy start --stop-vllm` → exit 5; exactly one stderr line `r9700: comfy:
+  start: the run of comfyui failed (code 1): <the stub's line>; the container list failed 3 times (<the stub's line>) after the
+  launch: whether comfyui runs is not known; run bin/r9700 comfy stop, then bin/r9700 init (the marker stays)`; no `stop
+  comfyui`, no `logs`, no `pwsh.exe`; the marker exists with `COMFY_CONTAINER=comfyui` and `PROD_WAS_RUNNING=yes`; `comfyui`
+  still alive (the test ends it); the lock free. Then `comfy stop` → 0 and `init --model <35B>` → 0, `vllm` back, the marker
+  gone. Without `--stop-vllm` (server not running): exit 5, the same line without `(the marker stays)`, no marker. RED first.
 
 **`comfy stop` (`tests/test_comfy.sh`)**
 
@@ -703,6 +789,14 @@ gives ARGV of the `run -d --rm --name comfyui` call (the shape of `serve_argv`, 
 - SW4 *The ComfyUI readiness probe is answered from `answers/comfy_ready`* (call k takes line k, the last repeats, as `ready`):
   `ok` → `device cuda:0 AMD Radeon AI PRO R9700 : native` and `ready`, 0; `fail` → `system_stats: URLError`, 1; `hang` → the
   recorded sleeper (`stub_hang`); the file missing → exit 99. The vLLM probe (`answers/ready`) is untouched.
+- SW5 *A detached run can start the container and still fail.* `run-fail-a 1` (a count): `wslc run -d --rm --name a img` → 1,
+  stderr `stub: run: the client failed after the container started (scripted): a`, and `a` IS running afterwards (its record
+  alive, listed by `wslc list`); the count is used up: a second run of `b` with no such file works as before. (The real engine's
+  shape: `run -d` creates the container, the client's answer is lost to a ceiling or an error — the case CS15 exists for.)
+- SW6 *A detached run can start the container and then delay its answer.* `run-delay-a 2` (seconds): the container is
+  recorded and alive BEFORE the sleep (a reader polling `containers/a.pid` sees it within the first second), the three lines
+  come after; the file is read, not removed, so every run of `a` is delayed while it stands. A TERM to the stub during the
+  sleep ends the stub and leaves `a` running (a `setsid` container outlives its starter) — the case CS17 exists for.
 
 **Documents (DC)** — no new test: `tests/test_docs.sh` DOC7 (`:131`, the test file row), DOC8 (`:141`, every lib file named),
 DOC9 (`:154`, the verb in the README and the architecture verb table), `tests/test_lifecycle.sh` L18 (`:381`, the verb in the
@@ -732,6 +826,12 @@ write "the engine" or "the container list").
   `_RG_LIST_ERR`. A plain command substitution (no `_rg_run`: there is no run folder yet). `lib/comfy.sh` uses it too (step 6).
 - `_rg_card_free`: `listing="$(_rg_listing_tries)"` — on 1 the OC5 line (with `$_RG_LIST_ERR`) through `rg_err` and 2 — then
   `comfy_owner_check "$listing"`.
+- `comfy_owners_check <listing>`: the two-owner check of the locked entry's `card-free` admission (S3's `build`). In this
+  order: `comfy_owner_check "$listing" || return 2` (ComfyUI's line wins when both are listed); then, when
+  `$R9700_PROD_CONTAINER` is a whole line of `<listing>` (`grep -Fxq`), `rg_err` of the server line (the exact text of *Test
+  scenarios*, OC6–OC8) and 2; else 0. An empty `R9700_PROD_CONTAINER` is the same programming error as an empty
+  `R9700_COMFY_CONTAINER`: one `rg_err` line and 2. It is NOT called by `supervise` or `_step_admit` (those verbs stop vLLM
+  themselves and own the restore); only `comfy_locked` calls it.
 - `supervise`: after `if ! "$prepare"; then lock_release; return 2; fi` add `if ! _rg_card_free; then lock_release; return 2; fi`.
   The header comment of the file lists both functions.
 
@@ -779,9 +879,14 @@ sets a trap except `comfy start`, which owns its one failure path"). Messages st
 - `comfy_modes`: `declare -F | awk '{ print $3 }' | grep '^comfy_mode_' | sed 's/^comfy_mode_//' | LC_ALL=C sort`.
 - `comfy_fetch_name`: `printf '%s%s\n' "$R9700_COMFY_CONTAINER" "$_COMFY_FETCH_SUFFIX"`.
 - The container list is always `_rg_listing_tries` (step 1): one loop, one failure text (`_RG_LIST_ERR`), no copy here.
-- `comfy_locked <mode> <body> [args...]`: `lock_take comfy || return $?`; `restore_first`; `config_load_machine
-  "${R9700_MACHINE_ENV:-./machine.env}" || { lock_release; return 2; }`; `"$body" "$@"`; `rc=$?`; `lock_release`; `return $rc`.
-  The modes without the lock (`stop`, `status`) load the machine config themselves and never call `restore_first`.
+- `comfy_locked <mode> <admit> <body> [args...]`: `<admit>` is `body` or `card-free` (any other word: one stderr line
+  `comfy_locked: "<x>" is not an admission (body, card-free)`, an internal error, 2, nothing taken). Then `lock_take comfy ||
+  return $?`; `restore_first`; `config_load_machine "${R9700_MACHINE_ENV:-./machine.env}" || { lock_release; return 2; }`;
+  with `card-free`: `listing="$(_rg_listing_tries)" || { echo "r9700: comfy: <mode>: the container list failed 3 times
+  ($_RG_LIST_ERR)" >&2; lock_release; return 2; }` and `comfy_owners_check "$listing" || { lock_release; return 2; }` (its own
+  line is already printed) — BEFORE the body, so a refused `build` has placed nothing and built nothing; `"$body" "$@"`;
+  `rc=$?`; `lock_release`; `return $rc`. `start` passes `body` (its steps 1–4 are its admission); S3's `build` passes
+  `card-free`. The modes without the lock (`stop`, `status`) load the machine config themselves and never call `restore_first`.
 - `comfy_volume_ensure <name> <listing>`: creates the volume when it is not a whole line of `<listing>` (`wslc_volume_create`),
   prints `comfy: start: created volume <name>`; a failed create: `_COMFY_ERR="volume create <name> failed (code <rc>): <last line>"`
   and 1. S3's `fetch` calls it (one helper, not two).
@@ -790,8 +895,8 @@ sets a trap except `comfy start`, which owns its one failure path"). Messages st
   `restore_dirs_prune` shape).
 - `comfy_start_args <args...>`: `--stop-vllm` sets `_COMFY_STOP_VLLM=yes`; `--` ends the options and the rest is `_COMFY_EXTRA`
   (an array); any other word is 2 with `r9700: comfy: start: unknown argument "<x>"; legal: --stop-vllm, -- <main.py args>`.
-- `comfy_mode_start`: `comfy_start_args "$@" || return 2`, then `comfy_locked start comfy_start_body`.
-- `comfy_start_body`, in this order, with `_COMFY_RAN=no _COMFY_STOPPED_PROD=no` reset first and the traps
+- `comfy_mode_start`: `comfy_start_args "$@" || return 2`, then `comfy_locked start body comfy_start_body`.
+- `comfy_start_body`, in this order, with `_COMFY_LAUNCHED=no _COMFY_STOPPED_PROD=no` reset first and the traps
   `trap '_comfy_on_signal INT' INT` (TERM, HUP alike) set right after the reset and removed before the return:
   1. `listing="$(_rg_listing_tries)"` → on 1 the stderr line `r9700: comfy: start: the container list failed 3 times
      ($_RG_LIST_ERR)`, return 2.
@@ -806,22 +911,34 @@ sets a trap except `comfy start`, which owns its one failure path"). Messages st
      for `COMFY_MODELS_VOLUME`, `COMFY_DATA_VOLUME`, `COMFY_CACHE_VOLUME` in that order (a failure: `comfy_start_fail 1 "$_COMFY_ERR"`).
   6. `comfy_tails_prune 10`.
   7. `out="$(wslc_remove "$R9700_COMFY_CONTAINER" 2>&1)"`: rc 0 → stdout `removed the stopped container <name>`; else nothing.
-  8. `wslc_run "$R9700_COMFY_CONTAINER" --gpus all -p "$R9700_COMFY_PORT:8188" -v "$R9700_COMFY_MODELS_VOLUME:/models"
-     -v "$R9700_COMFY_DATA_VOLUME:/data" -v "$R9700_COMFY_CACHE_VOLUME:/cache" [-v "$R9700_COMFY_OUTPUT_WIN:/data/output" when
-     set] --shm-size 8g "$R9700_COMFY_IMAGE" "${_COMFY_EXTRA[@]}"`; rc ≠ 0 → `comfy_start_fail 1 "the run of <name> failed (code
-     <rc>): <last line>"`; else `_COMFY_RAN=yes`.
+  8. `_COMFY_LAUNCHED=yes` FIRST — the attempt is recorded before the call, never after it (the call is a detached `run -d`
+     under a 120 s client ceiling: the engine may create the container while the call returns 124, non-zero, or not at all
+     because a signal cut it); then `wslc_run "$R9700_COMFY_CONTAINER" --gpus all -p "$R9700_COMFY_PORT:8188" -v
+     "$R9700_COMFY_MODELS_VOLUME:/models" -v "$R9700_COMFY_DATA_VOLUME:/data" -v "$R9700_COMFY_CACHE_VOLUME:/cache" [-v
+     "$R9700_COMFY_OUTPUT_WIN:/data/output" when set] --shm-size 8g "$R9700_COMFY_IMAGE" "${_COMFY_EXTRA[@]}"`; rc ≠ 0 →
+     `comfy_start_fail 1 "the run of <name> failed (code <rc>): <last line>"` (the failure path reconciles against the list:
+     CS15–CS18).
   9. `ready_wait "$R9700_COMFY_CONTAINER" "$R9700_READY_TIMEOUT_S" comfy_probe ready -`; 5 → `comfy_start_fail 5 "$READY_LINE"`
      (the failure path appends the tail file to the line); 0 → stdout `<name> ready after $READY_ELAPSED_S s`,
      `device <…>` (the `device ` line of `READY_ANSWER`), `open http://127.0.0.1:<port>`; with `_COMFY_STOPPED_PROD=yes`:
      `marker_remove "$(marker_path)"` and stdout `<prod> stays down; start it by hand when ComfyUI is done`. Return 0.
 - `comfy_start_fail <code> <line>` — the ONE failure path; `trap '' INT TERM HUP` first (a signal must not cut it in half):
-  (a) `_COMFY_RAN=yes`: `comfy_tails_prune 10`; `wslc_logs <name> | tail -n 200 > <file>` (an empty file when the logs call
-  fails); stdout `saved the last 200 log lines of <name> to <file>`; `wslc_stop <name>`; list; still listed → the line becomes
-  `<name> is still listed after the stop; stop it by hand`, code 5, and the restore is NOT run (the restore's guard would refuse
-  it; the marker stays and says so); else stdout `stopped <name>`. (b) `_COMFY_STOPPED_PROD=yes`: `restore_from_marker
-  "$(marker_path)" "<the RUN_DIR of step 4>"`; 5 → the code becomes 5 (the restore's own line is already printed; the marker
-  stays). (c) `echo "r9700: comfy: start: <line>[; its last 200 log lines are in <file>]" >&2`; return `<code>`. The lock is
-  released by `comfy_locked` after this returns — last.
+  (a) `_COMFY_LAUNCHED=yes` — whatever the run call returned, the LIST decides: `listing="$(_rg_listing_tries)"`; the list
+  failed → the line becomes `<line>; the container list failed 3 times ($_RG_LIST_ERR) after the launch: whether <name> runs
+  is not known; run bin/r9700 comfy stop, then bin/r9700 init[ (the marker stays)]` (the bracket with `_COMFY_STOPPED_PROD=yes`),
+  code 5, nothing stopped, no tail, the marker untouched, and (b) is skipped (the restore needs the same list and would refuse
+  or, worse, start vLLM beside a ComfyUI it cannot see); `<name>` not a whole line of the listing → stdout `<name> is not
+  listed after the failed launch; nothing to stop`, no tail, no stop; `<name>` listed → `comfy_tails_prune 10`; `wslc_logs
+  <name> | tail -n 200 > <file>` (an empty file when the logs call fails); stdout `saved the last 200 log lines of <name> to
+  <file>`; `wslc_stop <name>`; list again (a list failure here: the same "not known" line, code 5, (b) skipped); still listed →
+  the line becomes `<name> is still listed after the stop; stop it by hand`, code 5, and the restore is NOT run (the restore's
+  guard would refuse it; the marker stays and says so); else stdout `stopped <name>` and, when `<code>` is 1 (a failed run
+  call), the line gains `; <name> was listed after the failed launch and was stopped`. (b) `_COMFY_STOPPED_PROD=yes` and
+  ComfyUI known gone (or never launched): `restore_from_marker "$(marker_path)" "<the RUN_DIR of step 4>"`; 5 → the code becomes
+  5 (the restore's own line is already printed; the marker stays). (c) `echo "r9700: comfy: start: <line>[; its last 200 log
+  lines are in <file>]" >&2`; return `<code>`. The lock is released by `comfy_locked` after this returns — last. A signal that
+  cut the run call reaches this path through `_comfy_on_signal` (the adapter's interrupt chain, `lib/adapter.sh:139–206`, runs
+  the caller's TERM action after it killed the call's group; the calls this path makes are the nested wait that chain allows).
 - `_comfy_on_signal <SIG>`: `trap '' INT TERM HUP`; `comfy_start_fail <130|143|129> "interrupted by <SIG>"`; `lock_release`;
   `exit <code>`.
 - `comfy_mode_stop`: no argument allowed (2); `config_load_machine` (2); `_rg_listing_tries` (1 with the line); not listed → CT2's
@@ -842,15 +959,20 @@ name rules of COMFY_CONTAINER among them), a start beside the operator's listed 
 failed three times; every verb under the supervisor: the operator's ComfyUI is listed (the line names bin/r9700 comfy stop)`; 4
 gains `(comfy start holds the lock through its readiness wait)`; 5 gains `or was not started beside the operator's ComfyUI (the
 marker stays); comfy start: ComfyUI did not become ready (its log tail is saved, it is stopped, the operator's server is restored
-when this invocation stopped it)`.
+when this invocation stopped it), or the container list could not be read after the launch (nothing stopped; the line names
+comfy stop and init; the marker stays when the operator's server is owed)`. The `card-free` refusal's words of exit 2 (`the
+operator's ComfyUI or the operator's server is listed`) are S3's to add with its `build` row — not here, where no mode uses it yet.
 
 **8. The stub.** `tests/stubs/wslc`: a `remove)` branch (SW1: `stopped/<name>` → `rm`, print the name with CRLF; a running
 record → 1 and its line; neither → 1 and its line; `answers/remove_rc` first); in `run_container`, for a detached run, before
 `stub_alive`: `[ -f "$R9700_STUB_DIR/stopped/$name" ]` → `stub: container name in use (a stopped container): $name` on stderr,
 exit 1; an `inspect)` branch (SW3, `moe_answer inspect_rc 0`); in `exec_in`, BEFORE the `*urlopen*` branch: `[[ ${3:-} == *system_stats* ]]`
 → `word="$(stub_answer comfy_ready)"`; `hang` → `stub_hang`; `ok` → the two lines with CRLF, 0; else `system_stats: URLError`
-with CRLF, 1. `tests/stubs/stub_common.sh`'s header gains `stopped/<name>`, `answers/comfy_ready`, `answers/inspect`,
-`answers/inspect_rc`, `answers/remove_rc`.
+with CRLF, 1. In `run_container`, for a detached run, AFTER `stub_container_start "$name"` (the container is real and listed
+first): `run-delay-<name>` (seconds; read, not removed) → `sleep` that long before the three lines; then `run-fail-<name>` (a
+count, the `stop-fail-<name>` shape) → the line `stub: run: the client failed after the container started (scripted): <name>` on
+stderr and exit 1 with the container left running. `tests/stubs/stub_common.sh`'s header gains `stopped/<name>`,
+`answers/comfy_ready`, `answers/inspect`, `answers/inspect_rc`, `answers/remove_rc`, `run-fail-<name>`, `run-delay-<name>`.
 
 **9. Tests.** `tests/test_comfy.sh` (new; sources `assert.sh`, `stubcase.sh`, `lifecycle.sh`, `kernelcase.sh`, and
 `lib/comfy.sh` for `comfy_modes` / `comfy_fetch_name`): `comfy_setup`, `comfy`, `comfy_bg`, `comfy_end`, `comfy_run_argv` as
@@ -861,7 +983,7 @@ The other files as the scenario headings say. A test that plants a tail file or 
 
 **10. Documents.** `research/architecture.md`: the sentence of `:5` becomes ten verbs in five groups, the fifth `ComfyUI on the
 same card, one owner at a time (comfy)`; a module row `ComfyUI (E1.S2)` naming `lib/comfy.sh`, `bin/r9700` (`comfy`),
-`lib/run_guarded.sh` (`comfy_owner_check`, `_rg_card_free`, `_rg_listing_tries`), `lib/step.sh` (the admission's check),
+`lib/run_guarded.sh` (`comfy_owner_check`, `comfy_owners_check`, `_rg_card_free`, `_rg_listing_tries`), `lib/step.sh` (the admission's check),
 `lib/restore.sh` (`_restore_comfy_free`, the marker key, `ready_wait`'s probe argument), `lib/adapter.sh` (`wslc_remove`,
 `wslc_inspect`, `comfy_probe`) with the three modes and the two halves of the rule; a verb row `bin/r9700 comfy` (`start`: the
 lock, held through the readiness wait; `stop`, `status`: none); the *Recovery marker* paragraph (`:57`) names `COMFY_CONTAINER`
@@ -871,9 +993,10 @@ the same card, one owner at a time: \`start\`, \`stop\`, \`status\` |` after the
 items extended in the same words. `research/module_config.md`: the `COMFY_CONTAINER` row's second cell gains `must not start
 with CONTAINER_PREFIX and must differ from PROD_CONTAINER, and so must <name>-fetch`, and the sentence of `:25` names both.
 `research/module_tests.md`: the `tests/test_comfy.sh` row (`:7–60`); the flow catalogue row `| \`bin/r9700 comfy\` — \`start\`,
-\`stop\`, \`status\`; the owner check of every verb under the supervisor; the restore's refusal beside ComfyUI | covered |
-\`tests/test_comfy.sh\` (OC1–OC5, NR7, RM2–RM4, CS1–CS14, CT1–CT5, CU1–CU3), \`tests/test_config.sh\` (NR1–NR6),
-\`tests/test_restore.sh\` (RM1, AW6) |`; the *Test knobs* rows for the five stub files of step 8; in *What it does not prove*:
+\`stop\`, \`status\`; the owner check of every verb under the supervisor; the two-owner admission of the locked entry; the
+restore's refusal beside ComfyUI; the failed start reconciled by the container list | covered | \`tests/test_comfy.sh\`
+(OC1–OC8, NR7, RM2–RM4, CS1–CS18, CT1–CT5, CU1–CU3), \`tests/test_config.sh\` (NR1–NR6), \`tests/test_restore.sh\` (RM1,
+AW6), \`tests/test_stubs.sh\` (SW1–SW6) |`; the *Test knobs* rows for the seven stub files of step 8; in *What it does not prove*:
 the `/system_stats` JSON shape (`devices[0].name`) is taken from ComfyUI's source, not observed here — S3's acceptance run 3
 records the real device line; the output of `remove` and the refusal of a run whose name a stopped container holds are the
 hand-made script's observations, not the toolkit's; `inspect`'s `Created` was observed once (2026-11-07) and its exact format is
@@ -890,7 +1013,8 @@ node .agents/conventions/tools/plan-lifecycle.mjs
 ```
 
 Report the runner's PASS line per file and its total, the static check's exit code, and each RED observation of the scenarios
-marked RED first (the failing line, then the pass); for OC3 both symptoms.
+marked RED first (the failing line, then the pass); for OC3 both symptoms, for CS15–CS17 the container found alive after the
+exit and, with `--stop-vllm`, the refused restore with the standing marker.
 
 ### Done when
 
@@ -907,6 +1031,15 @@ marked RED first (the failing line, then the pass); for OC3 both symptoms.
   the ComfyUI probe and its ceiling; a start that does not become ready saves the log tail, stops the container and sees it no
   longer listed, restores the operator's vLLM when this invocation stopped it, then releases the lock and exits 5 with one line
   naming the saved log; a signal runs the same path; each refusal seen failing first.
+- The failure path decides by the container list, never by the launch call's return: a run call that fails, times out or is
+  cut by TERM after the engine created the container ends with `COMFY_CONTAINER` stopped and not listed, and the operator's
+  vLLM restored after that stop when this invocation stopped it (CS15–CS17, each seen leaving the container alive before the
+  code existed); a list that cannot be read during that cleanup stops nothing, keeps the marker and exits 5 naming `comfy stop`
+  and `init` (CS18).
+- The locked entry's `card-free` admission (`comfy_owners_check`) exits 2 before the body while either the operator's
+  ComfyUI or the operator's vLLM is listed — one line naming what to stop — and runs the body when neither is; a standing
+  marker restores vLLM first and the refusal then names it (OC6–OC8, the first two seen failing first). S3's `build` has an
+  admission to call and nothing of its own to write for it.
 - `comfy stop` of a container that is not listed is not an error; `comfy status` prints the listed states of both containers,
   the image's creation time and the volumes with `size: not known` for the cache; no verb, cleanup or `init` stops
   `COMFY_CONTAINER` or `<COMFY_CONTAINER>-fetch` (NR7).
