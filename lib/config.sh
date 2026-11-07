@@ -3,6 +3,7 @@
 # field table and runs nothing else. Bash >= 4.4, `set -u` safe, no `set -e` inside a function.
 #
 #   config_load <machine.env> <model.env>   parse both, apply defaults, validate every field, export R9700_<KEY>; 0 or 2
+#   config_load_machine <machine.env>        the machine file alone (a verb with no vLLM model, comfy): the same rules, the model keys unset; 0 or 2
 #   config_keys                              "<scope> <KEY> <type> <default>" per field (empty default shown as "")
 #   config_resolved                          every R9700_<KEY>=<value>, sorted by key (the fingerprint of S3 hashes it)
 #   arms_load <file>  arms_names  arm_args <arm>  arm_env <arm>  arm_mounts <arm>  arms_check <arm>...
@@ -24,7 +25,7 @@ declare -ga _F_ORDER=()
 declare -gA _F_SCOPE=() _F_TYPE=() _F_DEF=() _F_DESC=()
 
 # _field <scope> <KEY> <type> <default-or-"required"> "<one-line description>"
-# Types: cmd image name prefix dir path win cpath cpath? int:<min>:<max> dec:<min>:<max> enum:<a>,<b> hhmm? str? ints mounts args shapes?
+# Types: cmd image name prefix dir path win win? ref cpath cpath? int:<min>:<max> dec:<min>:<max> enum:<a>,<b> hhmm? str? ints mounts args shapes?
 # A required field is also refused when its value is empty or only spaces.
 _field() {
   _F_ORDER+=("$2")
@@ -63,6 +64,18 @@ _field machine MAX_FAILED_TRIES int:1:20 3 "how many failed tries a step gets be
 _field machine MAX_SERVER_STOPS int:1:10 3 "how many times one invocation may stop the operator's server"
 _field machine CLEANUP_BUDGET_S int:60:3600 1565 "seconds kept free before the deadline for cleanup and restore; at least READY_TIMEOUT_S + 365"
 _field machine MOE_CHUNK_MAX_S int:600:86400 43200 "the ceiling of one MoE tuning chunk container, in seconds"
+_field machine COMFY_IMAGE image comfyui-r9700:local "the image comfy build writes and every comfy container runs"
+_field machine COMFY_BASE_IMAGE image rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.13.0 "the base image of comfy build (its BASE argument)"
+_field machine COMFY_REF ref v0.44.0 "the ComfyUI git tag the build clones"
+_field machine COMFY_CONTAINER name comfyui "the name of the operator's own ComfyUI container"
+_field machine COMFY_PORT int:1024:65535 8188 "the Windows loopback port the operator's ComfyUI is published on"
+_field machine COMFY_MODELS_VOLUME name comfy-models "the volume that holds the models ComfyUI reads"
+_field machine COMFY_DATA_VOLUME name comfy-data "the volume that holds custom nodes, workflows, inputs and the venv of the operator's ComfyUI"
+_field machine COMFY_CACHE_VOLUME name comfy-cache "the volume that holds the MIOpen and Triton caches of the operator's ComfyUI"
+_field machine COMFY_OUTPUT_WIN 'win?' "" "a Windows folder mounted at /data/output so results appear in Windows; empty means they stay in the data volume"
+_field machine COMFY_STORE_WIN 'win?' "" "the master model store comfy fetch writes first, as a Windows path; empty means straight into the models volume"
+_field machine COMFY_BUILD_MAX_S int:600:14400 5400 "the ceiling of one comfy build, in seconds"
+_field machine COMFY_FETCH_MAX_S int:600:86400 21600 "the ceiling of one comfy fetch container, in seconds"
 
 _field model MODEL_DIR cpath required "the model directory, as a path inside the container"
 _field model SERVED_NAME name required "the served model name"
@@ -83,6 +96,7 @@ _RE_IMAGE='^[a-z0-9][a-z0-9./_-]*:[A-Za-z0-9._-]+$'
 _RE_NAME='^[a-z0-9][a-z0-9._-]*$'
 _RE_PREFIX='^[a-z0-9][a-z0-9-]{0,15}-$'
 _RE_WIN='^[A-Za-z]:\\[^:*?"<>|]*$'
+_RE_REF='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 _RE_HHMM='^([01][0-9]|2[0-3]):[0-5][0-9]$'
 _RE_CMD='^[A-Za-z0-9][A-Za-z0-9._+-]*$'
 _RE_ARM='^[a-z0-9]+$'
@@ -205,6 +219,8 @@ _cfg_legal() { # <type>
     dir) echo "an absolute directory that exists" ;;
     path) echo "an absolute path whose parent directory exists" ;;
     win) echo 'X:\…' ;;
+    'win?') echo 'X:\…, or empty' ;;
+    ref) echo "a git tag: letters, digits, . _ - (starting with a letter or digit), at most 64 characters" ;;
     cpath) echo "an absolute container path starting with /" ;;
     'cpath?') echo "an absolute container path starting with /, or empty" ;;
     int:*) IFS=: read -r _ lo hi <<< "$1"; echo "$lo..$hi" ;;
@@ -238,6 +254,8 @@ _cfg_check() {
       [ -z "$parent" ] && parent=/
       [[ $v == /* && -d $parent ]] || _PE="\"$v\" is not an absolute path with an existing parent" ;;
     win) [[ $v =~ $_RE_WIN ]] || _PE="\"$v\" is not a Windows path" ;;
+    'win?') [[ -z $v || $v =~ $_RE_WIN ]] || _PE="\"$v\" is not a Windows path" ;;
+    ref) [[ $v =~ $_RE_REF ]] || _PE="\"$v\" is not a git tag" ;;
     cpath) [[ $v == /* ]] || _PE="\"$v\" is not an absolute container path" ;;
     'cpath?') [[ -z $v || $v == /* ]] || _PE="\"$v\" is not an absolute container path" ;;
     int:*)
@@ -321,10 +339,26 @@ _cfg_keys_of() { # <scope>: the keys of one scope, in table order, separated by 
   printf '%s' "${out% }"
 }
 
+# _cfg_scope_ok <scope>: 0 for `all` or `machine`; else one internal-error line naming the legal words, and 2.
+_cfg_scope_ok() {
+  case ${1:-} in all | machine) return 0 ;; esac
+  echo "config: internal error: the scope \"${1:-}\" is not one of: all machine" >&2
+  return 2
+}
+
+# _cfg_in_scope <scope> <key>: 0 when the load of <scope> reads <key> (`all` reads every key, `machine` the keys of the machine scope).
+# The ONE reading of the scope word: the fill and check, the cross-field rules and the export all ask here.
+_cfg_in_scope() {
+  [ "$1" = all ] || [ "${_F_SCOPE[$2]}" = machine ]
+}
+
 # Defaults for absent optional keys, "required" errors for absent required ones, then the type of every value read.
+# _cfg_fill_and_check [all|machine]: in the machine scope the keys of the model scope are skipped.
 _cfg_fill_and_check() {
-  local key type
+  local key type scope="${1:-all}"
+  _cfg_scope_ok "$scope" || return 2
   for key in "${_F_ORDER[@]}"; do
+    _cfg_in_scope "$scope" "$key" || continue
     type="${_F_TYPE[$key]}"
     if [ -z "${_C_FILE[$key]+set}" ]; then
       if [ "${_F_DEF[$key]}" = required ]; then
@@ -346,17 +380,18 @@ _cfg_fill_and_check() {
 # _cfg_where <key>: the file of a key's value (the file of its scope when the value is a default).
 _cfg_where() { printf '%s' "${_C_FILE[$1]:-${_C_SRC[${_F_SCOPE[$1]}]}}"; }
 
-# Cross-field checks: only over fields that passed their own check.
+# Cross-field checks: only over fields that passed their own check. _cfg_cross [all|machine]: the machine scope skips the rules that read a model key.
 _cfg_cross() {
-  local n word source k
+  local n word source k scope="${1:-all}"
+  _cfg_scope_ok "$scope" || return 2
   local -a words
-  if [ -z "${_C_BAD[PREFILL_LENS]+set}${_C_BAD[MAX_MODEL_LEN]+set}" ]; then
+  if _cfg_in_scope "$scope" PREFILL_LENS && [ -z "${_C_BAD[PREFILL_LENS]+set}${_C_BAD[MAX_MODEL_LEN]+set}" ]; then
     for n in ${_C_VAL[PREFILL_LENS]}; do
       ((n + _OUTPUT_TOKENS > _C_VAL[MAX_MODEL_LEN])) && _cfg_error "$(_cfg_where PREFILL_LENS)" "${_C_LINE[PREFILL_LENS]-}" PREFILL_LENS \
         "$n + $_OUTPUT_TOKENS output tokens exceed MAX_MODEL_LEN ${_C_VAL[MAX_MODEL_LEN]}" "each value + $_OUTPUT_TOKENS <= MAX_MODEL_LEN"
     done
   fi
-  if [ -z "${_C_BAD[MOUNTS]+set}${_C_BAD[PATCH_DIR]+set}" ]; then
+  if _cfg_in_scope "$scope" MOUNTS && [ -z "${_C_BAD[MOUNTS]+set}${_C_BAD[PATCH_DIR]+set}" ]; then
     read -r -a words <<< "${_C_VAL[MOUNTS]}"
     for word in "${words[@]}"; do
       source="${word%%:*}"
@@ -364,7 +399,7 @@ _cfg_cross() {
         "\"$source\" does not exist under PATCH_DIR" "every source is a file or folder under PATCH_DIR"
     done
   fi
-  if [ -z "${_C_BAD[LINEAR_SHAPES]+set}${_C_BAD[LINEAR_GROUP_SIZE]+set}" ]; then
+  if _cfg_in_scope "$scope" LINEAR_SHAPES && [ -z "${_C_BAD[LINEAR_SHAPES]+set}${_C_BAD[LINEAR_GROUP_SIZE]+set}" ]; then
     read -r -a words <<< "${_C_VAL[LINEAR_SHAPES]}"
     for word in "${words[@]}"; do
       IFS=: read -r _ k _ <<< "$word"
@@ -390,22 +425,39 @@ _cfg_cross() {
   fi
 }
 
-config_load() {
+# _cfg_finish <all|machine>: after the checks, print every error and return 2, or export the keys of the scope and return 0.
+_cfg_finish() {
   local key
-  _cfg_reset
-  _cfg_parse_file machine "${1:-}"
-  _cfg_parse_file model "${2:-}"
-  _cfg_fill_and_check
-  _cfg_cross
+  _cfg_scope_ok "${1:-}" || return 2
   if [ "${#_C_ERRORS[@]}" -gt 0 ]; then
     _cfg_flush
     return 2
   fi
   for key in "${_F_ORDER[@]}"; do
+    _cfg_in_scope "$1" "$key" || continue
     printf -v "R9700_$key" '%s' "${_C_VAL[$key]}"
     export "R9700_$key"
   done
   return 0
+}
+
+config_load() {
+  _cfg_reset
+  _cfg_parse_file machine "${1:-}"
+  _cfg_parse_file model "${2:-}"
+  _cfg_fill_and_check all
+  _cfg_cross all
+  _cfg_finish all
+}
+
+# config_load_machine <machine.env>: the machine file alone, for a verb that has no vLLM model. The machine rules are the same
+# as config_load's; the rules that read a model key are skipped and no model key is exported (the reset unsets them all).
+config_load_machine() {
+  _cfg_reset
+  _cfg_parse_file machine "${1:-}"
+  _cfg_fill_and_check machine
+  _cfg_cross machine
+  _cfg_finish machine
 }
 
 config_keys() {

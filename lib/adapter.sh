@@ -12,6 +12,9 @@
 #   wslc_list                               the names of the listed containers (list --no-trunc), one per line                 60 s
 #   wslc_stop <name>                        stop <name>; prints the child's output (stdout and stderr, CRs removed, the last 20 lines)  60 s
 #   wslc_logs <name>                        logs <name>, stderr merged                                                         60 s
+#   wslc_build <ceiling-s> <args...>        build <args...> (an image build); every line is printed as it comes, stdout and stderr merged  the argument
+#   wslc_volume_list                        the names of the listed volumes (volume list), one per line                        60 s
+#   wslc_volume_create <name>               volume create <name>; prints the child's output (stdout and stderr merged)                  60 s
 #   win_ram_mb                              the Windows "Available MBytes" integer; nothing and 1 when it is not an integer    30 s
 #   win_disk_newest                         the newest disk/stornvme System-log record id; nothing and 1 when not an integer   60 s
 #   restore_start                           the operator's start script through the restore shell; prints the last 5 lines    120 s
@@ -241,10 +244,10 @@ _adapter_call() {
   return "$_adapter_rc"
 }
 
-# _adapter_name_ok <function> <name>: 0 for a container name; else one stderr line naming the function, and 2
+# _adapter_name_ok <function> <name> [<what>]: 0 for a name (a container name unless <what> says another noun, e.g. "volume name"); else one stderr line naming the function, and 2
 _adapter_name_ok() {
   [[ ${2:-} =~ $_ADAPTER_NAME_RE ]] && return 0
-  echo "$1: \"${2:-}\" is not a container name (letters, digits, . _ -; no leading -)" >&2
+  echo "$1: \"${2:-}\" is not a ${3:-container name} (letters, digits, . _ -; no leading -)" >&2
   return 2
 }
 
@@ -330,6 +333,41 @@ wslc_logs() {
   _adapter_drop_lock
   _adapter_name_ok wslc_logs "${1:-}" || return 2
   _adapter_call --merge 60 "$R9700_WSLC" logs "$1" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_build <ceiling-s> <args...>: `build <args...>` (an image build: -t <tag>, -f <file>, --build-arg words, the context folder). Every line the build prints is
+# printed as it comes (stdout and stderr merged, CRs removed); nothing is cut, a caller that wants a tail cuts it. Every word is one argv element.
+wslc_build() {
+  _adapter_drop_lock
+  local _adapter_ceiling="${1:-}"
+  if ! [[ $_adapter_ceiling =~ ^[1-9][0-9]*$ ]]; then
+    echo "wslc_build: the ceiling \"$_adapter_ceiling\" is not a positive integer (seconds)" >&2
+    return 2
+  fi
+  if [ "$#" -lt 2 ]; then
+    echo "wslc_build: no word to build with" >&2
+    return 2
+  fi
+  shift
+  _adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" build "$@" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# The volume names: the last column of `volume list` after the header line, the parse of wslc_list. The output shape (a header `DRIVER    VOLUME NAME`, then
+# `<driver> <name>` per line) was observed once by hand on the operator's PC (2026-11-07, through pwsh.exe), never by the suite; E1's acceptance records it again.
+wslc_volume_list() {
+  _adapter_drop_lock
+  _adapter_call --quiet 60 "$R9700_WSLC" volume list | tr -d '\r' 9>&- | awk 'NR > 1 && NF { print $NF }' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_volume_create <name>: `volume create <name>`; prints what wslc printed (stdout and stderr merged, CRs removed). A volume that exists is an error of
+# wslc (exit 1, ERROR_ALREADY_EXISTS, observed once by hand on the operator's PC, 2026-11-07, through pwsh.exe, never by the suite; E1's acceptance records it again), so a caller lists first and creates only a missing volume.
+wslc_volume_create() {
+  _adapter_drop_lock
+  _adapter_name_ok wslc_volume_create "${1:-}" "volume name" || return 2
+  _adapter_call --merge 60 "$R9700_WSLC" volume create "$1" | tr -d '\r' 9>&-
   return "${PIPESTATUS[0]}"
 }
 

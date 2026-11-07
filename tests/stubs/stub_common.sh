@@ -19,6 +19,10 @@
 #   stop-fail-<name>   a count: that many `wslc stop <name>` calls fail (code 1) and leave the container running, then stops work again
 #   stop-gone-<name>   a count: that many `wslc stop <name>` calls return 1 AND remove the container (the stop worked, the call said it did not)
 #   stop-lines-<name>  a number: `wslc stop <name>` prints that many noise lines before it stops the container
+#   volumes/<name>   a stub volume: one empty file per volume (`wslc volume create`, listed by `wslc volume list`)
+#   fail-volume-list a count: that many `wslc volume list` calls fail (code 1), then it works again
+#   answers/build.log, build_rc, build_seconds   `wslc build`: the log (CRLF ends added; default three lines), the exit code (default 0), the seconds it runs (default 0)
+#   answers/volume_create_rc   a non-zero code: `wslc volume create` fails with it and makes nothing
 #   counters/<x>   the call counters
 
 STUB_HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"

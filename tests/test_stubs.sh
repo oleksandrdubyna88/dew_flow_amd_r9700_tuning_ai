@@ -414,4 +414,60 @@ t_the_fail_list_file_makes_the_next_list_calls_fail_after_the_skipped_good_ones(
   assert_exit 1 "a single number is a count with no skip" -- wslc list
 }
 
+# ---- E1.S1: the stub learns build and volume list|create (SB1-SB3) --------------------------------------------------------
+
+t_the_stub_build_is_logged_and_answers_as_scripted() {
+  setup_case "$FUNCNAME"
+  local start end elapsed
+  assert_exit 0 "the default build returns 0" -- wslc build -t img:x .
+  assert_eq "3" "$(grep -c "$CR" <<< "$OUT")" "three lines, each with a CRLF end"
+  assert_eq "3" "$(wc -l <<< "$OUT" | tr -d ' ')" "and exactly three"
+  assert_contains "$(cat "$STUB/calls.log")" " wslc build -t img:x ." "the call is in calls.log"
+  argv_of wslc
+  assert_eq "build|-t|img:x|." "$(IFS='|'; echo "${ARGV[*]}")" "and in calls.argv, one element per argument"
+  printf 'first\nsecond\n' > "$STUB/answers/build.log"
+  assert_exit 0 "a scripted log" -- wslc build -t img:x .
+  assert_eq "first|second" "$(tr -d '\r' <<< "$OUT" | tr '\n' '|' | sed 's/|$//')" "is printed as it is"
+  assert_eq "2" "$(grep -c "$CR" <<< "$OUT")" "with CRLF ends"
+  printf '3\n' > "$STUB/answers/build_rc"
+  assert_exit 3 "a scripted code is the exit code" -- wslc build -t img:x .
+  rm "$STUB/answers/build_rc"
+  printf '1\n' > "$STUB/answers/build_seconds"
+  start="$(date +%s.%N)"
+  assert_exit 0 "a scripted duration" -- wslc build -t img:x .
+  end="$(date +%s.%N)"
+  elapsed="$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.2f", b - a }')"
+  if awk -v e="$elapsed" 'BEGIN { exit !(e >= 0.9 && e < 10) }'; then assert_eq ok ok "the build answered after ${elapsed} s"; else assert_eq "about 1 s" "$elapsed s" "the build answered after about a second"; fi
+}
+
+t_the_stub_keeps_volumes_as_files() {
+  setup_case "$FUNCNAME"
+  assert_exit 0 "create a" -- wslc volume create a
+  assert_eq "a$CR" "$OUT" "prints the name with a CRLF end"
+  assert_exit 0 "the file exists" -- test -f "$STUB/volumes/a"
+  assert_exit 0 "list" -- wslc volume list
+  assert_eq "DRIVER    VOLUME NAME$CR|guest     a$CR" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "the header and one guest line"
+  assert_exit 1 "creating a again fails (observed on the real wslc, 2026-11-07)" -- wslc volume create a
+  assert_contains "$OUT$ERR" "Cannot create a file when that file already exists." "with the message of the real one"
+  assert_contains "$OUT$ERR" "Error code: ERROR_ALREADY_EXISTS" "and its error code line"
+  assert_exit 0 "list again" -- wslc volume list
+  assert_eq "1" "$(grep -c '^guest' <<< "$OUT")" "the list still holds one a"
+  assert_exit 0 "create b" -- wslc volume create b
+  wslc volume list > "$CASE/list.out"
+  assert_eq "a b" "$(awk 'NR > 1 { sub(/\r$/, ""); printf "%s%s", sep, $NF; sep = " " }' "$CASE/list.out")" "the list is sorted"
+}
+
+t_an_unknown_or_incomplete_volume_call_is_refused() {
+  setup_case "$FUNCNAME"
+  assert_exit 2 "an unknown volume subcommand" -- wslc volume frob
+  assert_eq "1" "$(grep -c '^stub: wslc:' <<< "$ERR")" "one stub: wslc: line"
+  assert_exit 2 "create with no name" -- wslc volume create
+  assert_eq "1" "$(grep -c '^stub: wslc:' <<< "$ERR")" "one stub: wslc: line"
+  assert_exit 2 "a volume name with a slash" -- wslc volume create ../x
+  assert_eq "1" "$(grep -c '^stub: wslc:' <<< "$ERR")" "one stub: wslc: line"
+  assert_missing "$STUB/x" "and nothing was made outside the volumes folder"
+  assert_exit 2 "volume with nothing" -- wslc volume
+  assert_eq "1" "$(grep -c '^stub: wslc:' <<< "$ERR")" "one stub: wslc: line"
+}
+
 run_all_tests

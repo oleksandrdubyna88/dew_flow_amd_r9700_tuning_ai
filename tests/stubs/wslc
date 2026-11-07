@@ -294,9 +294,73 @@ exec_in() {
   fi
 }
 
+# build <argv...> (E1.S1: wslc build -t <tag> -f <file> <context>): the image build of the comfy verb. It starts nothing. Every answer file is read from
+# $R9700_STUB_DIR only:
+#   answers/build_seconds   how long the build runs (default 0); the sleeper is ended with the stub, so a ceiling ends it
+#   answers/build.log       the build's output, printed with CRLF ends (default three lines `stub build line <n>`)
+#   answers/build_rc        the exit code (default 0)
+build_image() {
+  trap '[ -z "${MOE_SLEEPER:-}" ] || kill "$MOE_SLEEPER" 2> /dev/null' EXIT
+  trap 'exit 143' TERM
+  sleep "$(moe_answer build_seconds 0)" < /dev/null > /dev/null 2>&1 &
+  MOE_SLEEPER=$!
+  wait "$MOE_SLEEPER"
+  if [ -f "$R9700_STUB_DIR/answers/build.log" ]; then
+    sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/build.log"
+  else
+    printf 'stub build line %s%s\n' 1 "$CRLF" 2 "$CRLF" 3 "$CRLF"
+  fi
+  return "$(moe_answer build_rc 0)"
+}
+
+# volume list | volume create <name> (E1.S1): the volumes are files below $R9700_STUB_DIR/volumes/ (one empty file per volume).
+#   fail-volume-list        a count: the next that many `volume list` calls fail (code 1, one `stub:` line), then it works again
+#   answers/volume_create_rc   a non-zero code: `volume create` fails with it (one `stub:` line) and makes nothing
+# The list prints the header `DRIVER    VOLUME NAME` and a `guest     <name>` line per volume, sorted; creating a volume that exists exits 1 with the two
+# lines the real wslc printed on 2026-11-07 (`Cannot create a file when that file already exists.`, `Error code: ERROR_ALREADY_EXISTS`).
+volume_call() {
+  local _left name rc file dir="$R9700_STUB_DIR/volumes"
+  case "${1:-}" in
+    list)
+      if [ -f "$R9700_STUB_DIR/fail-volume-list" ]; then
+        read -r _left < "$R9700_STUB_DIR/fail-volume-list"
+        if [ "${_left:-0}" -gt 0 ]; then
+          printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/fail-volume-list"
+          echo "stub: volume list failed (scripted)" >&2
+          return 1
+        fi
+      fi
+      printf 'DRIVER    VOLUME NAME%s\n' "$CRLF"
+      if [ -d "$dir" ]; then
+        for file in "$dir"/*; do
+          [ -e "$file" ] || continue
+          printf 'guest     %s%s\n' "${file##*/}" "$CRLF"
+        done
+      fi
+      ;;
+    create)
+      name="${2:-}"
+      if [ -z "$name" ]; then echo "stub: wslc: volume create needs a name" >&2; return 2; fi
+      if [[ $name == */* ]]; then echo "stub: wslc: volume create: \"$name\" holds a slash" >&2; return 2; fi
+      rc="$(moe_answer volume_create_rc 0)"
+      if [ "$rc" != 0 ]; then echo "stub: volume create failed (scripted)" >&2; return "$rc"; fi
+      if [ -e "$dir/$name" ]; then
+        printf 'Cannot create a file when that file already exists.%s\nError code: ERROR_ALREADY_EXISTS%s\n' "$CRLF" "$CRLF"
+        return 1
+      fi
+      stub_mkdir "$dir"
+      : > "$dir/$name"
+      printf '%s%s\n' "$name" "$CRLF"
+      ;;
+    *) echo "stub: wslc: unknown volume subcommand \"${1:-}\"" >&2; return 2 ;;
+  esac
+}
+
 case "${1:-}" in
   run) shift; run_container "$@" ;;
   list) list_containers ;;
+  build) shift; build_image "$@" ;;
+  volume) shift; volume_call "$@" ;;
   stop)
     [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"
     # stop-fail-<name>: a count; that many `stop <name>` calls fail and leave the container running (a stop that does not work), then stops work again

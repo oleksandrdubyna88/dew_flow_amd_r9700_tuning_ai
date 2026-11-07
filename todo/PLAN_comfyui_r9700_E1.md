@@ -231,7 +231,7 @@ is the real symptom (recorded in the coder's summary).
 
 - AD1 *`wslc_build` hands every word on as one argument and prints every line.* `answers/build.log` holds 60 lines with CRLF
   ends. `wslc_build 100 -t img:x -f 'X:\a b\Containerfile' --build-arg BASE=b:1 'X:\a b'` returns 0; `argv_of wslc` gives
-  exactly the seven words `build -t img:x -f X:\a b\Containerfile --build-arg BASE=b:1 X:\a b`; stdout has the 60 lines and no CR.
+  exactly the eight words `build -t img:x -f X:\a b\Containerfile --build-arg BASE=b:1 X:\a b`; stdout has the 60 lines and no CR.
 - AD2 *A failing build returns its own code and still prints.* `answers/build_rc` 3: `wslc_build` returns 3 and prints the log.
 - AD3 *`wslc_build` refuses a bad ceiling or no words before any call.* `wslc_build x -t a`, `wslc_build 0 -t a` and
   `wslc_build 100` each return 2 with one line starting `wslc_build:`, and `calls.log` holds no `build` line. RED first: the
@@ -299,7 +299,7 @@ author (write only the type).
   word; 2 and one `wslc_build:` line), then `_adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" build "$@" | tr -d '\r' 9>&-`
   and `return "${PIPESTATUS[0]}"`. Every line is printed as it comes; nothing is cut (a caller that wants a tail cuts it).
 - `wslc_volume_list` — `_adapter_call --quiet 60 "$R9700_WSLC" volume list | tr -d '\r' 9>&- | awk 'NR > 1 && NF { print $NF }' 9>&-`,
-  the parse of `wslc_list` (`:305–309`): the last column after the header. A comment says the shape is UNVERIFIED for `wslc`
+  the parse of `wslc_list` (`:305–309`): the last column after the header. A comment says the shape was observed once by hand on 2026-11-07 (Facts), never by the suite,
   and is checked by E1's acceptance.
 - `wslc_volume_create <name>` — `_adapter_name_ok wslc_volume_create "${1:-}" "volume name" || return 2`, then
   `_adapter_call --merge 60 "$R9700_WSLC" volume create "$1" | tr -d '\r' 9>&-`, `return "${PIPESTATUS[0]}"`.
@@ -315,7 +315,7 @@ author (write only the type).
   three lines `stub build line <n>` with CRLF; returns `$(moe_answer build_rc 0)` (`moe_answer`, `:104`, is the existing
   reader of a one-line answer; reuse it). `mode` `hang` already applies to every call (`stub_mode_if_asked`, `:8`).
 - `volume_call list`: `fail-volume-list` — a count, the next that many lists exit 1 with one `stub:` line (the counting shape
-  of `fail-list`, `:193–203`, for this file); else the header `DRIVER    VOLUME NAME` and `local     <name>` per file of
+  of `fail-list`, `:193–203`, for this file); else the header `DRIVER    VOLUME NAME` and `guest     <name>` per file of
   `$R9700_STUB_DIR/volumes/`, sorted, CRLF ends. `volume_call create <name>`: no name → exit 2; `answers/volume_create_rc`
   non-zero → one `stub: volume create failed (scripted)` line and that code; else `stub_mkdir "$R9700_STUB_DIR/volumes"`,
   `: > volumes/<name>`, prints the name. Anything else → exit 2 `stub: wslc: unknown volume subcommand "<x>"`.
