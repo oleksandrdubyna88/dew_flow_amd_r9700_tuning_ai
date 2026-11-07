@@ -10,6 +10,11 @@
 
   (The approving round's seven findings, all accepted, are folded into the approved text; they are not entries.)
 
+- 1.1 · 2026-11-07 · reviewer · contract — two fetches could share a part file; fetch takes a lock of its own
+  (not the GPU lock), so a fetch still runs beside a series; E1 plan round, codex.
+  (Same round, not counted, each only satisfying the plan as written: build passes the owner check before its GPU check
+  container, which the one-owner rule already required; image retention fills the growth section planning-docs requires.)
+
 ## Goal
 
 The operator runs vLLM on the R9700 through this toolkit's machine (Windows + WSL2, containers through `wslc`). They now
@@ -145,7 +150,7 @@ what every GPU verb already takes, so it is what decides between ComfyUI and vLL
 | `start [--stop-vllm] [-- <main.py args>]` | the lock, held through the launch and the readiness wait | refused (exit 4) while a toolkit run holds the lock, and refused (exit 2) while `PROD_CONTAINER` is listed unless `--stop-vllm` (then `wslc_stop` of it, logged); makes missing volumes; removes a stopped `COMFY_CONTAINER`; runs it detached with `--gpus all`, the volumes, the port on loopback, the optional output mount; waits until `GET /system_stats` answers (inside the container, through `wslc_exec`, ceiling `READY_TIMEOUT_S`) and prints the device line it reports. **A start that does not become ready** (the container exits, or the ceiling passes) saves the container's last 200 log lines to the state folder, stops it and checks it is no longer listed, restores the operator's vLLM through the existing restore (`restore_start` + `ready_wait`) when this invocation stopped it with `--stop-vllm`, and only then releases the lock: exit 5, one line naming the saved log |
 | `stop` | no lock | `wslc_stop COMFY_CONTAINER`; a container that is not listed is not an error |
 | `status` | no lock | the listed state of `COMFY_CONTAINER` and of `PROD_CONTAINER`, the image's creation time |
-| `fetch <set>...` | no lock, no GPU | the set's lines from `comfyui/models.conf` → one throwaway container (`--rm`, the name `<COMFY_CONTAINER>-fetch`, not prefixed, no `--gpus`) running `fetch_model.sh` with `/store` mounted when `COMFY_STORE_WIN` is set; ceiling `COMFY_FETCH_MAX_S`; an unknown set is exit 2 naming the legal ones |
+| `fetch <set>...` | its own lock (`<state dir>/comfy-fetch.lock`, not the GPU lock: exit 4 naming the holder when another fetch runs), no GPU | the set's lines from `comfyui/models.conf` → one throwaway container (`--rm`, the name `<COMFY_CONTAINER>-fetch`, not prefixed, no `--gpus`) running `fetch_model.sh` with `/store` mounted when `COMFY_STORE_WIN` is set; ceiling `COMFY_FETCH_MAX_S`; an unknown set is exit 2 naming the legal ones |
 | `bench <workflow> <arm>... [--rounds N] [--out <name>] [--dry-run]` | `supervise comfy …` around ONE `step_run` | refused (exit 2) before the lock while `COMFY_CONTAINER` is listed (the operator's ComfyUI holds the card); the worker (`lib/comfy.sh bench`) per round, per arm (alternating, like `series`): a prefixed ComfyUI test container with the arm's arguments and environment and the same volumes, ready-wait, `bench.py` through `wslc_exec` (one cold run, then the measured runs), the images or video kept, the container stopped, validation, ONE rename into `rounds/<arm>-<round>/` |
 
 `comfy` holds no second lifecycle: its lock, stop, guards, deadline and restore are the supervisor's, and the only server it
@@ -202,7 +207,10 @@ slower arm costs hours. Checked: the attention line ComfyUI logs (`Using pytorch
 the Windows "shared GPU memory" counter read during it: a VAE decode of 121 frames at 1280×704 that spills into shared
 memory is a different workload, so the base workflow switches to tiled VAE decoding if it does, and that choice goes into
 the workload's identity. The video series' round count is set from that time, written into the record before the series
-starts. The plan's earlier figure of hours per video run was a guess, not a measurement, and is withdrawn.
+starts, together with the GPU hours it costs (arms × rounds × four generations, the cold runs included); when the three
+rounds of every non-screening arm do not fit the time the owner gives, the record says so and the series is deferred or
+narrowed — a narrowing is a plan change and needs the owner (plan-change-control), never a silent cut. The plan's earlier
+figure of hours per video run was a guess, not a measurement, and is withdrawn.
 
 **Workloads**: `zimage` (1024×1024, 8 steps, `res_multistep`, cfg 1) and `wan5b` (1280×704, 121 frames, 20 steps,
 `uni_pc`, cfg 5) — the two model sets the owner asked for (images and video). Audio (voice-over) has no model set yet:
@@ -255,6 +263,11 @@ better. Three layers, none of them claiming more than it can:
   its size. The bench's own `<CONTAINER_PREFIX>comfy-cache` is cleared before
   every arm-round, so it never holds more than one arm-round's caches. Retired by the operator by hand (`wslc volume remove`); the toolkit never removes
   a volume, because a model download costs hours.
+- The images: every build is tagged `<COMFY_IMAGE repository>:<UTC stamp>` and only after its check passes is `COMFY_IMAGE`
+  pointed at it; the newest four stamped tags are kept (the current one plus three to roll back to, development-workflow's
+  depth) and older ones are removed by their exact tag, never by pattern and never before the new image passed. Measured
+  2026-11-07: an image is 27.3 GB as listed, but the ROCm base layers are shared, so a kept build costs its own layers
+  (≈ 2 GB, the ComfyUI and pip layer) — four kept builds ≈ 8 GB beyond the base.
 - The placed copies under `$WORK_DIR/r9700/comfyui/` are rewritten when the repository's file changes, like `moe_place`'s.
 - A bench part `rounds/<arm>-<round>.part-<run id>/` left by a kill is moved to `rejected/` as `INTERRUPTED` by the next
   worker start (the sweep `series` already has, reused).
