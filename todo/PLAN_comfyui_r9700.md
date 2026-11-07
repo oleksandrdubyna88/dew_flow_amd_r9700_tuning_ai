@@ -4,6 +4,12 @@
 > programs that run inside it), a `comfy` verb of `bin/r9700`, new optional fields of `machine.env`, three new adapter calls,
 > their tests and documents, and the GPU acceptance runs that measure ComfyUI arms on the R9700.
 
+## Plan changes
+
+> Epoch 1 · approved 2026-11-07 · by reviewers · state: open
+
+  (The approving round's seven findings, all accepted, are folded into the approved text; they are not entries.)
+
 ## Goal
 
 The operator runs vLLM on the R9700 through this toolkit's machine (Windows + WSL2, containers through `wslc`). They now
@@ -91,7 +97,7 @@ New code is written only where none of these fits; the summary of each epic name
 | `comfyui/Containerfile` | the image recipe (Docker build format, built by `wslc build`; named `Containerfile` because nothing here runs Docker). `ARG BASE`, `ARG COMFYUI_REF`; installs `git ffmpeg ca-certificates python3.12-venv`, writes `/opt/rocm-constraints.txt` from the base's ROCm packages, installs ComfyUI and its Manager with those constraints, sets `PIP_CONSTRAINT`, `UV_CONSTRAINT`, `VIRTUAL_ENV=/data/venv`, the MIOpen and Triton cache paths. Does NOT set `PYTORCH_HIP_ALLOC_CONF` (trap 1, with the observation in a comment) |
 | `comfyui/entrypoint.sh` | makes the folders of `/data`, `/models`, `/cache`; makes or keeps the `--system-site-packages` venv on `/data` (a venv of another Python minor version is moved aside, never deleted); forces the Manager's `use_uv = False` (trap 2); `exec`s `main.py --listen 0.0.0.0 --port 8188 --base-directory /data --models-directory /models --enable-manager "$@"` |
 | `comfyui/bench.py` | inside the container, stdlib + the image's `aiohttp`: queues one workflow on `127.0.0.1:8188`, times every node over the websocket (`executing` events), prints verdict-grammar lines and writes a JSON per run; workflows `sd15`, `zimage`, `wan5b`, each with every input pinned (seed, steps, size, sampler, scheduler, cfg, shift) |
-| `comfyui/fetch_model.sh` | inside a throwaway container with no GPU: per file, the sha256 from the source's `X-Linked-ETag` (refused when absent), a resumable download to the store first (`/store`, when mounted) and a checked copy into `/models`, or straight to `/models` without a store |
+| `comfyui/fetch_model.sh` | inside a throwaway container with no GPU: per file, the PINNED sha256 of `models.conf` is the authority — the download is accepted only when its own sha256 equals it; the source's `X-Linked-ETag`, when the source sends one, is a pre-flight cross-check (a different value refuses before downloading, an absent one is fine); a resumable download to the store first (`/store`, when mounted) and a checked copy into `/models`, or straight to `/models` without a store |
 | `comfyui/arms.conf` | the ComfyUI arms (names and contents in the series section) |
 | `comfyui/models.conf` | the model sets: `sd15`, `zimage` (Z-Image Turbo bf16, `qwen_3_4b` text encoder, `ae` VAE), `wan5b` (Wan 2.2 TI2V 5B fp16, `umt5_xxl_fp8_e4m3fn_scaled`, `wan2.2_vae`); each line `<set> <folder> <url> <sha256>`, the sha256 PINNED in the file (read once from the source's `X-Linked-ETag` and checked by the download): `fetch` refuses a source that now publishes another hash, and the bench fingerprint takes the model identity from these pinned hashes, never from names and sizes |
 
@@ -120,9 +126,13 @@ what every GPU verb already takes, so it is what decides between ComfyUI and vLL
 
 - `build` (its check container uses the GPU), `start` and `bench` take the lock; `start` holds it through the launch and
   the readiness wait and releases it once ComfyUI answers, so no check-then-start window is left.
-- **Every admission of every GPU verb** (`step_run`'s admission, `lib/step.sh:236`) refuses — exit 2, one line naming
-  `comfy stop` — while `COMFY_CONTAINER` is listed: the operator's ComfyUI holds the card's memory and a series beside it
-  would measure an out-of-memory. This is the one change to the existing verbs, and it is a cornerstone.
+- **Every GPU verb refuses while `COMFY_CONTAINER` is listed** — exit 2, one line naming `bin/r9700 comfy stop` — checked
+  FIRST in the supervisor's prepare, before anything is stopped (so a refused night run leaves the operator's vLLM as it
+  was), and again at every admission (`step_run`, `lib/step.sh:236`), because a long run can outlive the first check: the
+  operator's ComfyUI holds the card's memory and a series beside it would measure an out-of-memory. No verb ever stops the
+  operator's ComfyUI by itself — it may hold a queue or unsaved work — so `comfy start` is a manual workstation mode, and an
+  unattended plan that finds it running refuses and says what to run. This is the one change to the existing verbs, and it
+  is a cornerstone.
 - `COMFY_CONTAINER` must not start with `CONTAINER_PREFIX` and must differ from `PROD_CONTAINER` — the same cross-field
   rule as `PROD_CONTAINER`'s (`lib/config.sh:375`), because `container_stop_all` (`lib/restore.sh:152`) stops every
   container with the prefix.
@@ -132,7 +142,7 @@ what every GPU verb already takes, so it is what decides between ComfyUI and vLL
 | Mode | Lifecycle | What it does |
 |---|---|---|
 | `build [--no-cache]` | the lock (for the check container), no stop | places `Containerfile` and `entrypoint.sh` (hash-checked) under `$WORK_DIR/r9700/comfyui/`, runs `wslc_build` with `--build-arg BASE=… --build-arg COMFYUI_REF=…`, ceiling `COMFY_BUILD_MAX_S`; then one throwaway container (`--gpus all`, `--rm`, prefixed name) asserts the built image's torch is a ROCm build that sees a device, and prints the device name — the artefact is checked, not the build's exit code |
-| `start [--stop-vllm] [-- <main.py args>]` | the lock, held through the launch and the readiness wait | refused (exit 4) while a toolkit run holds the lock, and refused (exit 2) while `PROD_CONTAINER` is listed unless `--stop-vllm` (then `wslc_stop` of it, logged); makes missing volumes; removes a stopped `COMFY_CONTAINER`; runs it detached with `--gpus all`, the volumes, the port on loopback, the optional output mount; waits until `GET /system_stats` answers (inside the container, through `wslc_exec`, ceiling `READY_TIMEOUT_S`) and prints the device line it reports |
+| `start [--stop-vllm] [-- <main.py args>]` | the lock, held through the launch and the readiness wait | refused (exit 4) while a toolkit run holds the lock, and refused (exit 2) while `PROD_CONTAINER` is listed unless `--stop-vllm` (then `wslc_stop` of it, logged); makes missing volumes; removes a stopped `COMFY_CONTAINER`; runs it detached with `--gpus all`, the volumes, the port on loopback, the optional output mount; waits until `GET /system_stats` answers (inside the container, through `wslc_exec`, ceiling `READY_TIMEOUT_S`) and prints the device line it reports. **A start that does not become ready** (the container exits, or the ceiling passes) saves the container's last 200 log lines to the state folder, stops it and checks it is no longer listed, restores the operator's vLLM through the existing restore (`restore_start` + `ready_wait`) when this invocation stopped it with `--stop-vllm`, and only then releases the lock: exit 5, one line naming the saved log |
 | `stop` | no lock | `wslc_stop COMFY_CONTAINER`; a container that is not listed is not an error |
 | `status` | no lock | the listed state of `COMFY_CONTAINER` and of `PROD_CONTAINER`, the image's creation time |
 | `fetch <set>...` | no lock, no GPU | the set's lines from `comfyui/models.conf` → one throwaway container (`--rm`, the name `<COMFY_CONTAINER>-fetch`, not prefixed, no `--gpus`) running `fetch_model.sh` with `/store` mounted when `COMFY_STORE_WIN` is set; ceiling `COMFY_FETCH_MAX_S`; an unknown set is exit 2 naming the legal ones |
@@ -152,11 +162,16 @@ execution cache and dynamic model offload):
   three measured runs with three seeds that are the SAME for every arm. The prompt does not change, so ComfyUI's cache keeps
   the text encoding after the cold run and the measured runs time the sampler and the VAE — the record says so.
   `total_s` (queue to the history entry) is the metric the verdict decides on; the per-node times are diagnostics.
+  **Model offload is part of the workload, and it is made visible**: ComfyUI may unload the text encoder or the DiT between
+  nodes to make room. Every arm runs with ComfyUI's default memory mode (pinned, the same for all arms), the server log's
+  model load and unload lines are cut per measured run and kept in the record, and a measured run with a load in it is
+  flagged in `bench.txt`, so a reader sees whether a time includes a transfer.
 - **Failure is fast.** An `execution_error` on the websocket or in `/history` fails the run at once; each run has its own
   ceiling inside `bench.py`; the worker's call has the adapter's.
-- **The output is checked**, not trusted: the file exists, its size and dimensions (and for a video its frame count, by
-  `ffprobe` in the container) are the workflow's, and its pixels are not constant (a NaN becomes a black or grey frame
-  that finishes in normal time).
+- **The output is checked**, not trusted: the file exists, its dimensions are the workflow's `width` × `height`, and for a
+  video its frame count equals the workflow's `length` (121 for `wan5b`), read by `ffprobe -count_frames` from the image's
+  own `ffmpeg` (installed by the Containerfile: the base has none); its pixels are not constant (a NaN becomes a black or
+  grey frame that finishes in normal time). A truncated video fixture and a constant image fixture are rejected in the tests.
 - **The card is free at the start**: the ready check reads `vram_free` from `/system_stats` and waits (bounded) until it is
   at least 90 % of the total, because the previous container's memory may not be returned the instant it stops; the value
   is recorded.
@@ -215,7 +230,10 @@ better. Three layers, none of them claiming more than it can:
 
 1. **Validity, gating** — the output checks of the measurement contract (a broken kernel's black frame fails the run).
 2. **Drift, recorded, never gating** — per seed, the mean absolute pixel difference and PSNR of the arm's output against the
-   base's, computed in the container with the image's numpy and Pillow, next to the same numbers for the base against
+   base's. The pairing key is (workflow fingerprint, seed); the reference of an arm-round is the base's ROUND 1 output of the
+   same seed, and the base-against-itself numbers are base rounds 2 and 3 against base round 1; when the matching base
+   output is missing or its arm-round was rejected, the drift is written `unavailable (<why>)`, never computed against
+   another run; computed in the container with the image's numpy and Pillow, next to the same numbers for the base against
    ITSELF across rounds (the reference the vLLM series lacked, `dew_flow_benchmark · research/RESULTS_vllm_029_r9700_speed_options.md`
    § 8). A same-seed base is expected to be identical; an arm far outside that is pointed out to the reader.
 3. **A person's look** — the outputs side by side under the record, with the arm names; the series document says which arms
@@ -230,8 +248,11 @@ better. Three layers, none of them claiming more than it can:
   `rejected/`. A 6-arm × 3-round `zimage` series ≈ 6×3×(5 + 0.2) MB ≈ 95 MB; `wan5b` ≈ 6×3×15 MB ≈ 270 MB. Collected data:
   append-only, kept forever, its owner is the operator (the same rule as every series here).
 - The volumes: `comfy-models` holds what `fetch` put there (the two sets ≈ 21 GB + 18 GB); `comfy-data` the venv (≈ 0 until a
-  custom node installs something), workflows and inputs; `comfy-cache` the operator's MIOpen, Triton and TunableOp caches
-  (size not measured yet; the bench epic measures it). The bench's own `<CONTAINER_PREFIX>comfy-cache` is cleared before
+  custom node installs something), workflows and inputs; `comfy-cache` the operator's MIOpen, Triton and TunableOp caches:
+  projected at most 2 GB (the nearest measured cousin, the Triton MoE caches of this toolkit, grew 0.5–1.3 GB per tuning
+  chunk; TunableOp's results are a CSV of kilobytes), measured in E2 and the projection corrected in the record; retired by
+  the operator, who removes the volume by hand (ComfyUI rebuilds the caches at the next start), and `comfy status` prints
+  its size. The bench's own `<CONTAINER_PREFIX>comfy-cache` is cleared before
   every arm-round, so it never holds more than one arm-round's caches. Retired by the operator by hand (`wslc volume remove`); the toolkit never removes
   a volume, because a model download costs hours.
 - The placed copies under `$WORK_DIR/r9700/comfyui/` are rewritten when the repository's file changes, like `moe_place`'s.
