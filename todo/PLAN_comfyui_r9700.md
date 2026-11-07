@@ -320,6 +320,8 @@ mean nothing without the admission refusal beside them. Every design item lands 
 
 ### E1 — ComfyUI from the repository: fields, adapter, image, five verbs, one owner of the card
 
+The stories of this epic are [PLAN_comfyui_r9700_E1.md](PLAN_comfyui_r9700_E1.md) (written 2026-11-07; E1.S2 is the cornerstone).
+
 **Goal.** A person with a `machine.env` runs `bin/r9700 comfy build|start|stop|status|fetch <set>` on any PC this toolkit
 describes, and while their ComfyUI is listed no GPU verb of the toolkit starts a run beside it. The hand-made folder is not
 needed; no machine value is in a tracked file.
@@ -401,5 +403,5 @@ TTS question recorded; the DoD ticks; `POST_DEPLOY.md` only if an item meets its
 **Cornerstone areas.** None. E3 runs E1's and E2's code and writes prose; an incomplete or unproven arm-round is what E2's
 checks reject, and the reading of the numbers is what the measurement rule already governs.
 
-Cornerstones: 0 of 2 — none marked yet; the stories documents of E1 (GPU ownership) and E2 (the measurement contract) mark
-one each within the areas above.
+Cornerstones: 1 of 2 — E1.S2 (GPU ownership, [PLAN_comfyui_r9700_E1.md](PLAN_comfyui_r9700_E1.md)); the stories document
+of E2 (the measurement contract) marks the second within its area above.
