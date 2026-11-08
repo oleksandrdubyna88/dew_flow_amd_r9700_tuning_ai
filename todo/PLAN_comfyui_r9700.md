@@ -1,17 +1,17 @@
 # PLAN — ComfyUI on the R9700 in a wslc container, as verbs of this toolkit, with a measured tuning series
 
-> Status: **stopped for re-review, 2026-11-08** (the second change after approval, entry 1.2). The whole plan was revised for
-> epoch 2 on 2026-11-08 (the record under *Plan changes*); epoch 2 opens when the re-review approves it. E1 is DONE except its
+> Status: **epoch 2 approved 2026-11-08** (by reviewers, after the stop at entry 1.2 and the whole-plan re-review; the record
+> under *Plan changes*). E1 is DONE except its
 > three acceptance runs on the card (PR #18, squash-merged as 6be7a67: the fields, the adapter calls, `comfy
 > build|start|stop|status|fetch`, the owner check in `supervise` and `step_run`). E2 has its stories document only
-> (8814640), which must be rewritten for epoch 2 before E2's first code; E3 is not started. No E2 or E3 code until epoch 2 is
-> approved. Scope: a new `comfyui/` folder (the image recipe and the programs that run inside it), a `comfy` verb of
+> (8814640), which must be rewritten for epoch 2 before E2's first code; E3 is not started. E2's code starts after that rewrite.
+> Scope: a new `comfyui/` folder (the image recipe and the programs that run inside it), a `comfy` verb of
 > `bin/r9700`, new optional fields of `machine.env`, new adapter calls, their tests and documents, and the GPU acceptance
 > runs that measure ComfyUI arms on the R9700.
 
 ## Plan changes
 
-> Epoch 1 · approved 2026-11-07 · by reviewers · state: stopped
+> Epoch 1 · approved 2026-11-07 · by reviewers · state: closed
 
   (The approving round's seven findings, all accepted, are folded into the approved text; they are not entries.)
 
@@ -37,6 +37,11 @@ Narrowed: no — the goal, the Definition of Done and the three epics stand; the
   (The Opus judge of plan-change-control step 5, 2026-11-08, confirmed rows 1 and 3 and corrected row 2 from `fits` to `cut`:
   a pushed document whose text contradicts the revised plan is cut and fixed forward, never reverted. Nothing in the revision
   below is a ledger entry: it is the baseline epoch 2 is approved on.)
+
+> Epoch 2 · approved 2026-11-08 · by reviewers · state: open
+
+  (The approving round, coai, two reviewers, verdict proceed: its six findings, all accepted, are folded into the text;
+  they are not entries.)
 
 ## Goal
 
@@ -235,10 +240,15 @@ execution cache and dynamic model offload; the cornerstone of E2):
   `<CONTAINER_PREFIX>comfy-cache`, cleared before every arm-round (like the MoE cache clear) so every arm-round starts equally
   cold. One fresh container per arm-round: a server that has run for hours with several models fails later work (fact 4), so
   a measured run never follows another arm's models in the same process. Neither `--tmpfs` nor a read-only NAMED volume is
-  used anywhere in the toolkit yet (only bind mounts take `:ro`: `lib/series.sh:103`, `lib/comfy.sh:737`), and neither has
-  been observed with `wslc` (OP8): E2 builds them as written and its acceptance observes them first; if `wslc` refuses either,
-  the fallback (a prefixed empty data volume cleared like the bench cache, or the models volume mounted read-write) changes
-  the isolation and is a plan change the owner approves — never a silent substitution.
+  used anywhere in the toolkit yet (only bind mounts take `:ro`: `lib/series.sh:103`, `lib/comfy.sh:737`). Both were observed
+  with `wslc` on 2026-11-08 (OP8, the approving round): `--tmpfs /data:exec,size=8g` mounts a writable tmpfs, and the models
+  volume with `:ro` refuses a write ("Read-only file system"). A plain `--tmpfs /data` is mounted `noexec`, and the image's
+  entrypoint runs Python from a venv under `/data`, so the `exec` option is required. If a later `wslc` refuses either, the
+  fallback (a prefixed empty data volume cleared like the bench cache, or the models volume mounted read-write) changes the
+  isolation and is a plan change the owner approves — never a silent substitution.
+- **Every ceiling ends the container.** A run past `run_max_s` or `cold_max_s`, the adapter's ceiling and every guard stop end
+  the arm-round by stopping its container and checking it is no longer listed, before the next arm-round starts or the
+  operator's server is restored; nothing that outlived a ceiling runs beside a measurement (the approving round).
 - **A round** is ONE arm-round container: one untimed cold run (model load, kernel compile, TunableOp or MIOpen search,
   bounded by the workload's `cold_max_s`), then three measured runs (each bounded by `run_max_s`) with three seeds that are the
   SAME for every arm. The prompt does not change, so ComfyUI's cache keeps the text encoding after the cold run and the
@@ -289,7 +299,7 @@ follow-up for the owner, not an arm.
 | Arm | Change | Why it is a candidate on this card | Activation evidence | Inertness evidence |
 |---|---|---|---|---|
 | `base` | ComfyUI's own choice (pytorch attention, cudnn off on AMD) | the reference | the attention line `Using pytorch attention` | — |
-| `fp16acc` | `--fast fp16_accumulation` | fp16 matmul accumulation; it acts only on fp16 matmuls | ComfyUI's `Enabled fp16 accumulation` line | the model's compute dtype line is bf16 (`zimage`): reported inert there, as the screening saw (fact 7) |
+| `fp16acc` | `--fast fp16_accumulation` | fp16 matmul accumulation; it acts only on fp16 matmuls | ComfyUI's `Enabled fp16 accumulation` line | the model's compute dtype line AND the VAE's dtype line are bf16 (`zimage`): only then reported inert, as the screening saw (fact 7); an fp16 VAE makes it an acting arm (the approving round) |
 | `fp8w_mm` | `COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn` (the loader's `weight_dtype`, set by `bench.py`) **and** `--fast fp8_matrix_mult` | RDNA4 has fp8 matrix hardware and ComfyUI sets `SUPPORT_FP8_OPS` for gfx1201; the flag acts only on fp8 WEIGHTS, and the pair measured −15 % (`zimage`) and −7 % (`wan5b`, 20 steps) on the sampler in the screening; fp8 weights alone were slower. It replaces the flag-only arm `fp8mm` of epoch 1: with bf16/fp16 model weights the flag can touch only the fp8 text encoder of `wan5b`, which the measured runs cache after the cold run, so the flag alone is inert in every measured run | the loader's weight dtype line (`float8_e4m3fn`) AND the flag in the argv | — (both DiTs are cast) |
 | `tunableop` | `PYTORCH_TUNABLEOP_ENABLED=1`, its results file in the bench cache, and the per-shape tuning bounds of torch's TunableOp (`PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS`, `PYTORCH_TUNABLEOP_MAX_TUNING_ITERATIONS`; the values are set in E2's spec from the image's torch documentation) | hipBLASLt GEMM tuning per shape; the cold run tunes, the measured runs read the file. Unbounded, the screening's cold run tuned the VAE for more than 37 minutes (fact 7), so the bounds and `cold_max_s` keep it inside one arm-round or reject it as `COLD_TIMEOUT` | the results file is not empty and holds the workload's shapes (the cold run and the measured runs are one process whose environment is fixed at its start, so no per-run tuning switch exists to read) | — |
 | `miopen` | `COMFYUI_ENABLE_MIOPEN=1`, `MIOPEN_FIND_MODE=FAST` | ComfyUI turns cudnn/MIOpen off for every AMD arch after RDNA2; on these two DiT models it can only change the VAE, and FAST keeps the search out of a multi-minute stall (the screening: VAE equal warm, cold VAE 7.8 s) | the absence of ComfyUI's `cudnn.enabled = False` line and MIOpen's find lines in the cold run | the sampler has no convolution: `sampler_s` is reported as information only for this arm |
@@ -374,7 +384,7 @@ better. Three layers, none of them claiming more than it can:
 - `<RESULTS_DIR>/comfy-<workflow>/` — `fingerprint.json` (`kind` = `comfy`, the image id, `COMFY_REF`, the arms, the workflow
   constants including the named fields of the tiled decode and the LoRA's strength, `run_max_s` and `cold_max_s`, the hash of
   `bench.py` and of the worker's modules, the PINNED sha256 of every model file the workflow loads — the LoRA among them —,
-  `base`, `rounds`), `rounds/<arm>-<round>/` (`bench.txt` ≈ 2 KB, `runs/*.json` ≈ 5 KB each, `server.log` ≈ 100 KB, the
+  `base`, `rounds`), `rounds/<arm>-<round>/` (`bench.txt` ≈ 2 KB, `runs/*.json` ≈ 5 KB each, `server.log` ≈ 100 KB — the container's whole log from its start, the cold run included, saved before the container stops and read by the evidence check (the approving round), the
   evidence lines, the outputs: `zimage` ≈ 1.5 MB per image × 3 runs, `wan5b` ≈ 5 MB per video × 3), `rejected/` (a reason file
   each: `INTERRUPTED`, `COLD_TIMEOUT`, an `execution_error`, an invalid output, missing evidence). A 6-arm × 3-round `zimage`
   series ≈ 6×3×(5 + 0.2) MB ≈ 95 MB; `wan5b` ≈ 6×3×15 MB ≈ 270 MB; a lost arm-round adds its part under `rejected/`. Collected
@@ -590,8 +600,9 @@ meets its two conditions; the promotion of this plan and its stories documents w
 - The feasibility run's time, memory readings and the round count are in the record before the video series starts.
 - Both series completed under the supervisor with one restore of the operator's vLLM; every arm-round is in
   `rounds/` with its evidence or in `rejected/` with its reason; every lost arm-round is named with its cause when known.
-  A series continued after a lost run keeps its data, but meets this line only when one invocation completes it; whether
-  a continued series may count (one restore per invocation) narrows this condition and is the owner's question.
+  Decided (the approving round): a series continued after a lost run keeps its data in the record, but this line is met
+  only by a series that one invocation completes; a continued one is re-run whole for it. Counting a continued series (one
+  restore per invocation) would narrow this condition and needs the owner's approval first; it is asked, not assumed.
 - The record holds, per arm and workload: prediction, observation, the verdict line, the drift numbers, the conditions
   (image id, `COMFY_REF`, model and LoRA hashes, the workload constants); the owner looked at the outputs and the record says
   so; a result inside the base's spread is written as NOT DECIDED; "quality equal" appears nowhere. The plan and its stories

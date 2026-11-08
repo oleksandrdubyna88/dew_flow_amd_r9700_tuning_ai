@@ -6,7 +6,7 @@ Plans for work that is not finished. A finished plan moves to `research/` with s
 
 | Plan | Status | Scope |
 |---|---|---|
-| [PLAN_comfyui_r9700.md](PLAN_comfyui_r9700.md) | E1 merged (its acceptance runs owed); stopped for re-review (2026-11-08, entry 1.2), revised for epoch 2 the same day, awaiting the re-review's approval | ComfyUI on the R9700 in a wslc container as `bin/r9700 comfy` verbs, and a measured tuning series of ComfyUI arms |
+| [PLAN_comfyui_r9700.md](PLAN_comfyui_r9700.md) | E1 merged (its acceptance runs owed); epoch 2 approved 2026-11-08 after the re-review (entry 1.2 stopped epoch 1); E2 stories to be rewritten | ComfyUI on the R9700 in a wslc container as `bin/r9700 comfy` verbs, and a measured tuning series of ComfyUI arms |
 | [PLAN_comfyui_r9700_E1.md](PLAN_comfyui_r9700_E1.md) | S1–S3 merged in PR #18 (2026-11-08); the three acceptance runs on the card not run yet | the three stories of E1 of the ComfyUI plan: the machine fields and three adapter calls; one owner of the card (cornerstone, `model: fable`); the image, the pinned model sets, `comfy build` and `comfy fetch` |
 | [PLAN_comfyui_r9700_E2.md](PLAN_comfyui_r9700_E2.md) | plan only (2026-11-08, epoch 1); to be rewritten for epoch 2 before E2 starts | the three stories of E2 of the ComfyUI plan: the comfy mode of the ship test; the arm-round and its measurement contract (cornerstone, `model: fable`); the verb `comfy bench`, the verdict over a bench folder, the documents and the first bench run on the R9700 |
 
