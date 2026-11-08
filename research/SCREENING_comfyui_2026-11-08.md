@@ -251,3 +251,16 @@ Russian weights are non-commercial. CER measures intelligibility only; the voice
 Mixing (voiceover.py): line k starts at its shot or 0.3 s after line k-1, a line is sped up at most 1.08x (a solemn voice
 sped up 30 % loses its character), and when the narration outlasts the film the last frame is held. The slow narrator's
 six lines start within ~1 s of their shots and end 1.4–2 s after the film.
+
+## 16. The Arcane film on the 14B video model, and a restart rule for 14B (2026-11-08)
+
+The full Arcane film (set B's keyframes, the Arcane LoRA 1.0 at denoise 0.55; Wan 2.2 A14B + lightx2v 4-step with the gaze
+words; the server restarted before every second clip): clips of 1005.2 / 1796.7 / 1000.3 / 1781.0 / 1004.9 / 1777.9 s.
+By eye on frames of every shot: the painted look and the character hold through the motion and the faces keep one gaze
+(the operator's two remarks on the 5B film); in shot 5 the ears grow (the shot's motion text says "elf woman").
+
+Observed pattern: every clip right after a restart took ~1000 s, every second clip on the same server ~1780–1800 s — the
+14B pair is ~1.8x slower on its second clip (the server's memory fills; the "dynamic VRAM loading" moves the 14 GB experts
+more). A restart costs ~30 s, so for the 14B workflow on this card **a restart before every clip** is faster (~1030 s per
+clip against ~1400 s on average) and also avoids the "out of memory" of § 6. Lyriel's film is rendered with that rule (its
+times verify the prediction: every clip ~1000 s).
