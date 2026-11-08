@@ -196,3 +196,24 @@ instead fixed it. Load 4.3 s; ru1 21.2 s / 8.4 s (RTF 2.51, warm-up), ru2 1.7 s 
 en2 1.7 s / 5.5 s (0.30) — faster than real time once warm, the fastest of the three. The English lines are short (5.5–5.7 s
 against Qwen3-TTS's 10.6–10.8 s): F5 takes the pace from the Russian reference, so English may sound rushed. By ear: the
 operator's call.
+
+## 13. The Arcane films, the eyes, and a narrator voice (2026-11-08)
+
+Arcane films: set B's six keyframes restyled (Z-Image Turbo + the Arcane LoRA 1.0, denoise 0.55 and 0.70) and animated
+with Wan 2.2 TI2V 5B + FastWan 3-step (122–143 s per clip). The operator: the 0.55 film is "closer to Arcane", but the
+eyes jump and look in different directions. Observed by eye: the painted look weakens in motion (the 5B video model has
+no Arcane LoRA and repaints the frames in its own style), most in the close-ups.
+
+The eyes (shot 2, the close-up). Prediction: gaze words in the motion prompt and a fourth step steady the eyes; the 14B
+model, which held faces best in § 6, steadies them most. Observed: the gaze words (503 s, the GPU shared with a TTS run)
+and four steps (219.5 s) look the same as the original at frame-by-frame zoom — the jumping follows the head motion of the
+same seed; the 14B variant failed with "out of memory" on a server that had run for hours beside TTS containers (as in
+§ 6); it is re-run on a fresh server.
+
+A narrator voice for the operator's story (the operator asked for a voice like a famous film wizard; an actor's voice is
+not cloned — an ORIGINAL archetype was designed: an old wise male storyteller, deep, slightly hoarse, warm, slow). Method,
+so one voice holds through a long episode: design ONE reference sentence per model (three takes), then clone it for every
+line. The takes measured (Whisper large-v3-turbo transcript against the text; median pitch by autocorrelation):
+Qwen3-TTS VoiceDesign 8.2/8.9/8.1 s, 130/92/78 Hz, CER 0/0/0; VoxCPM2 "(description)text" 5.6/7.0/5.4 s, 113/112/119 Hz,
+CER 0/0/0. Chosen: the Qwen take at 78 Hz (deepest) and the VoxCPM take of 7.0 s (slowest). The pip `torchcodec` is a
+CUDA build (needs NVIDIA's libnvrtc): it was removed from the TTS venvs, and audio is read with `soundfile`.
