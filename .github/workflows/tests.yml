@@ -30,8 +30,11 @@ jobs:
       # The shared rules' tools (the leftovers guard, the plan check) need their locked dependencies.
       - name: Install the shared tools
         run: npm ci --ignore-scripts --prefix .agents/conventions
-      - name: Install pytest
+      - name: Install the test requirements
         run: python -m pip install -r tests/requirements.txt
+      # The video check and the drift of comfyui/bench.py (BP11, BP12v) and the scripted ComfyUI make videos with ffmpeg: they must never depend on what the runner image carries.
+      - name: Install ffmpeg when the runner has none
+        run: command -v ffmpeg > /dev/null && command -v ffprobe > /dev/null || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
       # One runner for every Python and bash test; one worker. No throttling here: a CI runner has nobody at it.
       - name: Tests
         run: node tests/run.mjs

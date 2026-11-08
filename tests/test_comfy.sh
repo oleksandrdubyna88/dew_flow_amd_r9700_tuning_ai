@@ -641,6 +641,8 @@ t_every_line_of_the_real_models_conf_is_well_formed() {
   assert_eq "" "$dup" "no basename twice in one folder"
   assert_exit 0 "comfy_models_load returns 0 on the real file" -- comfy_models_load "$conf"
   assert_contains "$(grep 'z_image_turbo_bf16.safetensors' "$conf")" "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6" "parity row: the pin of z_image_turbo_bf16.safetensors"
+  assert_contains "$(grep 'Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors' "$conf")" "79290493711b022e1c6e655d803715cd8a91a75cdb139856cad46f354e2f681c" "parity row (E2.S2): the pin of the FastWan LoRA, the X-Linked-ETag read once on 2026-11-08"
+  assert_eq "wan5b loras" "$(grep 'Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors' "$conf" | awk '{ print $1, $2 }')" "the LoRA line is in the loras folder of the wan5b set"
   assert_eq "$n" "${#_COMFY_M_SHA[@]}" "the parse read every line"
 }
 

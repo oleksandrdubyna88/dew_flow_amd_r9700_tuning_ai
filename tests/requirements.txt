@@ -3,3 +3,19 @@ iniconfig==2.3.1
 packaging==26.3
 pluggy==1.7.0
 pygments==2.21.0
+# The ComfyUI bench (comfyui/bench.py) and its fixture server run under pytest on the host (E2.S2, OP7). The three are the versions of the built image, read on the card on 2026-11-08:
+# aiohttp 3.14.5, numpy 2.5.3, Pillow 12.3.0 (the closure below is what uv resolves for them). Licences read from the releases' metadata on 2026-11-08: aiohttp Apache-2.0 AND MIT; multidict, yarl, frozenlist, propcache,
+# aiosignal Apache-2.0; numpy BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0; Pillow MIT-CMU; attrs MIT; idna BSD-3-Clause; aiohappyeyeballs PSF-2.0; typing-extensions PSF-2.0 (CI runs Python 3.12,
+# where aiohttp needs it).
+aiohttp==3.14.5
+aiohappyeyeballs==2.7.1
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+idna==3.20
+multidict==7.2.1
+propcache==0.5.4
+typing-extensions==4.16.0
+yarl==1.25.1
+numpy==2.5.3
+pillow==12.3.0

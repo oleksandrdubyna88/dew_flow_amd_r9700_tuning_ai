@@ -141,42 +141,53 @@ _series_write_inputs() {
   [ "$probe" = no ] || _series_probe "$inputs"
 }
 
-# series_fingerprint <outdir> <rounds> <real|dry> <arm>...: the supervisor's half, before admission. `real`: build fingerprint.json, or compare with the
-# stored one and merge the extensions (a new arm, more rounds). A new fingerprint is never built over records (rounds/ or rejected/ exist but the file
-# does not: its identity is lost, and old records must not be taken for the result of a new configuration). `dry`: the same checks and the same
-# lines, but NOTHING is written in the outdir (no fingerprint.json, no merge, not even the folder): a dry run must never change a series.
-series_fingerprint() {
-  local outdir="$1" rounds="$2" mode="$3" inputs rc=0 out stored
-  shift 3
+# _series_fingerprint_run <outdir> <real|dry> <build command> <message prefix> <noun> <after function or -> <writer function> <writer arguments...>: the shared half of series_fingerprint and of
+# comfy_bench_fingerprint (lib/comfy_bench.sh). The writer is called as `<writer> <inputs dir> <writer arguments...>` and writes one file per component group; <build command> is the
+# fingerprint.py command that makes the document (`build`, `build-comfy`); <after function> is called with the inputs dir once the document is built or compared and merged (rc 0), before the
+# folder is removed; the messages start <message prefix> and say "this <noun> cannot be resumed". Everything else is the text of series_fingerprint's header.
+_series_fingerprint_run() {
+  local outdir="$1" mode="$2" build="$3" prefix="$4" noun="$5" after="$6" writer="$7" inputs rc=0 out stored
+  shift 7
   stored="$outdir/fingerprint.json"
   if [ ! -f "$stored" ] && { [ -d "$outdir/rounds" ] || [ -d "$outdir/rejected" ]; }; then # a dry run is refused too: it says what the real run would do
-    echo "series: $outdir has rounds/ or rejected/ but no fingerprint.json: the identity of those records is lost, so this series cannot be resumed; use a new --out name (or put the fingerprint.json back from a copy)" >&2
+    echo "$prefix $outdir has rounds/ or rejected/ but no fingerprint.json: the identity of those records is lost, so this $noun cannot be resumed; use a new --out name (or put the fingerprint.json back from a copy)" >&2
     return 2
   fi
   if [ "$mode" = dry ]; then
     inputs="${RUN_DIR:?}/fingerprint-inputs"
   else
-    mkdir -p "$outdir" || { echo "series: the outdir $outdir cannot be made" >&2; return 2; }
+    mkdir -p "$outdir" || { echo "$prefix the outdir $outdir cannot be made" >&2; return 2; }
     find "$outdir" -maxdepth 1 -type d -name '.fingerprint-inputs.part-*' -exec rm -rf {} + 2> /dev/null # what a killed earlier run left; ours, temporary
     inputs="$outdir/.fingerprint-inputs.part-${RUN_ID:-$$}"
   fi
-  _series_write_inputs "$inputs" "$rounds" yes "$@" || rc=2
+  "$writer" "$inputs" "$@" || rc=2
   if [ "$rc" -eq 0 ] && [ ! -f "$stored" ]; then
     if [ "$mode" = dry ]; then
-      python3 "$_SERIES_LIB/fingerprint.py" build "$inputs" --out "$inputs/new.json" > /dev/null || rc=2
+      python3 "$_SERIES_LIB/fingerprint.py" "$build" "$inputs" --out "$inputs/new.json" > /dev/null || rc=2
     else
-      python3 "$_SERIES_LIB/fingerprint.py" build "$inputs" --out "$stored" > /dev/null || rc=2
+      python3 "$_SERIES_LIB/fingerprint.py" "$build" "$inputs" --out "$stored" > /dev/null || rc=2
     fi
   elif [ "$rc" -eq 0 ]; then
-    python3 "$_SERIES_LIB/fingerprint.py" build "$inputs" --out "$inputs/new.json" > /dev/null || rc=2
+    python3 "$_SERIES_LIB/fingerprint.py" "$build" "$inputs" --out "$inputs/new.json" > /dev/null || rc=2
     if [ "$rc" -eq 0 ]; then
       if [ "$mode" = dry ]; then out="$(python3 "$_SERIES_LIB/fingerprint.py" compare "$stored" "$inputs/new.json")"; else out="$(python3 "$_SERIES_LIB/fingerprint.py" compare --merge "$stored" "$inputs/new.json")"; fi
       rc=$?
       if [ "$rc" -eq 0 ]; then [ -z "$out" ] || printf '%s\n' "$out"; else printf '%s\n' "$out" >&2; rc=2; fi
     fi
   fi
+  if [ "$rc" -eq 0 ] && [ "$after" != - ]; then "$after" "$inputs" "$mode"; fi
   rm -rf "${inputs:?}"
   return "$rc"
+}
+
+# series_fingerprint <outdir> <rounds> <real|dry> <arm>...: the supervisor's half, before admission. `real`: build fingerprint.json, or compare with the
+# stored one and merge the extensions (a new arm, more rounds). A new fingerprint is never built over records (rounds/ or rejected/ exist but the file
+# does not: its identity is lost, and old records must not be taken for the result of a new configuration). `dry`: the same checks and the same
+# lines, but NOTHING is written in the outdir (no fingerprint.json, no merge, not even the folder): a dry run must never change a series.
+series_fingerprint() {
+  local outdir="$1" rounds="$2" mode="$3"
+  shift 3
+  _series_fingerprint_run "$outdir" "$mode" build "series:" series - _series_write_inputs "$rounds" yes "$@"
 }
 
 # ---------- the commands of an arm-round, shared by the worker and the dry run ----------
@@ -263,13 +274,17 @@ _series_reject() {
   _SERIES_REJECTED="$dest"
 }
 
-# series_sweep_parts <outdir>: the crash recovery of the worker: whatever an earlier worker left as a part directory is evidence, never a record
+# series_sweep_parts <outdir> [<reason function>]: the crash recovery of the worker: whatever an earlier worker left as a part directory is evidence, never a record. The reason is
+# `INTERRUPTED: <name> was left by an earlier worker that did not finish it`, or, when a function is named, the line it prints for (<part dir>, <name>): the ComfyUI bench (E2.S2)
+# names the run that left the part. The line printed says who sweeps: $_SERIES_WHO (default `series`).
 series_sweep_parts() {
-  local outdir="$1" dir name
+  local outdir="$1" describe="${2:-}" dir name reason
   for dir in "$outdir"/rounds/*.part-*; do
     [ -d "$dir" ] || continue
     name="${dir##*/}"
-    _series_reject "$outdir" "${name%%.part-*}" "$dir" "INTERRUPTED: $name was left by an earlier worker that did not finish it" && echo "series: $name moved to ${_SERIES_REJECTED#"$outdir"/}"
+    reason="INTERRUPTED: $name was left by an earlier worker that did not finish it"
+    [ -z "$describe" ] || reason="$("$describe" "$dir" "$name")"
+    _series_reject "$outdir" "${name%%.part-*}" "$dir" "$reason" && echo "${_SERIES_WHO:-series}: $name moved to ${_SERIES_REJECTED#"$outdir"/}"
   done
 }
 
@@ -283,14 +298,15 @@ _series_disk_gate() {
   fi
 }
 
-# _series_gate <arm> <round>: before every arm-round. 0 go on; 1 the disk gate stopped (the outcome says so); 3 not quiet; 4 it no longer fits
+# _series_gate <arm> <round> [<seconds>]: before every arm-round. 0 go on; 1 the disk gate stopped (the outcome says so); 3 not quiet; 4 it no longer fits. <seconds> is the production time
+# one arm-round is allowed to need for the fit check (default R9700_ARM_SECONDS, 1500); the ComfyUI bench gives its own. The line of a refusal starts with $_SERIES_WHO (default `series`).
 _series_gate() {
   local arm="$1" round="$2" line allow
   _series_disk_gate || return 1
   if ! line="$(quiet_check)"; then echo "NOT QUIET: $arm round $round ($line)"; return 3; fi
-  allow="$(t_scale "${R9700_ARM_SECONDS:-1500}")" || return 2
+  allow="$(t_scale "${3:-${R9700_ARM_SECONDS:-1500}}")" || return 2
   if ! awk -v now="$(date +%s.%N 9>&-)" -v a="$allow" -v stop="${R9700_T_STOP:-}" 'BEGIN { exit !(stop == "" || now + a <= stop + 0) }' 9>&-; then
-    echo "series: $(series_left "$_SERIES_OUT" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}") arm-rounds no longer fit before the deadline"
+    echo "${_SERIES_WHO:-series}: $(series_left "$_SERIES_OUT" "$_SERIES_ROUNDS" "${_SERIES_ARMS[@]}") arm-rounds no longer fit before the deadline"
     return 4
   fi
 }
