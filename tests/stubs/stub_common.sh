@@ -15,10 +15,30 @@
 #                  cleanup hook without hanging the restore
 #   list-delay-once    seconds the NEXT `wslc list` sleeps before it answers (that call removes the file: a one-shot slow list, for a test of an adapter ceiling)
 #   list-delay-until-<name>  seconds EVERY `wslc list` sleeps while no container <name> runs (a slow list before the start of a server; each delayed call is noted in list-delayed.log)
+#   hang-list        a number n: the n-th `wslc list` call counted from the making of the file hangs (the sleeper is recorded in hung/containers, the caller's ceiling ends it); the others answer
 #   stop-delay-<name>  seconds `wslc stop <name>` sleeps before it stops the container (a slow stop, for a test that interrupts one)
 #   stop-fail-<name>   a count: that many `wslc stop <name>` calls fail (code 1) and leave the container running, then stops work again
 #   stop-gone-<name>   a count: that many `wslc stop <name>` calls return 1 AND remove the container (the stop worked, the call said it did not)
 #   stop-lines-<name>  a number: `wslc stop <name>` prints that many noise lines before it stops the container
+#   volumes/<name>   a stub volume: one empty file per volume (`wslc volume create`, listed by `wslc volume list`)
+#   fail-volume-list a count: that many `wslc volume list` calls fail (code 1), then it works again
+#   answers/build.log, build_rc, build_seconds   `wslc build`: the log (CRLF ends added; default three lines), the exit code (default 0), the seconds it runs (default 0)
+#   images           (E1.S3) the stub's images: one record `<repository> <tag> <id>` per tagged image (a test plants records by writing it; `build -t`, `tag` and `rmi` change it)
+#   answers/build_id, answers/build_tags_on_failure   the id a successful build records (default made from the call counter); 1: a failing build still records its tag
+#   answers/tag_rc, answers/rmi_rc   a non-zero code: `wslc tag` / `wslc rmi` fails with it and changes nothing
+#   answers/tag_after_rc   a non-zero code: `wslc tag` moves the tag and then fails with it (a call cut after the engine did the work)
+#   answers/image_list, fail-image-list   `wslc image list`: the file printed instead of the table (CRLF ends added); a count (or "<skip> <count>") of failing calls
+#   answers/comfy_check, answers/comfy_check_rc   the throwaway check container of `comfy build` (`--entrypoint python3 ... -c <program naming torch.version.hip>`): its output (default four R9700
+#                  lines, CRLF ends added) and its exit code (default 0)
+#   answers/comfy_fetch.log, comfy_fetch_rc, comfy_fetch_seconds   the container of `comfy fetch` (a foreground run of a word ending /fetch_model.sh): its output (default one `stub fetch`
+#                  line), its code (default 0) and the seconds it runs and stays listed (default 0)
+#   answers/volume_create_rc   a non-zero code: `wslc volume create` fails with it and makes nothing
+#   stopped/<name>   a stopped container that keeps its name: `wslc run --name <name>` is refused until `wslc remove <name>` removes the file
+#   answers/comfy_ready   the ComfyUI readiness probe (an exec whose program names system_stats): call k takes line k, the last repeats; ok | fail | hang
+#   answers/inspect, answers/inspect_rc   `wslc inspect`: the JSON (default one record with a Created time) and the exit code (default 0)
+#   answers/remove_rc   a non-zero code: `wslc remove` fails with it and removes nothing
+#   run-fail-<name>   a count: that many detached runs of <name> start the container and then fail (the client's half lost)
+#   run-delay-<name>  seconds (read, not removed): a detached run of <name> starts the container, then sleeps that long before it answers
 #   counters/<x>   the call counters
 
 STUB_HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -137,12 +157,13 @@ stub_alive() {
 }
 
 # stub_container_start <name>: a container is a real process outside the caller's group, exactly like the real one: `setsid sleep`,
-# no inherited descriptor (a held pipe would hang the caller's $(...))
+# no inherited descriptor (a held pipe would hang the caller's $(...)). It is started by a subshell that ends at once (a double fork), so it is
+# no descendant of the stub: the real container belongs to the engine, never to the `wslc` client, and a caller that ends the client's whole
+# tree (a signal to the supervisor during a detached run, lib/comfy.sh) must not end the container with it.
 stub_container_start() {
   local file="$R9700_STUB_DIR/containers/$1.pid" pid
   stub_mkdir "$R9700_STUB_DIR/containers" # before the process starts: with the run folder gone, no process may be left behind
-  setsid sleep 1000 < /dev/null > /dev/null 2>&1 &
-  pid=$!
+  pid="$( ( setsid sleep 1000 < /dev/null > /dev/null 2>&1 & echo "$!" ) )"
   stub_record_pid "$file" "$pid"
   if ! stub_alive "$file"; then
     echo "stub: the container process did not start" >&2

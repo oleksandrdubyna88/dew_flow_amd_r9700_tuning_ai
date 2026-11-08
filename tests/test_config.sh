@@ -9,39 +9,10 @@ source "$HERE/lib/assert.sh"
 # shellcheck source=lib/config.sh
 source "$REPO/lib/config.sh"
 
-FIXTURE="$HERE/fixtures/config/machine.env.in"
-MODEL_35B="$REPO/models/qwen3.6-35b-a3b-gptq.env"
 MODEL_27B="$REPO/models/qwen3.8-27b-awq.env"
 ARMS="$REPO/config/arms.conf"
-
-# case_root <name>: a fresh folder with the files the machine fixture names (empty files stand in for the patches).
-case_root() {
-  local root="$R9700_TEST_ROOT/case-$1" file
-  mkdir -p "$root/work" "$root/patches/C" "$root/patches/work/speed/o7" "$root/patches/work/speed/ra"
-  for file in C/auto_gptq.py C/gptq_utils.py work/speed/o7/rdna_hybrid_w4a16.py work/speed/ra/rocm_attn.py; do : > "$root/patches/$file"; done
-  echo "$root"
-}
-
-# variant <source file> <dest file> <root> [<KEY> [<replacement line, empty = remove the key>]]
-# The source with every @ROOT@ replaced; the line of KEY replaced, removed, or (when absent) added.
-variant() {
-  local src="$1" dest="$2" root="$3" key="${4:-}" repl="${5-}" line out="" hit=0
-  repl="${repl//@ROOT@/$root}"
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line//@ROOT@/$root}"
-    if [ -n "$key" ] && [[ $line == "$key="* ]]; then
-      hit=1
-      [ -n "$repl" ] && out+="$repl"$'\n'
-      continue
-    fi
-    out+="$line"$'\n'
-  done < "$src"
-  if [ -n "$key" ] && [ "$hit" = 0 ] && [ -n "$repl" ]; then out+="$repl"$'\n'; fi
-  printf '%s' "$out" > "$dest"
-}
-
-machine() { variant "$FIXTURE" "$1/machine.env" "$1" "${@:2}"; }
-model() { variant "$1" "$2/model.env" "$2" "${@:3}"; }
+# shellcheck source=tests/lib/configcase.sh
+source "$HERE/lib/configcase.sh"
 legal_keys() { config_keys | awk -v scope="$1" '$1 == scope { printf "%s ", $2 }' | sed 's/ $//'; }
 lines_of() { wc -l < "$1" | tr -d ' '; }
 
@@ -491,6 +462,8 @@ TYPE_CASES=(
   'mounts|model|MOUNTS|MOUNTS=C/auto_gptq.py:/opt/x.py|MOUNTS=C/auto_gptq.py'
   'args|model|EXTRA_SERVE_ARGS|EXTRA_SERVE_ARGS="--a b"|EXTRA_SERVE_ARGS="--a *"'
   'shapes?|model|LINEAR_SHAPES|LINEAR_SHAPES="a:2048:16:1 b:128:16:1"|LINEAR_SHAPES=a:2048:17:1'
+  'win?|machine|COMFY_OUTPUT_WIN|COMFY_OUTPUT_WIN=|COMFY_OUTPUT_WIN=X:'
+  'ref|machine|COMFY_REF|COMFY_REF=V1.2_rc-3|COMFY_REF=v1/x'
 )
 
 t_every_field_type_has_a_refusal_and_a_boundary_good_value_and_the_loader_applies_them() {
@@ -646,6 +619,144 @@ t_the_example_comments_and_the_doc_column_equal_the_field_descriptions() {
     doc="$(awk -F'|' -v k="\`$key\`" '{ c = $2; gsub(/^ +| +$/, "", c) } c == k { d = $5; gsub(/^ +| +$/, "", d); print d }' "$REPO/research/module_config.md")"
     assert_eq "$desc" "$doc" "module_config.md: the description column of $key"
   done < <(config_descriptions)
+}
+
+# ---- E1.S1: the ComfyUI machine fields and the machine-only load (CF1-CF9) -----------------------------------------
+
+t_the_comfy_fields_load_at_their_defaults_from_a_machine_file_that_names_none_of_them() {
+  local root key type default var want n=0 seen=""; root="$(case_root "$FUNCNAME")"; machine "$root"
+  assert_exit 0 "config_load returns 0" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "" "$ERR" "nothing on stderr"
+  while read -r _ key type default; do
+    case $key in COMFY_*) ;; *) continue ;; esac
+    n=$((n + 1)); seen+="$key "
+    var="R9700_$key"; want="$default"; [ "$want" = '""' ] && want=""
+    assert_eq "$want" "${!var-UNSET}" "$key takes its default"
+  done < <(config_keys)
+  case " $seen" in *" COMFY_IMAGE "*) _assert_pass "the derived list holds COMFY_IMAGE (the scan is alive)" ;; *) _assert_fail "the derived list holds COMFY_IMAGE (the scan is alive)" "the list: [$seen]" ;; esac
+  assert_eq "8188" "${R9700_COMFY_PORT-UNSET}" "parity: COMFY_PORT"
+  assert_eq "comfyui" "${R9700_COMFY_CONTAINER-UNSET}" "parity: COMFY_CONTAINER"
+  assert_eq "v0.44.0" "${R9700_COMFY_REF-UNSET}" "parity: COMFY_REF"
+}
+
+t_an_optional_windows_path_is_empty_or_a_windows_path_and_nothing_else() {
+  local root; root="$(case_root "$FUNCNAME")"
+  machine "$root" COMFY_OUTPUT_WIN "COMFY_OUTPUT_WIN="
+  assert_exit 0 "an empty COMFY_OUTPUT_WIN loads" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "" "$R9700_COMFY_OUTPUT_WIN" "and stays empty"
+  machine "$root" COMFY_OUTPUT_WIN 'COMFY_OUTPUT_WIN="X:\comfy out"'
+  assert_exit 0 "a Windows path with a space loads" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq 'X:\comfy out' "$R9700_COMFY_OUTPUT_WIN" "and is kept"
+  machine "$root" COMFY_STORE_WIN "COMFY_STORE_WIN=/mnt/x/store"
+  assert_exit 2 "a WSL path is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "1" "$(grep -c '^config: ' <<< "$ERR")" "exactly one config: line"
+  assert_contains "$ERR" 'COMFY_STORE_WIN: "/mnt/x/store" is not a Windows path; legal: X:\…, or empty' "the refusal and the legal text"
+  machine "$root" COMFY_STORE_WIN "COMFY_STORE_WIN=X:"
+  assert_exit 2 "a bare drive is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+}
+
+t_a_git_tag_is_one_safe_word() {
+  local root tag64 tag65 bad; root="$(case_root "$FUNCNAME")"
+  tag64="v$(printf 'a%.0s' $(seq 1 63))"; tag65="${tag64}a"
+  machine "$root" COMFY_REF "COMFY_REF=V1.2_rc-3"
+  assert_exit 0 "an upper-case tag with . _ - loads" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" COMFY_REF "COMFY_REF=$tag64"
+  assert_exit 0 "a 64-character tag loads" -- config_load "$root/machine.env" "$MODEL_35B"
+  machine "$root" COMFY_REF "COMFY_REF=$tag65"
+  assert_exit 2 "a 65-character tag is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  for bad in 'COMFY_REF=v1/x' 'COMFY_REF=-v1' 'COMFY_REF="v1 v2"' 'COMFY_REF=v1;x'; do
+    machine "$root" COMFY_REF "$bad"
+    assert_exit 2 "$bad is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+    assert_contains "$ERR" 'COMFY_REF: ' "names the key"
+    assert_contains "$ERR" 'legal: a git tag: letters, digits, . _ - (starting with a letter or digit), at most 64 characters' "$bad: the legal text"
+  done
+}
+
+t_the_port_and_the_two_ceilings_keep_their_ranges() {
+  local root row key lo hi; root="$(case_root "$FUNCNAME")"
+  for row in 'COMFY_PORT 1024 65535' 'COMFY_BUILD_MAX_S 600 14400' 'COMFY_FETCH_MAX_S 600 86400'; do
+    read -r key lo hi <<< "$row"
+    machine "$root" "$key" "$key=$lo"; assert_exit 0 "$key=$lo loads" -- config_load "$root/machine.env" "$MODEL_35B"
+    machine "$root" "$key" "$key=$hi"; assert_exit 0 "$key=$hi loads" -- config_load "$root/machine.env" "$MODEL_35B"
+    machine "$root" "$key" "$key=$((lo - 1))"; assert_exit 2 "$key=$((lo - 1)) is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+    assert_contains "$ERR" "outside $lo..$hi" "$key: the range is named"
+    machine "$root" "$key" "$key=$((hi + 1))"; assert_exit 2 "$key=$((hi + 1)) is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+    assert_contains "$ERR" "outside $lo..$hi" "$key: the range above is named"
+    assert_contains "$ERR" "$key: " "$key: names the key"
+  done
+}
+
+t_the_comfy_image_fields_refuse_what_is_not_an_image_reference() {
+  local root; root="$(case_root "$FUNCNAME")"
+  machine "$root" COMFY_IMAGE "COMFY_IMAGE=Comfy:local"
+  assert_exit 2 "an upper-case repository is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "COMFY_IMAGE: " "names COMFY_IMAGE"
+  machine "$root" COMFY_BASE_IMAGE "COMFY_BASE_IMAGE=rocm/pytorch"
+  assert_exit 2 "a base image without a tag is refused" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_contains "$ERR" "COMFY_BASE_IMAGE: " "names COMFY_BASE_IMAGE"
+}
+
+t_the_machine_file_loads_alone() {
+  local root; root="$(case_root "$FUNCNAME")"; machine "$root"
+  assert_exit 0 "config_load_machine returns 0" -- config_load_machine "$root/machine.env"
+  assert_eq "" "$ERR" "nothing on stderr"
+  assert_eq "comfyui" "$R9700_COMFY_CONTAINER" "COMFY_CONTAINER is set"
+  assert_eq "$root/work" "$R9700_WORK_DIR" "WORK_DIR is set"
+  assert_eq "vllm" "$R9700_PROD_CONTAINER" "PROD_CONTAINER is set"
+  assert_eq "" "${R9700_MODEL_DIR+set}" "MODEL_DIR is unset"
+  assert_eq "" "${R9700_SERVED_NAME+set}" "SERVED_NAME is unset"
+  assert_eq "" "${R9700_PREFILL_LENS+set}" "PREFILL_LENS is unset"
+  assert_exit 0 "a full load first" -- config_load "$root/machine.env" "$MODEL_35B"
+  assert_eq "qwen3.6-35b-a3b" "$R9700_SERVED_NAME" "the full load set SERVED_NAME"
+  assert_exit 0 "then the machine-only load" -- config_load_machine "$root/machine.env"
+  assert_eq "" "${R9700_MODEL_DIR+set}" "the reset leaves MODEL_DIR unset"
+  assert_eq "" "${R9700_SERVED_NAME+set}" "the reset leaves SERVED_NAME unset"
+  assert_eq "" "${R9700_PREFILL_LENS+set}" "the reset leaves PREFILL_LENS unset"
+  assert_eq "comfyui" "$R9700_COMFY_CONTAINER" "COMFY_CONTAINER is set again"
+}
+
+t_loading_the_machine_through_config_load_with_no_model_file_would_refuse_and_that_is_the_point() {
+  local root; root="$(case_root "$FUNCNAME")"; machine "$root"
+  assert_exit 2 "config_load with an empty model file name refuses" -- config_load "$root/machine.env" ""
+  assert_contains "$ERR" "cannot read" "says it cannot read the model file"
+  assert_contains "$ERR" "MODEL_DIR: required" "and that MODEL_DIR is required"
+  assert_exit 0 "config_load_machine on the same file returns 0" -- config_load_machine "$root/machine.env"
+  assert_eq "" "$ERR" "with nothing on stderr"
+}
+
+t_a_machine_only_load_keeps_every_machine_rule_and_reports_in_one_pass() {
+  local root; root="$(case_root "$FUNCNAME")"
+  machine "$root" PROD_CONTAINER "PROD_CONTAINER=r9700tune-vllm"
+  assert_exit 2 "the PROD_CONTAINER prefix rule holds" -- config_load_machine "$root/machine.env"
+  assert_contains "$ERR" "PROD_CONTAINER must not start with CONTAINER_PREFIX" "says why"
+  machine "$root" MAX_FAILED_TRIES "MAX_FAILED_TRIES=5"
+  assert_exit 2 "the try limit rule holds" -- config_load_machine "$root/machine.env"
+  assert_contains "$ERR" "is more than MAX_SERVER_STOPS" "says why"
+  machine "$root" MODEL_DIR "MODEL_DIR=/x"
+  assert_exit 2 "a model key in the machine file is refused" -- config_load_machine "$root/machine.env"
+  assert_contains "$ERR" "MODEL_DIR: unknown key" "as an unknown key"
+  machine "$root" RAM_MIN_MB "RAM_MIN_MB=x"
+  printf '%s\n' "COMFY_PORT=1" >> "$root/machine.env"
+  assert_exit 2 "two wrong fields" -- config_load_machine "$root/machine.env"
+  assert_eq "2" "$(grep -c '^config: ' <<< "$ERR")" "exactly two config: lines"
+  assert_exit 2 "a missing file" -- config_load_machine "$root/nosuch.env"
+  assert_eq "1" "$(grep -c 'cannot read' <<< "$ERR")" "one cannot read line"
+  assert_contains "$ERR" "config: $root/nosuch.env: cannot read" "names the file"
+}
+
+t_a_scope_word_other_than_all_or_machine_is_refused_by_the_three_functions_that_read_it() {
+  local root fn; root="$(case_root "$FUNCNAME")"; machine "$root"
+  for fn in _cfg_fill_and_check _cfg_cross _cfg_finish; do
+    _cfg_reset; _cfg_parse_file machine "$root/machine.env"; _cfg_parse_file model "$MODEL_35B"
+    assert_exit 2 "$fn refuses the scope word \"modle\"" -- "$fn" modle
+    assert_eq "1" "$(grep -c . <<< "$ERR")" "$fn: one line"
+    assert_contains "$ERR" 'config: internal error: the scope "modle" is not one of: all machine' "$fn: it names the legal words"
+  done
+  _cfg_reset; _cfg_parse_file machine "$root/machine.env"; _cfg_parse_file model "$MODEL_35B"
+  _cfg_fill_and_check machine
+  assert_exit 0 "the legal word machine is accepted" -- _cfg_cross machine
+  _cfg_fill_and_check all
+  assert_exit 0 "and all" -- _cfg_cross all
 }
 
 run_all_tests

@@ -368,7 +368,7 @@ t_a_stop_that_fails_and_a_list_that_fails_after_it_stays_a_failed_try_because_no
   step_cfg MAX_FAILED_TRIES=2
   prod_running
   printf '1\n' > "$STUB/stop-gone-vllm" # the server IS gone, but the list that would show it fails
-  printf '1 1\n' > "$STUB/fail-list" # the admission's own list is the first: good; the list after the stop is the next: it fails
+  printf '2 1\n' > "$STUB/fail-list" # the owner check's list (E1.S2) and the admission's own list are good; the list after the stop is the next: it fails
   assert_exit 0 "the step ends well: the retry finds the server not listed" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
   assert_contains "$OUT" "failed try 1 of 2: admit stopping vllm failed (code 1)" "an unreadable list does not count the server as stopped"
   assert_not_contains "$OUT" "but the server is gone" "no claim without a list"
@@ -581,18 +581,33 @@ t_l22_a_body_with_two_step_run_calls_restores_the_server_exactly_once() {
 t_an_admission_that_cannot_list_the_containers_is_a_failed_try_and_stops_nothing() {
   step_setup "$FUNCNAME"
   prod_running
-  sed -i 's|^WSLC=.*|WSLC=/nonexistent/wslc|' "$CASE/machine.env"
+  printf '1 2\n' > "$STUB/fail-list" # the owner check's list (E1.S2) answers; the lists of both admissions fail
   step_cfg MAX_FAILED_TRIES=2
-  assert_exit 7 "step with a wslc that is not there" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_exit 7 "step with two failing admission lists" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
   assert_contains "$ERR" "r9700: step failed 2 times, last: admit " "the line names the admission"
   assert_missing "$STUB/worker.calls" "the worker never ran"
   assert_missing "$MARKER_FILE" "no marker (nothing was stopped)"
+  assert_eq "0" "$(stop_lines)" "no stop"
+}
+
+t_a_missing_container_executable_refuses_at_the_owner_check_before_the_admission_and_stops_nothing() {
+  step_setup "$FUNCNAME"
+  prod_running
+  sed -i 's|^WSLC=.*|WSLC=/nonexistent/wslc|' "$CASE/machine.env"
+  step_cfg MAX_FAILED_TRIES=2
+  assert_exit 2 "step with a wslc that is not there" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
+  assert_contains "$ERR" "r9700: the container list failed 3 times (adapter: /nonexistent/wslc is not an executable file)" "the line names the container list and the missing executable"
+  assert_missing "$STUB/worker.calls" "the worker never ran"
+  assert_missing "$MARKER_FILE" "no marker (nothing was stopped)"
+  assert_eq "0" "$(stop_lines)" "no stop"
+  assert_exit 0 "no run folder" -- test -z "$(ls -A "$R9700_RESULTS_DIR/runs" 2> /dev/null)"
 }
 
 t_a_term_during_a_hung_adapter_call_of_the_supervisor_ends_the_call_and_the_run_with_143() {
   step_setup "$FUNCNAME"
   prod_running
-  printf 'hang\n' > "$STUB/mode" # the supervisor's first adapter call (the container list of the admission) hangs
+  # the call that hangs is the container list of the ADMISSION: the second list (the owner check's list before it is answered), by the stub's count
+  printf '2\n' > "$STUB/hang-list"
   step_bg --model "$MODEL_35B" t -- "$WORKER" ok
   wait_for "$STUB/hung/containers/1.pid" 100
   local hung start end
@@ -604,10 +619,10 @@ t_a_term_during_a_hung_adapter_call_of_the_supervisor_ends_the_call_and_the_run_
   assert_eq "143" "$SRC" "exit 143"
   assert_exit 0 "the hung stub call is dead (the call's group got the KILL before the handler ran)" -- gone "$hung"
   if awk -v a="$start" -v b="$end" 'BEGIN { exit !(b - a < 3) }'; then assert_eq ok ok "the run ended within three seconds, not at the call's ceiling"; else assert_eq "< 3 s" "$(awk -v a="$start" -v b="$end" 'BEGIN { print b - a }')" "the run ended at once"; fi
+  assert_eq "2" "$(count_calls wslc list)" "the call that hung was the admission's list (the owner check's list before it was answered)"
   assert_eq "0" "$(stop_lines)" "no server was stopped"
   assert_exit 0 "the operator's server still runs" -- test -f "$STUB/containers/vllm.pid"
   assert_missing "$STUB/worker.calls" "no worker ran"
-  rm -f "$STUB/mode"
   kill_recorded_pids "$CASE"
 }
 
@@ -665,7 +680,7 @@ t_cleanup_once_runs_once_whatever_calls_it() {
 t_failed_admissions_that_never_stopped_the_server_do_not_use_up_max_server_stops() {
   step_setup "$FUNCNAME"
   prod_running
-  sed -i 's|^WSLC=.*|WSLC=/nonexistent/wslc|' "$CASE/machine.env"
+  printf '1 3\n' > "$STUB/fail-list" # the owner check's list is answered; the lists of the next three admissions fail
   assert_exit 7 "three failed container lists (MAX_FAILED_TRIES 3) with MAX_SERVER_STOPS 3" -- r9700 step --model "$MODEL_35B" t -- "$WORKER" ok
   assert_contains "$ERR" "r9700: step failed 3 times, last: admit " "the tries ran out, not the stops"
   assert_not_contains "$ERR" "admitted" "no stop budget line"

@@ -140,6 +140,46 @@ moe_bench() {
   return 0
 }
 
+# comfy_check_is <argv...>: 0 when the foreground run is the throwaway container of `comfy build` (E1.S3): `--entrypoint python3 ... -c <program>` where the program names torch.version.hip
+comfy_check_is() {
+  local arg prev="" entry=no program=""
+  for arg in "$@"; do
+    [ "$prev" = --entrypoint ] && [ "$arg" = python3 ] && entry=yes
+    [ "$prev" = -c ] && program="$arg"
+    prev="$arg"
+  done
+  [ "$entry" = yes ] && [[ $program == *torch.version.hip* ]]
+}
+
+# comfy_check_answer: prints answers/comfy_check with CRLF ends (default the four lines of an R9700) and returns answers/comfy_check_rc (default 0)
+comfy_check_answer() {
+  if [ -f "$R9700_STUB_DIR/answers/comfy_check" ]; then
+    sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/comfy_check"
+  else
+    printf 'torch 2.13.0+rocm10.1.0%s\nhip 10.1.0%s\ndevice AMD Radeon AI PRO R9700%s\nmatmul ok%s\n' "$CRLF" "$CRLF" "$CRLF" "$CRLF"
+  fi
+  return "$(moe_answer comfy_check_rc 0)"
+}
+
+# fetch_foreground <name>: the container of `comfy fetch` (E1.S3): a foreground `run --rm --name <name> ... /work/r9700/comfyui/fetch_model.sh <triples>`. It is a recorded process
+# (containers/<name>.pid = the stub's own pid, removed when the stub ends, however it ends: the shape of moe_foreground) for as long as it sleeps, so `wslc list` shows it; a live
+# record of the name refuses a second run with the engine's reason. The sleep is answers/comfy_fetch_seconds (default 0; a ceiling or a TERM ends it), then answers/comfy_fetch.log
+# is printed (default one `stub fetch` line, CRLF ends) and the code is answers/comfy_fetch_rc (default 0). A KILL of the process that started the stub leaves the stub, and so
+# the record, alive until its own sleep ends: the engine's container does not die with its client.
+fetch_foreground() {
+  local name="$1" file="$R9700_STUB_DIR/containers/$1.pid"
+  if stub_alive "$file"; then echo "stub: container name in use: $name" >&2; exit 1; fi
+  stub_record_pid "$file" "$$"
+  MOE_PIDFILE="$file"
+  trap 'rm -f "$MOE_PIDFILE"; [ -z "${MOE_SLEEPER:-}" ] || kill "$MOE_SLEEPER" 2> /dev/null' EXIT
+  trap 'exit 143' TERM
+  sleep "$(moe_answer comfy_fetch_seconds 0)" < /dev/null > /dev/null 2>&1 &
+  MOE_SLEEPER=$!
+  wait "$MOE_SLEEPER"
+  if [ -f "$R9700_STUB_DIR/answers/comfy_fetch.log" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/comfy_fetch.log"; else printf 'stub fetch%s\n' "$CRLF"; fi
+  return "$(moe_answer comfy_fetch_rc 0)"
+}
+
 # run -d --rm --name X ...: a detached container; prints three lines. `run --rm ...` WITHOUT -d is a foreground run (E1.S3: the throwaway
 # container of the fingerprint): it starts nothing and prints answers/find, a `---` line and answers/genconfig (a missing file prints nothing).
 run_container() {
@@ -153,6 +193,14 @@ run_container() {
     moe_foreground "$name" "$@"
     return $?
   fi
+  if [ "$detached" = no ] && comfy_check_is "$@"; then
+    comfy_check_answer
+    return $?
+  fi
+  if [ "$detached" = no ] && [[ " $* " == *"/fetch_model.sh "* ]]; then
+    fetch_foreground "$name"
+    return $?
+  fi
   if [ "$detached" = no ]; then
     [ -f "$R9700_STUB_DIR/hang-foreground-run" ] && stub_hang # a throwaway container that never answers (the caller's ceiling ends it)
     [ -f "$R9700_STUB_DIR/answers/find" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/find"
@@ -164,11 +212,27 @@ run_container() {
     echo "stub: run without --name" >&2
     exit 2
   fi
+  # stopped/<name>: a stopped container keeps its name, as the real engine's does until `remove` (E1.S2: the hand-made start script needed a remove before every start)
+  if [ -f "$R9700_STUB_DIR/stopped/$name" ]; then
+    echo "stub: container name in use (a stopped container): $name" >&2
+    exit 1
+  fi
   if stub_alive "$R9700_STUB_DIR/containers/$name.pid"; then
     echo "stub: container name in use: $name" >&2 # the live record is never overwritten
     exit 1
   fi
   stub_container_start "$name"
+  # The engine's half is done here (the container is real and listed); the client's half is what these two files script (E1.S2: the call can time out, fail or be cut
+  # after the container exists). run-delay-<name>: seconds, READ and not removed, slept before the three lines; run-fail-<name>: a count, then the client fails.
+  if [ -f "$R9700_STUB_DIR/run-delay-$name" ]; then sleep "$(cat "$R9700_STUB_DIR/run-delay-$name")"; fi
+  if [ -f "$R9700_STUB_DIR/run-fail-$name" ]; then
+    read -r _left < "$R9700_STUB_DIR/run-fail-$name"
+    if [ "${_left:-0}" -gt 0 ]; then
+      printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/run-fail-$name"
+      echo "stub: run: the client failed after the container started (scripted): $name" >&2
+      exit 1
+    fi
+  fi
   printf 'stub-line-1%s\nstub-line-2%s\nstub-line-3 %s%s\n' "$CRLF" "$CRLF" "$name" "$CRLF"
 }
 
@@ -190,6 +254,8 @@ list_containers() {
     printf '%s %s\n' "$(date +%s.%N)" "$delay" >> "$R9700_STUB_DIR/list-delayed.log"
     sleep "$delay"
   done
+  # hang-list: a number n; the n-th `list` call counted from the file's making hangs like `mode` would (the recorded sleeper, the caller's ceiling ends it); the others answer
+  if [ -f "$R9700_STUB_DIR/hang-list" ] && [ "$(stub_next list-hang)" = "$(head -n 1 "$R9700_STUB_DIR/hang-list")" ]; then stub_hang; fi
   if [ -f "$R9700_STUB_DIR/fail-list" ]; then
     read -r skip count < "$R9700_STUB_DIR/fail-list"
     if [ -z "$count" ]; then count="$skip"; skip=0; fi
@@ -276,6 +342,16 @@ exec_in() {
     prefix_call "$name" "$@"
   elif [ "${1:-}" = python3 ] && [[ ${2:-} == */harness.py ]]; then
     harness_call "$2" "${3:-}" "${@:4}"
+  elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *system_stats* ]]; then
+    # the ComfyUI readiness probe (E1.S2): answers/comfy_ready, call k takes line k, the last repeats; ok | fail | hang
+    word="$(stub_answer comfy_ready)" || exit 99 # the file is missing: the test scripted nothing (stub_answer exits in its own subshell only)
+    [ "$word" = hang ] && stub_hang
+    if [ "$word" = ok ]; then
+      printf 'device cuda:0 AMD Radeon AI PRO R9700 : native%s\nready%s\n' "$CRLF" "$CRLF"
+    else
+      printf 'system_stats: URLError%s\n' "$CRLF"
+      return 1
+    fi
   elif [ "${1:-}" = python3 ] && [ "${2:-}" = -c ] && [[ ${3:-} == *urlopen*/metrics* ]]; then
     [ -f "$R9700_STUB_DIR/answers/metrics" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/metrics"
     return 0
@@ -294,9 +370,192 @@ exec_in() {
   fi
 }
 
+# build <argv...> (E1.S1: wslc build -t <tag> -f <file> <context>): the image build of the comfy verb. Every answer file is read from $R9700_STUB_DIR only:
+#   answers/build_seconds   how long the build runs (default 0); the sleeper is ended with the stub, so a ceiling ends it
+#   answers/build.log       the build's output, printed with CRLF ends (default three lines `stub build line <n>`)
+#   answers/build_rc        the exit code (default 0)
+#   answers/build_id        (E1.S3) the id the built image gets (default: `sha256:` and the call counter zero-padded to 64 digits, distinct per call)
+#   answers/build_tags_on_failure   (E1.S3) 1: a failing build still records its tag (the engine tagged before it failed)
+# With a `-t <ref>` word pair the build records `<repository> <tag> <id>` in the file images (a build of a tag that exists moves the record: the old image is left untagged).
+build_image() {
+  local arg prev="" ref="" rc id
+  trap '[ -z "${MOE_SLEEPER:-}" ] || kill "$MOE_SLEEPER" 2> /dev/null' EXIT
+  trap 'exit 143' TERM
+  for arg in "$@"; do
+    [ "$prev" = -t ] && ref="$arg"
+    prev="$arg"
+  done
+  sleep "$(moe_answer build_seconds 0)" < /dev/null > /dev/null 2>&1 &
+  MOE_SLEEPER=$!
+  wait "$MOE_SLEEPER"
+  if [ -f "$R9700_STUB_DIR/answers/build.log" ]; then
+    sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/build.log"
+  else
+    printf 'stub build line %s%s\n' 1 "$CRLF" 2 "$CRLF" 3 "$CRLF"
+  fi
+  rc="$(moe_answer build_rc 0)"
+  if [ -n "$ref" ] && { [ "$rc" = 0 ] || [ "$(moe_answer build_tags_on_failure 0)" = 1 ]; }; then
+    id="$(moe_answer build_id "sha256:$(printf '%064d' "$(cat "$R9700_STUB_DIR/counters/calls")")")"
+    image_set "${ref%:*}" "${ref##*:}" "$id"
+  fi
+  return "$rc"
+}
+
+# ---- the images (E1.S3) -------------------------------------------------------------------------------------------------------------------------
+# The file $R9700_STUB_DIR/images holds one record `<repository> <tag> <id>` per tagged image (id: `sha256:` and 64 hex); a test plants records by writing it.
+#   answers/tag_rc, answers/rmi_rc   a non-zero code: `tag` / `rmi` fails with it (one `stub:` line) and changes nothing
+#   answers/tag_after_rc             a non-zero code: `tag` MOVES the tag and then fails with it (one `stub:` line)
+#   answers/image_list               printed by `image list` instead of the table (CRLF ends added)
+#   fail-image-list                  the counting shape of fail-list: "<count>" or "<skip> <count>"; the failing calls print one `stub:` line and exit 1
+
+# image_set <repository> <tag> <id>: sets the record of <repository>:<tag> (in place when it exists, else at the end)
+image_set() {
+  local file="$R9700_STUB_DIR/images"
+  (
+    flock 8
+    if [ -f "$file" ] && awk -v r="$1" -v t="$2" '$1 == r && $2 == t { f = 1 } END { exit !f }' "$file"; then
+      awk -v r="$1" -v t="$2" -v id="$3" '$1 == r && $2 == t { print r, t, id; next } { print }' "$file" > "$file.part"
+    else
+      { [ -f "$file" ] && cat "$file"; printf '%s %s %s\n' "$1" "$2" "$3"; } > "$file.part"
+    fi
+    mv -f "$file.part" "$file"
+  ) 8>> "$R9700_STUB_DIR/calls.lock"
+}
+
+# image_id <repository> <tag>: prints the id of the record (nothing and 1 when there is none)
+image_id() {
+  awk -v r="$1" -v t="$2" '$1 == r && $2 == t { print $3; f = 1; exit } END { exit !f }' "$R9700_STUB_DIR/images" 2> /dev/null
+}
+
+# tag_image <source> <target>: the target takes the id of the source
+tag_image() {
+  local id rc
+  rc="$(moe_answer tag_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: tag failed (scripted)" >&2; return "$rc"; fi
+  if [ "$#" -ne 2 ]; then echo "stub: tag: two references only" >&2; return 2; fi
+  if ! id="$(image_id "${1%:*}" "${1##*:}")"; then echo "stub: tag: no such image: $1" >&2; return 1; fi
+  image_set "${2%:*}" "${2##*:}" "$id"
+  # answers/tag_after_rc: the engine moved the tag and the call still returns this code (a ceiling that hits after the move: 124)
+  rc="$(moe_answer tag_after_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: tag cut after the move (scripted)" >&2; return "$rc"; fi
+}
+
+# remove_image <reference>: removes exactly that record (the engine's `rmi` of a tag)
+remove_image() {
+  local file="$R9700_STUB_DIR/images" rc
+  if [ "$#" -ne 1 ] || [[ ${1:-} == -* ]]; then echo "stub: rmi: one exact reference only" >&2; return 2; fi
+  rc="$(moe_answer rmi_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: rmi failed (scripted)" >&2; return "$rc"; fi
+  if ! image_id "${1%:*}" "${1##*:}" > /dev/null; then echo "stub: rmi: no such image: $1" >&2; return 1; fi
+  (
+    flock 8
+    awk -v r="${1%:*}" -v t="${1##*:}" '!($1 == r && $2 == t)' "$file" > "$file.part"
+    mv -f "$file.part" "$file"
+  ) 8>> "$R9700_STUB_DIR/calls.lock"
+  printf 'Untagged: %s%s\n' "$1" "$CRLF"
+}
+
+# image_call list [--no-trunc]: the observed table of `wslc image list` (2026-11-07): the id is the whole `sha256:<64 hex>` with --no-trunc, else its first 12 hex characters
+image_call() {
+  local skip=0 count=0 trunc=yes repository tag id
+  [ "${1:-}" = list ] || { echo "stub: wslc: unknown image subcommand" >&2; return 2; }
+  shift
+  [ "${1:-}" = --no-trunc ] || trunc=no
+  if [ -f "$R9700_STUB_DIR/fail-image-list" ]; then
+    read -r skip count < "$R9700_STUB_DIR/fail-image-list"
+    if [ -z "$count" ]; then count="$skip"; skip=0; fi
+    if [ "${skip:-0}" -gt 0 ]; then
+      printf '%s %s\n' "$((skip - 1))" "$count" > "$R9700_STUB_DIR/fail-image-list"
+    elif [ "${count:-0}" -gt 0 ]; then
+      printf '0 %s\n' "$((count - 1))" > "$R9700_STUB_DIR/fail-image-list"
+      echo "stub: image list failed (scripted)" >&2
+      return 1
+    fi
+  fi
+  if [ -f "$R9700_STUB_DIR/answers/image_list" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/image_list"; return 0; fi
+  printf 'REPOSITORY      TAG      IMAGE ID      CREATED       SIZE%s\n' "$CRLF"
+  [ -f "$R9700_STUB_DIR/images" ] || return 0
+  while read -r repository tag id; do
+    [ "$trunc" = yes ] || id="${id#sha256:}" id="${id:0:12}"
+    printf '%s   %s   %s   6 hours ago   27.3GB%s\n' "$repository" "$tag" "$id" "$CRLF"
+  done < "$R9700_STUB_DIR/images"
+}
+
+# volume list | volume create <name> (E1.S1): the volumes are files below $R9700_STUB_DIR/volumes/ (one empty file per volume).
+#   fail-volume-list        a count: the next that many `volume list` calls fail (code 1, one `stub:` line), then it works again
+#   answers/volume_create_rc   a non-zero code: `volume create` fails with it (one `stub:` line) and makes nothing
+# The list prints the header `DRIVER    VOLUME NAME` and a `guest     <name>` line per volume, sorted; creating a volume that exists exits 1 with the two
+# lines the real wslc printed on 2026-11-07 (`Cannot create a file when that file already exists.`, `Error code: ERROR_ALREADY_EXISTS`).
+volume_call() {
+  local _left name rc file dir="$R9700_STUB_DIR/volumes"
+  case "${1:-}" in
+    list)
+      if [ -f "$R9700_STUB_DIR/fail-volume-list" ]; then
+        read -r _left < "$R9700_STUB_DIR/fail-volume-list"
+        if [ "${_left:-0}" -gt 0 ]; then
+          printf '%s\n' "$((_left - 1))" > "$R9700_STUB_DIR/fail-volume-list"
+          echo "stub: volume list failed (scripted)" >&2
+          return 1
+        fi
+      fi
+      printf 'DRIVER    VOLUME NAME%s\n' "$CRLF"
+      if [ -d "$dir" ]; then
+        for file in "$dir"/*; do
+          [ -e "$file" ] || continue
+          printf 'guest     %s%s\n' "${file##*/}" "$CRLF"
+        done
+      fi
+      ;;
+    create)
+      name="${2:-}"
+      if [ -z "$name" ]; then echo "stub: wslc: volume create needs a name" >&2; return 2; fi
+      if [[ $name == */* ]]; then echo "stub: wslc: volume create: \"$name\" holds a slash" >&2; return 2; fi
+      rc="$(moe_answer volume_create_rc 0)"
+      if [ "$rc" != 0 ]; then echo "stub: volume create failed (scripted)" >&2; return "$rc"; fi
+      if [ -e "$dir/$name" ]; then
+        printf 'Cannot create a file when that file already exists.%s\nError code: ERROR_ALREADY_EXISTS%s\n' "$CRLF" "$CRLF"
+        return 1
+      fi
+      stub_mkdir "$dir"
+      : > "$dir/$name"
+      printf '%s%s\n' "$name" "$CRLF"
+      ;;
+    *) echo "stub: wslc: unknown volume subcommand \"${1:-}\"" >&2; return 2 ;;
+  esac
+}
+
+# remove <name> (E1.S2): removes a STOPPED container (a file stopped/<name>, planted by the test); a running one and an unknown one are refused with a line.
+#   answers/remove_rc   a non-zero code: `remove` fails with it (one `stub:` line) and removes nothing
+remove_container() {
+  local name="${1:-}" rc
+  rc="$(moe_answer remove_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: remove failed (scripted)" >&2; return "$rc"; fi
+  if stub_alive "$R9700_STUB_DIR/containers/$name.pid"; then echo "stub: cannot remove a running container: $name" >&2; return 1; fi
+  if [ ! -f "$R9700_STUB_DIR/stopped/$name" ]; then echo "stub: no such container: $name" >&2; return 1; fi
+  rm -f "$R9700_STUB_DIR/stopped/$name"
+  printf '%s%s\n' "$name" "$CRLF"
+}
+
+# inspect <reference> (E1.S2): the JSON of an image or container. answers/inspect is printed as it is (CRLF ends added), else one default record with a Created time;
+# answers/inspect_rc is the exit code (non-zero: one `stub: inspect:` line and nothing else).
+inspect_reference() {
+  local rc
+  rc="$(moe_answer inspect_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: inspect: no such reference (scripted): ${1:-}" >&2; return "$rc"; fi
+  if [ -f "$R9700_STUB_DIR/answers/inspect" ]; then sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/inspect"
+  else printf '[{"Id": "sha256:stub", "Created": "2026-11-07T10:00:00.000000000Z"}]%s\n' "$CRLF"; fi
+}
+
 case "${1:-}" in
   run) shift; run_container "$@" ;;
+  remove) shift; remove_container "$@" ;;
+  inspect) shift; inspect_reference "$@" ;;
   list) list_containers ;;
+  build) shift; build_image "$@" ;;
+  tag) shift; tag_image "$@" ;;
+  rmi) shift; remove_image "$@" ;;
+  image) shift; image_call "$@" ;;
+  volume) shift; volume_call "$@" ;;
   stop)
     [ -f "$R9700_STUB_DIR/stop-delay-${2:-}" ] && sleep "$(cat "$R9700_STUB_DIR/stop-delay-${2:-}")"
     # stop-fail-<name>: a count; that many `stop <name>` calls fail and leave the container running (a stop that does not work), then stops work again

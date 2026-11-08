@@ -98,8 +98,35 @@ t_carriage_returns_are_removed_by_every_adapter_function() {
   assert_not_contains "$OUT" "$CR" "win_disk_newest: no CR"
   assert_exit 0 "wslc_exec" -- wslc_exec 60 r9700tune-a vllm bench serve --max-concurrency 1 --seed 1
   assert_not_contains "$OUT" "$CR" "wslc_exec: no CR"
+  mkdir -p "$STUB/stopped"
+  : > "$STUB/stopped/old"
+  assert_exit 0 "wslc_remove" -- wslc_remove old
+  assert_not_contains "$OUT" "$CR" "wslc_remove: no CR"
+  assert_exit 0 "wslc_inspect" -- wslc_inspect img:x
+  assert_contains "$(wslc inspect img:x)" "$CR" "the stub prints the CRs for inspect too (so the test can fail)"
+  assert_not_contains "$OUT" "$CR" "wslc_inspect: no CR"
+  printf 'ok\n' > "$STUB/answers/comfy_ready"
+  assert_exit 0 "comfy_probe" -- comfy_probe r9700tune-a
+  assert_not_contains "$OUT" "$CR" "comfy_probe: no CR"
+  printf 'img t sha256:%064d\n' 1 > "$STUB/images"
+  assert_exit 0 "wslc_tag" -- wslc_tag img:t img:u
+  assert_not_contains "$OUT" "$CR" "wslc_tag: no CR"
+  assert_exit 0 "wslc_rmi" -- wslc_rmi img:u
+  assert_contains "$(wslc rmi img:t)" "$CR" "the stub prints the CRs for rmi too (so the test can fail)"
+  assert_not_contains "$OUT" "$CR" "wslc_rmi: no CR"
+  assert_exit 0 "wslc_image_list" -- wslc_image_list
+  assert_contains "$(wslc image list)" "$CR" "the stub prints the CRs for image list too (so the test can fail)"
+  assert_not_contains "$OUT" "$CR" "wslc_image_list: no CR"
   assert_exit 0 "restore_start" -- restore_start
   assert_not_contains "$OUT" "$CR" "restore_start: no CR"
+  assert_contains "$(wslc build -t x .)" "$CR" "the stub prints the CRs of a Windows executable for build (so the test can fail)"
+  assert_exit 0 "wslc_build" -- wslc_build 60 -t x .
+  assert_not_contains "$OUT" "$CR" "wslc_build: no CR"
+  assert_exit 0 "wslc_volume_create" -- wslc_volume_create vol-a
+  assert_not_contains "$OUT" "$CR" "wslc_volume_create: no CR"
+  assert_exit 0 "wslc_volume_list" -- wslc_volume_list
+  assert_eq "vol-a" "$OUT" "wslc_volume_list: the name is clean"
+  assert_not_contains "$OUT" "$CR" "wslc_volume_list: no CR"
   kill_recorded_pids "$CASE"
 }
 
@@ -308,9 +335,19 @@ t_the_ceiling_is_the_documented_one_for_each_function() {
   win_disk_newest > /dev/null
   restore_start > /dev/null
   restore_probe vllm > /dev/null
+  wslc_build 77 -t a > /dev/null
+  wslc_volume_list > /dev/null
+  wslc_volume_create v > /dev/null
+  wslc_remove a > /dev/null
+  wslc_inspect a > /dev/null
+  comfy_probe a > /dev/null
+  printf 'img t sha256:%064d\n' 1 > "$STUB/images"
+  wslc_tag a:b c:d > /dev/null
+  wslc_rmi img:t > /dev/null
+  wslc_image_list > /dev/null
   assert_missing "$CASE/sleeps" "t_scale (the sleeps' scale) was never asked for a ceiling"
   # every call asks for the kill-after grace (5) and then its ceiling
-  assert_eq "5 120 5 33 5 60 5 60 5 60 5 30 5 60 5 120 5 70" "$(tr '\n' ' ' < "$CASE/ceilings" | sed 's/ $//')" "run 120, exec the argument, list 60, stop 60, logs 60, ram 30, disk 60, restore_start 120, probe 70 through exec"
+  assert_eq "5 120 5 33 5 60 5 60 5 60 5 30 5 60 5 120 5 70 5 77 5 60 5 60 5 60 5 60 5 20 5 60 5 60 5 60" "$(tr '\n' ' ' < "$CASE/ceilings" | sed 's/ $//')" "run 120, exec the argument, list 60, stop 60, logs 60, ram 30, disk 60, restore_start 120, probe 70 through exec, build the argument, volume list 60, volume create 60, remove 60, inspect 60, the ComfyUI probe through exec 20, tag 60, rmi 60, image list 60"
   kill_recorded_pids "$CASE"
 }
 
@@ -620,6 +657,90 @@ t_wslc_argv_text_prints_the_wslc_command_line_a_call_would_run_for_the_dry_run()
   setup_case "$FUNCNAME"
   assert_eq "wslc run -d --rm --name n img --a b" "$(wslc_argv_text run -d --rm --name n img --a b)" "the program name, then the words joined by single spaces"
   assert_missing "$STUB/calls.log" "nothing was called"
+}
+
+
+# ---- E1.S1: wslc_build, wslc_volume_list, wslc_volume_create (AD1-AD6) -------------------------------------------------------
+
+t_wslc_build_hands_every_word_on_as_one_argument_and_prints_every_line() {
+  setup_case "$FUNCNAME"
+  local i
+  for i in $(seq 1 60); do printf 'build line %s\r\n' "$i"; done > "$STUB/answers/build.log"
+  assert_exit 0 "wslc_build returns 0" -- wslc_build 100 -t img:x -f 'X:\a b\Containerfile' --build-arg BASE=b:1 'X:\a b'
+  argv_of wslc
+  assert_eq "8" "${#ARGV[@]}" "eight words: build, -t, img:x, -f, the file, --build-arg, BASE=b:1, the context"
+  assert_eq 'build|-t|img:x|-f|X:\a b\Containerfile|--build-arg|BASE=b:1|X:\a b' "$(IFS='|'; echo "${ARGV[*]}")" "every word is one argument, a space stays inside it"
+  assert_eq "60" "$(wc -l <<< "$OUT" | tr -d ' ')" "all 60 lines are printed"
+  assert_not_contains "$OUT" "$CR" "no carriage return"
+  assert_contains "$OUT" "build line 1" "the first line is there"
+  assert_contains "$OUT" "build line 60" "and the last"
+}
+
+t_a_failing_build_returns_its_own_code_and_still_prints() {
+  setup_case "$FUNCNAME"
+  printf '3\n' > "$STUB/answers/build_rc"
+  assert_exit 3 "wslc_build returns the code of the build" -- wslc_build 100 -t img:x .
+  assert_contains "$OUT" "stub build line 1" "and prints the log"
+}
+
+t_wslc_build_refuses_a_bad_ceiling_or_no_words_before_any_call() {
+  setup_case "$FUNCNAME"
+  assert_exit 2 "a ceiling that is not a number" -- wslc_build x -t a
+  assert_eq "1" "$(grep -c '^wslc_build:' <<< "$ERR")" "one wslc_build: line"
+  assert_exit 2 "a zero ceiling" -- wslc_build 0 -t a
+  assert_eq "1" "$(grep -c '^wslc_build:' <<< "$ERR")" "one wslc_build: line"
+  assert_exit 2 "a ceiling and no word" -- wslc_build 100
+  assert_eq "1" "$(grep -c '^wslc_build:' <<< "$ERR")" "one wslc_build: line"
+  assert_exit 2 "nothing" -- wslc_build
+  assert_missing "$STUB/calls.log" "no stub was called, so calls.log holds no build line"
+}
+
+t_a_hung_build_is_killed_at_its_ceiling_and_leaves_no_process() {
+  setup_case "$FUNCNAME"
+  printf 'hang\n' > "$STUB/mode"
+  R9700_CEILING_SCALE=100
+  wslc_build 120 -t img:x . > /dev/null 2>&1
+  local rc=$?
+  if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then assert_eq ok ok "the ceiling ended it (rc $rc)"; else assert_eq "124 or 137" "$rc" "the ceiling ended it"; fi
+  local pid
+  read -r pid _ < "$STUB/hung/containers/1.pid"
+  assert_exit 0 "the hung stub's sleep is gone" -- gone "$pid"
+}
+
+t_wslc_volume_list_prints_the_names_one_per_line() {
+  setup_case "$FUNCNAME"
+  mkdir -p "$STUB/volumes"
+  assert_exit 0 "no volume" -- wslc_volume_list
+  assert_eq "" "$OUT" "prints nothing"
+  : > "$STUB/volumes/comfy-models"
+  : > "$STUB/volumes/comfy-data"
+  assert_exit 0 "two volumes" -- wslc_volume_list
+  assert_eq "comfy-data|comfy-models" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "their names, in the stub's order, without the header"
+  assert_not_contains "$OUT" "$CR" "no carriage return"
+  printf '1\n' > "$STUB/fail-volume-list"
+  assert_exit 1 "a failing list returns non-zero" -- wslc_volume_list
+  assert_eq "" "$OUT" "and prints nothing on stdout"
+}
+
+t_wslc_volume_create_creates_exactly_the_named_volume() {
+  setup_case "$FUNCNAME"
+  assert_exit 2 "an option for a name" -- wslc_volume_create -x
+  assert_contains "$ERR" "wslc_volume_create" "names the function"
+  assert_contains "$ERR" "volume name" "and the kind of name"
+  assert_eq "1" "$(grep -c . <<< "$ERR")" "in one line"
+  assert_exit 2 "an empty name" -- wslc_volume_create ''
+  assert_contains "$ERR" "volume name" "says volume name"
+  assert_exit 2 "a name with a space" -- wslc_volume_create 'a b'
+  assert_contains "$ERR" "volume name" "says volume name"
+  assert_exit 2 "no name" -- wslc_volume_create
+  assert_missing "$STUB/calls.log" "no call was made"
+  assert_exit 0 "create comfy-cache" -- wslc_volume_create comfy-cache
+  argv_of wslc
+  assert_eq "volume|create|comfy-cache" "$(IFS='|'; echo "${ARGV[*]}")" "the call is volume create <name>"
+  assert_eq "comfy-cache" "$(wslc_volume_list)" "and the list holds it"
+  printf '1\n' > "$STUB/answers/volume_create_rc"
+  assert_exit 1 "a failing create returns the code" -- wslc_volume_create other
+  assert_contains "$OUT" "stub: volume create failed (scripted)" "and prints the line of the stub"
 }
 
 run_all_tests

@@ -12,6 +12,16 @@
 #   wslc_list                               the names of the listed containers (list --no-trunc), one per line                 60 s
 #   wslc_stop <name>                        stop <name>; prints the child's output (stdout and stderr, CRs removed, the last 20 lines)  60 s
 #   wslc_logs <name>                        logs <name>, stderr merged                                                         60 s
+#   wslc_build <ceiling-s> <args...>        build <args...> (an image build); every line is printed as it comes, stdout and stderr merged  the argument
+#   wslc_volume_list                        the names of the listed volumes (volume list), one per line                        60 s
+#   wslc_volume_create <name>               volume create <name>; prints the child's output (stdout and stderr merged)                  60 s
+#   wslc_remove <name>                      remove <name> (a STOPPED container keeps its name until it is removed); prints the child's output   60 s
+#   wslc_inspect <reference>                inspect <reference> (an image or a container); prints the JSON the engine answers                    60 s
+#   wslc_tag <source> <target>              tag <source> <target>: a second name for an image; prints the child's output                         60 s
+#   wslc_rmi <repository>:<tag>             rmi <exact tag>: removes ONE tag, never an id, a pattern or an option; prints the child's output       60 s
+#   wslc_image_list                         `image list --no-trunc`: `<repository> <tag> <id>` per image, one per line, no header                60 s
+#   comfy_probe <name>                      the readiness check of the operator's ComfyUI through wslc_exec 20: prints
+#                                           `device <name>` and `ready`, or `system_stats: HTTP <status>` / `system_stats: <exception class>` and returns 1   20 s
 #   win_ram_mb                              the Windows "Available MBytes" integer; nothing and 1 when it is not an integer    30 s
 #   win_disk_newest                         the newest disk/stornvme System-log record id; nothing and 1 when not an integer   60 s
 #   restore_start                           the operator's start script through the restore shell; prints the last 5 lines    120 s
@@ -27,6 +37,8 @@
 # call (an executable or t_ceiling is missing, a scale or R9700_T_STOP is invalid or already passed), with one stderr line that starts `adapter:`.
 
 _ADAPTER_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$' # a container name never starts with "-": it can never be read as an option
+_ADAPTER_REF_RE='^[A-Za-z0-9][A-Za-z0-9._:/-]*$' # an image reference has "/" and ":"; it never starts with "-" and has no space
+_ADAPTER_TAGGED_RE='^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+$' # an EXACT image tag <repository>:<tag>: no bare repository (the engine would read :latest), no pattern, no option
 
 # The Windows PowerShell commands of the old guards, one argv element each (ram_guard_all.sh line 8, disk_gate.sh line 7).
 _ADAPTER_RAM_PS='[int](Get-Counter "\Memory\Available MBytes").CounterSamples[0].CookedValue'
@@ -68,6 +80,34 @@ print("completion")'
 
 # adapter_probe_program: prints the readiness program (the tests run it against a fake urlopen)
 adapter_probe_program() { printf '%s\n' "$_ADAPTER_PROBE_PY"; }
+
+# The readiness probe of the operator's ComfyUI: ONE Python program, run inside its container. GET /system_stats on 127.0.0.1:8188 answers 200 within 5 s with a
+# JSON that names a device (devices[0].name: the shape is taken from ComfyUI's source, not observed here). It prints `device <name>` and `ready`, or at the first
+# failure `system_stats: HTTP <status>` / `system_stats: <exception class>`, and exits 1.
+_COMFY_PROBE_PY='import json, sys, urllib.error, urllib.request
+URL = "http://127.0.0.1:8188/system_stats"
+try:
+    with urllib.request.urlopen(urllib.request.Request(URL), timeout=5) as response:
+        status, text = response.status, response.read()
+except urllib.error.HTTPError as error:
+    print("system_stats: HTTP " + str(error.code))
+    sys.exit(1)
+except Exception as error:
+    print("system_stats: " + type(error).__name__)
+    sys.exit(1)
+if status != 200:
+    print("system_stats: HTTP " + str(status))
+    sys.exit(1)
+try:
+    name = json.loads(text)["devices"][0]["name"]
+except Exception as error:
+    print("system_stats: " + type(error).__name__)
+    sys.exit(1)
+print("device " + name)
+print("ready")'
+
+# comfy_probe_program: prints the ComfyUI readiness program (the tests run it against a fake urlopen)
+comfy_probe_program() { printf '%s\n' "$_COMFY_PROBE_PY"; }
 
 # adapter_marker_words: the two executables as the recovery marker records them, one KEY=VALUE word per line (WSLC, RESTORE_SHELL): the
 # restore needs them and must work without the config, and no other file may expand these variables.
@@ -241,10 +281,10 @@ _adapter_call() {
   return "$_adapter_rc"
 }
 
-# _adapter_name_ok <function> <name>: 0 for a container name; else one stderr line naming the function, and 2
+# _adapter_name_ok <function> <name> [<what>]: 0 for a name (a container name unless <what> says another noun, e.g. "volume name"); else one stderr line naming the function, and 2
 _adapter_name_ok() {
   [[ ${2:-} =~ $_ADAPTER_NAME_RE ]] && return 0
-  echo "$1: \"${2:-}\" is not a container name (letters, digits, . _ -; no leading -)" >&2
+  echo "$1: \"${2:-}\" is not a ${3:-container name} (letters, digits, . _ -; no leading -)" >&2
   return 2
 }
 
@@ -333,6 +373,102 @@ wslc_logs() {
   return "${PIPESTATUS[0]}"
 }
 
+# wslc_remove <name>: `remove <name>`; prints what wslc printed (stdout and stderr merged, CRs removed). wslc_run always passes --rm, but a container the engine kept
+# STOPPED (the operator's ComfyUI of the hand-made script era) keeps its name, and a run of that name is refused until it is removed.
+wslc_remove() {
+  _adapter_drop_lock
+  _adapter_name_ok wslc_remove "${1:-}" || return 2
+  _adapter_call --merge 60 "$R9700_WSLC" remove "$1" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_inspect <reference>: `inspect <reference>`: the JSON of an image (its "Created" is read) or a container; stdout and stderr merged, CRs removed.
+wslc_inspect() {
+  _adapter_drop_lock
+  if ! [[ ${1:-} =~ $_ADAPTER_REF_RE ]]; then
+    echo "wslc_inspect: \"${1:-}\" is not a reference (letters, digits, . _ : / -; no leading -)" >&2
+    return 2
+  fi
+  _adapter_call --merge 60 "$R9700_WSLC" inspect "$1" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_build <ceiling-s> <args...>: `build <args...>` (an image build: -t <tag>, -f <file>, --build-arg words, the context folder). Every line the build prints is
+# printed as it comes (stdout and stderr merged, CRs removed); nothing is cut, a caller that wants a tail cuts it. Every word is one argv element.
+wslc_build() {
+  _adapter_drop_lock
+  local _adapter_ceiling="${1:-}"
+  if ! [[ $_adapter_ceiling =~ ^[1-9][0-9]*$ ]]; then
+    echo "wslc_build: the ceiling \"$_adapter_ceiling\" is not a positive integer (seconds)" >&2
+    return 2
+  fi
+  if [ "$#" -lt 2 ]; then
+    echo "wslc_build: no word to build with" >&2
+    return 2
+  fi
+  shift
+  _adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" build "$@" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_tag <source> <target>: `tag <source> <target>` (alias `image tag`): the target names the image the source names. Both words are references (the check of wslc_inspect), and
+# there are exactly two. The output of a tag, on success and on failure, was not observed by hand (E1's acceptance records it); the argv shape is the engine's own help text.
+wslc_tag() {
+  _adapter_drop_lock
+  local _adapter_word
+  for _adapter_word in "${1:-}" "${2:-}"; do
+    if ! [[ $_adapter_word =~ $_ADAPTER_REF_RE ]]; then
+      echo "wslc_tag: \"$_adapter_word\" is not a reference (letters, digits, . _ : / -; no leading -)" >&2
+      return 2
+    fi
+  done
+  if [ "$#" -ne 2 ]; then
+    echo "wslc_tag: two references are needed (a source and a target), got $#" >&2
+    return 2
+  fi
+  _adapter_call --merge 60 "$R9700_WSLC" tag "$1" "$2" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_rmi <exact tag>: `rmi <repository>:<tag>` (alias `image remove`), ONE reference. The word must be an exact tag: a bare repository would be read as :latest, an image id
+# (`sha256:...`, or its short hex form) or a pattern could remove more than one image, and a word that starts with - is an option (-f). Neither -f nor --no-prune is ever passed.
+# A short hex id has no colon, so the tag shape already refuses it; `sha256:<hex>` has one and is refused by name. The output of an rmi was not observed by hand.
+wslc_rmi() {
+  _adapter_drop_lock
+  if [ "$#" -ne 1 ] || ! [[ ${1:-} =~ $_ADAPTER_TAGGED_RE ]] || [[ $1 == sha256:* ]]; then
+    echo "wslc_rmi: \"$*\" is not an exact image tag (<repository>:<tag>; never an id, a pattern or an option)" >&2
+    return 2
+  fi
+  _adapter_call --merge 60 "$R9700_WSLC" rmi "$1" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_image_list: `image list --no-trunc`: the first three columns of every row after the header, `<repository> <tag> <id>`. Observed by hand on the operator's PC (2026-11-07,
+# through pwsh.exe): the header is `REPOSITORY TAG IMAGE ID CREATED SIZE`, a row is `comfyui-r9700 local sha256:<64 hex> 6 hours ago 27.3GB`, an untagged image is
+# `<none> <none> sha256:<64 hex> ...`. CREATED is several words ("6 hours ago") and SIZE never matters, so only $1 $2 $3 are read: none of them holds a space.
+wslc_image_list() {
+  _adapter_drop_lock
+  _adapter_call --quiet 60 "$R9700_WSLC" image list --no-trunc | tr -d '\r' 9>&- | awk 'NR > 1 && NF { print $1, $2, $3 }' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# The volume names: the last column of `volume list` after the header line, the parse of wslc_list. The output shape (a header `DRIVER    VOLUME NAME`, then
+# `<driver> <name>` per line) was observed once by hand on the operator's PC (2026-11-07, through pwsh.exe), never by the suite; E1's acceptance records it again.
+wslc_volume_list() {
+  _adapter_drop_lock
+  _adapter_call --quiet 60 "$R9700_WSLC" volume list | tr -d '\r' 9>&- | awk 'NR > 1 && NF { print $NF }' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_volume_create <name>: `volume create <name>`; prints what wslc printed (stdout and stderr merged, CRs removed). A volume that exists is an error of
+# wslc (exit 1, ERROR_ALREADY_EXISTS, observed once by hand on the operator's PC, 2026-11-07, through pwsh.exe, never by the suite; E1's acceptance records it again), so a caller lists first and creates only a missing volume.
+wslc_volume_create() {
+  _adapter_drop_lock
+  _adapter_name_ok wslc_volume_create "${1:-}" "volume name" || return 2
+  _adapter_call --merge 60 "$R9700_WSLC" volume create "$1" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
 # _adapter_integer <ceiling-s> <PowerShell command>: prints the integer the command answers; nothing and 1 unless the answer is exactly one
 # non-empty line (blank lines and spaces around it are trimmed) that is only digits: `100` then `0` is two answers, never 1000. On 1 it
 # says on stderr what it got: `adapter: unreadable answer "<raw>"`. A ceiling or an adapter failure returns its own code.
@@ -379,4 +515,11 @@ restore_probe() {
   _adapter_drop_lock
   _adapter_name_ok restore_probe "${1:-}" || return 2
   wslc_exec 70 "$1" python3 -c "$_ADAPTER_PROBE_PY"
+}
+
+# comfy_probe <name>: the ComfyUI readiness check through wslc_exec 20 (5 s of HTTP plus the interpreter's start; the restore's probe has 70 s because of its 60 s completion)
+comfy_probe() {
+  _adapter_drop_lock
+  _adapter_name_ok comfy_probe "${1:-}" || return 2
+  wslc_exec 20 "$1" python3 -c "$_COMFY_PROBE_PY"
 }

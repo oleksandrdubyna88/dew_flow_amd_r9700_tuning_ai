@@ -6,7 +6,7 @@
 # both); it is called inside `supervise` (lib/run_guarded.sh), which owns the lock, the traps and the one cleanup.
 #
 #   step_run <label> -- <command...>   runs ONE step and neither restores the server nor releases the lock. Returns the exit table of decision 6:
-#                                      0 done; 2 refused arguments; 5 a restore while waiting did not become ready; 6 the deadline stopped the
+#                                      0 done; 2 refused arguments, or the operator's ComfyUI is listed at an admission (E1.S2); 5 a restore while waiting did not become ready; 6 the deadline stopped the
 #                                      step or the worker said nothing more fits; 7 the step failed MAX_FAILED_TRIES times; 8 not quiet before
 #                                      the deadline, or the server-stop budget is used, or the worker exited 3 more often than the repeat bound
 #                                      (3 x MAX_FAILED_TRIES); 9 the disk gate stopped the run
@@ -106,13 +106,15 @@ _step_stop_prod() {
 }
 
 # _step_admit <label> <command...>: the stop of the operator's server and the start of the worker. 0 the worker runs (WORKER_PID, behind an open
-# gate, guards on); 1 a failed admission (_RG_FAIL says what; the caller counts a try); 8 the stop budget is used; 9 the disk gate stopped.
+# gate, guards on); 1 a failed admission (_RG_FAIL says what; the caller counts a try); 2 the operator's ComfyUI is listed (comfy_owner_check prints the line; no stop,
+# no marker, no worker); 8 the stop budget is used; 9 the disk gate stopped.
 _step_admit() {
   local label="$1" listing rc n listed=no gate outcome wlog
   shift
   _step_disk_gate || return 9
   if ! _rg_run listing wslc_list; then _RG_FAIL="the container list failed (${listing%%$'\n'*})"; return 1; fi
   grep -Fxq -- "$R9700_PROD_CONTAINER" <<< "$listing" && listed=yes
+  comfy_owner_check "$listing" || return 2 # the operator's ComfyUI started since the check of `supervise`: before the stop cap, the marker and the stop
   # MAX_SERVER_STOPS is a RUN-WIDE cap on ACTUAL stops of the operator's server (E3.S2 decision 4): charged right before the stop below, and only when the
   # server is listed. An admission that finds it already down (the quiet chain after the first step, the retry after an exit 3) charges nothing, so a quiet
   # chain of any length costs ONE stop and ONE restore. An admission that would stop the server past the cap is refused HERE: before the marker, the

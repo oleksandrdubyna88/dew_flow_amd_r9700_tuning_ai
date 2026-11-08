@@ -678,7 +678,7 @@ t_u14a_activate_is_refused_while_the_operators_server_is_listed() {
   assert_exit 2 "activate with the server listed" -- mv_verb activate "$MOE_MODEL" rec1 --out m
   assert_contains "$ERR" "moe-tune: activate: vllm is running and may read $EX/merged; stop it, or pass --force" "the refusal line"
   assert_missing "$EX/merged" "the exchange folder was not touched"
-  assert_eq "1" "$(since_count "$before" wslc list)" "the list was read"
+  assert_eq "2" "$(since_count "$before" wslc list)" "the list was read twice: by the owner check of the supervisor, then by activate's own check"
   assert_eq "0" "$(since_count "$before" wslc stop)" "the toolkit never stops the operator's server for this"
 }
 
@@ -730,10 +730,11 @@ t_u14f_a_container_list_that_cannot_be_read_refuses_too_and_force_goes_on() {
   mv_setup "$FUNCNAME"
   mv_record rec1 b2
   wslc stop vllm > /dev/null
-  printf '0 2\n' > "$STUB/fail-list"
+  printf '1 1\n' > "$STUB/fail-list" # the owner check's list is answered; activate's own list is the one that fails
   assert_exit 2 "activate when the list fails" -- mv_verb activate "$MOE_MODEL" rec1 --out m
   assert_contains "$ERR" "the container list cannot be read" "the line says so"
   assert_missing "$EX/merged" "nothing was written"
+  printf '1 1\n' > "$STUB/fail-list" # the same again for the second invocation: the check's list is answered, activate's own fails
   assert_exit 0 "with --force it goes on" -- mv_verb activate "$MOE_MODEL" rec1 --out m --force
   assert_eq "yes" "$(env_get "$EX/merged/activate.env" FORCED)" "FORCED=yes"
 }
