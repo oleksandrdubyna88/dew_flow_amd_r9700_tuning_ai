@@ -363,6 +363,9 @@ or records an out-of-memory as a result, and no later step catches it.
 
 ### E2 — `comfy bench` under the supervisor, and the verdict over its records
 
+The stories of this epic are [PLAN_comfyui_r9700_E2.md](PLAN_comfyui_r9700_E2.md) (written 2026-11-08; E2.S2 is the cornerstone;
+its *Open points for the plan owner* list what this section leaves open or what the code and the hand runs have shown since).
+
 **Goal.** `bin/r9700 comfy bench <workflow> <arm>...` measures ComfyUI arms as one supervised step under the measurement
 contract, every arm-round recorded only when complete, and `bin/r9700 verdict` gives the ship test over those records.
 
@@ -416,5 +419,5 @@ TTS question recorded; the DoD ticks; `POST_DEPLOY.md` only if an item meets its
 **Cornerstone areas.** None. E3 runs E1's and E2's code and writes prose; an incomplete or unproven arm-round is what E2's
 checks reject, and the reading of the numbers is what the measurement rule already governs.
 
-Cornerstones: 1 of 2 — E1.S2 (GPU ownership, [PLAN_comfyui_r9700_E1.md](PLAN_comfyui_r9700_E1.md)); the stories document
-of E2 (the measurement contract) marks the second within its area above.
+Cornerstones: 2 of 2 — E1.S2 (GPU ownership, [PLAN_comfyui_r9700_E1.md](PLAN_comfyui_r9700_E1.md)), E2.S2 (the measurement
+contract, [PLAN_comfyui_r9700_E2.md](PLAN_comfyui_r9700_E2.md)).
