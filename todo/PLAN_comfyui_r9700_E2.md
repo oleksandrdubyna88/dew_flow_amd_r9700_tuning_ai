@@ -265,9 +265,8 @@ fp16acc-2 zimage r=3 total_s: 12.345
 
 `<arm>` `[a-z0-9]+`, `<round>` `[1-9][0-9]*`, `<workflow>` `[a-z0-9]+`, `<n>` one of the three measured runs `1 2 3`, `<metric>`
 `[a-z][a-z0-9_]*`, `<value>` a non-negative decimal `[0-9]+(\.[0-9]+)?` (seconds). The arm names of the parent (`base`,
-`fp16acc`, `fp8wmm`, `tunableop`, `miopen`, `compile`, `:301–306`) hold an `_` in one case: **`fp8wmm` does not match
-`[a-z0-9]+`** — open point N1. Until it is settled, this story's grammar is the parent's arm grammar (`_RE_ARM`,
-`lib/config.sh:102`, `[a-z0-9]+`) and N1 names the one place that changes. A COMPLETE block of a tag is exactly one line for every
+`fp16acc`, `fp8wmm`, `tunableop`, `miopen`, `compile`, `:301–306`) all match the parent's arm grammar (`_RE_ARM`,
+`lib/config.sh:102`, `[a-z0-9]+`; open point N1 settled the one name that held an `_`). A COMPLETE block of a tag is exactly one line for every
 pair (run 1..3, metric of `--metrics`): 9 lines for the three metrics. A block starts at its `r=1 <first metric>` line (the vLLM
 mode's `split_blocks` rule, `:117–125`, with another start key). The three runs are one constant, `COMFY_RUNS = (1, 2, 3)`,
 beside `REPEATS` (`:35`), with a comment naming the parent's contract (`:252–254`).
@@ -926,7 +925,7 @@ machine without them fails BP11 and BP12v with their names: `research/module_tes
   puts 7 in the `KSampler`; the fixture's recorded prompts of `run --run cold` then `--run 1 2 3` carry the seeds 4242, 1, 2, 3.
 - BP4 *The lines.* Four `run` calls against the fixture (each a success): the cold run prints no `r=` line and one `cold: total
   <s> s` line; each measured run prints exactly `<tag> zimage r=<n> total_s: <v>`, `… sampler_s: …`, `… vae_s: …`, in that
-  order, three decimals; the twelve lines written to a file pass `python3 lib/verdict.py comfy-check-block --tag base-1 --workflow
+  order, three decimals; the nine `r=` lines (the cold run's line is not a bench line) written to a file pass `python3 lib/verdict.py comfy-check-block --tag base-1 --workflow
   zimage --metrics "total_s sampler_s vae_s"` (S1's command: this test needs S1 merged). RED first.
 - BP5 *What is timed.* The fixture sends `executing` for `pos`, `sampler`, `vae`, `save`, then `null`, with scripted gaps (0.2,
   0.5, 0.3, 0.1 s) and writes the history 0.2 s after the last message: the JSON's `nodes_s.sampler` is within 0.1 of 0.5 and
