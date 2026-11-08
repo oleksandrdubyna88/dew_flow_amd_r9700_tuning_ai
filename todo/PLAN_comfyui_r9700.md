@@ -6,7 +6,7 @@
 > build|start|stop|status|fetch`, the owner check in `supervise` and `step_run`). E2 has its stories document only
 > (8814640), which must be rewritten for epoch 2 before E2's first code; E3 is not started. No E2 or E3 code until epoch 2 is
 > approved. Scope: a new `comfyui/` folder (the image recipe and the programs that run inside it), a `comfy` verb of
-> `bin/r9700`, new optional fields of `machine.env`, three new adapter calls, their tests and documents, and the GPU acceptance
+> `bin/r9700`, new optional fields of `machine.env`, new adapter calls, their tests and documents, and the GPU acceptance
 > runs that measure ComfyUI arms on the R9700.
 
 ## Plan changes
@@ -147,13 +147,13 @@ changes below.
 | Need | Existing piece | Use |
 |---|---|---|
 | machine values | `lib/config.sh` field table (`_field`, `lib/config.sh:30`), `config_load` (`:473`) | the twelve `COMFY_*` fields with defaults (E1, `lib/config.sh:67-78`); E2 adds none |
-| every `wslc` call | `lib/adapter.sh` (`wslc_run` `:291`, `wslc_exec` `:300`, `wslc_run_once` `:320`, `wslc_list` `:345`, `wslc_stop` `:356`, `wslc_logs` `:369`) | E1 widened it with `wslc_build` (`:398`), `wslc_image_list` (`:449`), `wslc_volume_list` (`:457`), `wslc_volume_create` (`:465`); E2 adds only what its spec needs (a readiness probe that also returns `vram_free` and `vram_total`) — the seam check (`tests/check_static.sh --seam`) keeps every call there |
+| every `wslc` call | `lib/adapter.sh` (`wslc_run` `:291`, `wslc_exec` `:300`, `wslc_run_once` `:320`, `wslc_list` `:345`, `wslc_stop` `:356`, `wslc_logs` `:369`) | E1 widened it with `wslc_remove`, `wslc_inspect`, `wslc_build` (`:398`), `wslc_tag`, `wslc_rmi`, `wslc_image_list` (`:449`), `wslc_volume_list` (`:457`), `wslc_volume_create` (`:465`) and `comfy_probe`; E2 adds only what its spec needs (a readiness probe that also returns `vram_free` and `vram_total`) — the seam check (`tests/check_static.sh --seam`) keeps every call there |
 | copy repository files to where a container can read them | `moe_place` (`lib/moe_verb.sh:35`) with an assets function (`moe_assets`, `lib/moe.sh:94`), hash-checked | `comfy_assets` (`lib/comfy.sh:435`, E1) places the three scripts; E2 places `bench.py` the same way |
 | one GPU run with the operator's server stopped and restored | `supervise` (`lib/run_guarded.sh:503`), `step_run` (`lib/step.sh:238`), `cleanup_once` (`lib/run_guarded.sh:661`) | `comfy bench` is `supervise` around ONE `step_run`, exactly like `linear-bench`; the owner check is `supervise`'s (`_rg_card_free`, `lib/run_guarded.sh:43`, `:492`) and `step_run`'s (`lib/step.sh:117`) |
 | an arm table | `arms_load` (`lib/config.sh:573`) and the four-field grammar of `config/arms.conf` (`_ARM_LEGAL`, `:545`) | a second table `comfyui/arms.conf` in the SAME grammar: name, ComfyUI arguments, environment, mounts; the arm evidence is a second, separate table keyed by arm name (OP6), so `arms_load` and `config/arms.conf` do not change |
 | the ship test | `lib/verdict.py ship` and `bin/r9700 verdict` | the bench writes lines in the verdict grammar `<arm>-<round> <group> r=<n> <metric>: <value>`; `verdict.py` is widened with a comfy mode (metric list, direction, NOT DECIDED inside the spread), the vLLM mode and its tests unchanged |
 | the identity of an experiment | `lib/fingerprint.py` (`compare`, `show`, `--merge` are generic) | widened with a build for the comfy identity, not copied |
-| what is left of a series after an interruption | `series_left` (`lib/series.sh:293`) and the part sweep to `rejected/` as `INTERRUPTED` (`lib/series.sh:272`) | reused: a re-run of the same experiment continues from the first missing arm-round |
+| what is left of a series after an interruption | `series_left` (`lib/series.sh:55`) and the part sweep to `rejected/` as `INTERRUPTED` (`lib/series.sh:272`) | reused: a re-run of the same experiment continues from the first missing arm-round |
 | test doubles | `tests/stubs/wslc`, `tests/run.mjs` | the stub learned `build`, `image list`, `volume list`, `volume create`, `tag`, `rmi` (E1); E2 adds the bench container, the `exec` of `bench.py` with scripted answers and the clear container |
 | a model file per model, not a script | `models/*.env` | `comfyui/models.conf`: one model SET per block, lines `<set> <folder> <url> <sha256>` (E1); E2 adds the LoRA line of `wan5b` |
 | the worker's file (OP1) | `lib/series.sh` (two faces: sourced and run as the worker) and `lib/kernels_verb.sh` (the verb half apart from the worker) | `lib/comfy.sh` is 747 lines; the bench's worker goes in `lib/comfy_bench.sh` (two faces) and the verb half in `lib/comfy_bench_verb.sh`, which defines `comfy_mode_bench` so `comfy_modes` (`lib/comfy.sh:44`) derives it. A file split for the 800-line limit of coding-style; no behaviour changes |
@@ -291,9 +291,9 @@ follow-up for the owner, not an arm.
 | `base` | ComfyUI's own choice (pytorch attention, cudnn off on AMD) | the reference | the attention line `Using pytorch attention` | — |
 | `fp16acc` | `--fast fp16_accumulation` | fp16 matmul accumulation; it acts only on fp16 matmuls | ComfyUI's `Enabled fp16 accumulation` line | the model's compute dtype line is bf16 (`zimage`): reported inert there, as the screening saw (fact 7) |
 | `fp8w_mm` | `COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn` (the loader's `weight_dtype`, set by `bench.py`) **and** `--fast fp8_matrix_mult` | RDNA4 has fp8 matrix hardware and ComfyUI sets `SUPPORT_FP8_OPS` for gfx1201; the flag acts only on fp8 WEIGHTS, and the pair measured −15 % (`zimage`) and −7 % (`wan5b`, 20 steps) on the sampler in the screening; fp8 weights alone were slower. It replaces the flag-only arm `fp8mm` of epoch 1: with bf16/fp16 model weights the flag can touch only the fp8 text encoder of `wan5b`, which the measured runs cache after the cold run, so the flag alone is inert in every measured run | the loader's weight dtype line (`float8_e4m3fn`) AND the flag in the argv | — (both DiTs are cast) |
-| `tunableop` | `PYTORCH_TUNABLEOP_ENABLED=1`, its results file in the bench cache, and the per-shape tuning bounds of torch's TunableOp (`PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS`, `PYTORCH_TUNABLEOP_MAX_TUNING_ITERATIONS`; the values are set in E2's spec from the image's torch documentation) | hipBLASLt GEMM tuning per shape; the cold run tunes, the measured runs read the file. Unbounded, the screening's cold run tuned the VAE for more than 37 minutes (fact 7), so the bounds and `cold_max_s` keep it inside one arm-round or reject it as `COLD_TIMEOUT` | the results file is not empty and holds the workload's shapes; the measured runs' `PYTORCH_TUNABLEOP_TUNING=0` read-only line | — |
+| `tunableop` | `PYTORCH_TUNABLEOP_ENABLED=1`, its results file in the bench cache, and the per-shape tuning bounds of torch's TunableOp (`PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS`, `PYTORCH_TUNABLEOP_MAX_TUNING_ITERATIONS`; the values are set in E2's spec from the image's torch documentation) | hipBLASLt GEMM tuning per shape; the cold run tunes, the measured runs read the file. Unbounded, the screening's cold run tuned the VAE for more than 37 minutes (fact 7), so the bounds and `cold_max_s` keep it inside one arm-round or reject it as `COLD_TIMEOUT` | the results file is not empty and holds the workload's shapes (the cold run and the measured runs are one process whose environment is fixed at its start, so no per-run tuning switch exists to read) | — |
 | `miopen` | `COMFYUI_ENABLE_MIOPEN=1`, `MIOPEN_FIND_MODE=FAST` | ComfyUI turns cudnn/MIOpen off for every AMD arch after RDNA2; on these two DiT models it can only change the VAE, and FAST keeps the search out of a multi-minute stall (the screening: VAE equal warm, cold VAE 7.8 s) | the absence of ComfyUI's `cudnn.enabled = False` line and MIOpen's find lines in the cold run | the sampler has no convolution: `sampler_s` is reported as information only for this arm |
-| `compile` | `COMFY_BENCH_COMPILE=1`: `bench.py` inserts `TorchCompileModel` (inductor, no CUDA graphs) after the loader | the DiTs are full of pointwise chains between their GEMMs; the compile cost lands in the cold run and the record keeps it separately; a recompile in a measured run is flagged (fact 7: two of three warm runs recompiled) | the `TorchCompileModel` node in every measured run's node list AND the inductor cache written in the cold run with `TORCH_LOGS=recompiles` lines captured in the server log (a node's presence proves the wrapper ran, not that the compiled graph did) | — |
+| `compile` | `COMFY_BENCH_COMPILE=1`: `bench.py` inserts `TorchCompileModel` (inductor, no CUDA graphs) after the loader | the DiTs are full of pointwise chains between their GEMMs; the compile cost lands in the cold run and the record keeps it separately; a recompile in a measured run is flagged (fact 7: two of three warm runs recompiled) | the `TorchCompileModel` node in every measured run's node list AND the inductor cache written in the cold run with `TORCH_LOGS=recompiles` set (a recompile line is the flag above, not activation evidence) (a node's presence proves the wrapper ran, not that the compiled graph did) | — |
 
 `--use-quad-cross-attention` was a planned arm and is dropped (both consultants, 2026-11-07): it replaces the fused SDPA
 that now works with a chunked fallback made for cards without one, so it can only be slower, and on the video workload a
@@ -314,7 +314,7 @@ fingerprint:
   official setting (shift 5, cfg 5) is recorded as the quality reference the owner can render by hand; it is not a series
   workload. **Why the tiled decode is a constant (OP4)**: the untiled decode stalled for more than 10 minutes (fact 2); there is
   no untiled variant to decide between. The faster setting of fact 2 changes the output (a colour shift) and waits for the
-  owner's look as a follow-up. **What is not observed**: FastWan was run by hand image-to-video; the text-to-video form of
+  owner's look as a follow-up. **Why text-to-video**: the bench workload needs no input file, so nothing outside `models.conf` is pinned into its identity. **What is not observed**: FastWan was run by hand image-to-video; the text-to-video form of
   this workload runs first in E2's acceptance, and its first clip is looked at for the hatching before any series.
 
 Audio (voice-over) has no model set yet: which TTS model fits the card is a question for the owner, recorded, not guessed.
@@ -325,8 +325,9 @@ and is written into the record. The video series' round count is set from that t
 starts, together with the GPU hours it costs (arms × rounds × four generations, the cold runs included); when the three rounds
 of every arm do not fit the time the owner gives, the record says so and the series is deferred or narrowed — a narrowing is a
 plan change and needs the owner (plan-change-control), never a silent cut. The projection this run checks: a `wan5b` arm-round
-≈ 4 clips × 2.3 min + a model load ≈ 12 min, six arms × three rounds ≈ 3.5 h plus the two long cold runs (`tunableop`,
-`compile`); a `zimage` arm-round ≈ 2–3 min, the series ≈ 1 h plus the same two cold runs. Those numbers come from the hand
+≈ 4 clips × 2.3 min + a model load ≈ 12 min, six arms × three rounds ≈ 3.5 h plus the long cold runs of `tunableop` and
+`compile` in each of their arm-rounds (the bench cache is cleared before every arm-round: six per series); a `zimage`
+arm-round ≈ 2–3 min, the series ≈ 1 h plus the same six cold runs. Those numbers come from the hand
 runs of fact 1 and fact 7, one run each; the feasibility run replaces them.
 
 **Prediction, recorded before any run** (rule: measurement § 4), informed by the screening of fact 7 (one round each, not a
@@ -383,7 +384,7 @@ better. Three layers, none of them claiming more than it can:
   `comfy-cache` the operator's MIOpen, Triton and TunableOp caches: projected at most 2 GB (the nearest measured cousin, the
   Triton MoE caches of this toolkit, grew 0.5–1.3 GB per tuning chunk; TunableOp's results are a CSV of kilobytes), measured in
   E2's acceptance and the projection corrected in `research/module_comfyui.md`; retired by the operator, who removes the volume
-  by hand (ComfyUI rebuilds the caches at the next start), and `comfy status` prints its size. The bench's own
+  by hand (ComfyUI rebuilds the caches at the next start), and `comfy status` says whether it is present (the engine reports no volume size; E2's acceptance measures it once). The bench's own
   `<CONTAINER_PREFIX>comfy-cache` is cleared before every arm-round, so it never holds more than one arm-round's caches
   (the inductor cache of `compile` and the TunableOp file of `tunableop` included). The toolkit never removes a volume,
   because a model download costs hours.
@@ -482,7 +483,7 @@ changed no epic boundary: E1 is what was merged, E2 keeps build-order step 3 wit
 **Done except its acceptance runs.** Merged as PR #18 (6be7a67, 2026-11-08). The stories of this epic are
 [PLAN_comfyui_r9700_E1.md](PLAN_comfyui_r9700_E1.md) (written 2026-11-07; E1.S2 is the cornerstone; its *Follow-ups found
 while building E1* are outside this plan's scope and wait for their own change). What was merged: the twelve fields and the
-`win?` and `ref` types; `wslc_build`, `wslc_image_list`, `wslc_volume_list`, `wslc_volume_create` and the stub's answers;
+`win?` and `ref` types; `wslc_remove`, `wslc_inspect`, `wslc_build`, `wslc_tag`, `wslc_rmi`, `wslc_image_list`, `wslc_volume_list`, `wslc_volume_create`, `comfy_probe` and the stub's answers;
 `comfy_owner_check` and the owner check in `supervise` and `step_run`; `comfy start|stop|status`; `comfyui/Containerfile`,
 `entrypoint.sh`, `fetch_model.sh`, `models.conf`; `comfy build` with the stamped tags and the retention; `comfy fetch` with its
 own lock; the tests and the documents. **Owed**: the three acceptance runs on the card of `research/module_comfyui.md`
@@ -587,8 +588,10 @@ meets its two conditions; the promotion of this plan and its stories documents w
 
 **Done when.**
 - The feasibility run's time, memory readings and the round count are in the record before the video series starts.
-- Both series completed under the supervisor with one restore of the operator's vLLM per invocation; every arm-round is in
+- Both series completed under the supervisor with one restore of the operator's vLLM; every arm-round is in
   `rounds/` with its evidence or in `rejected/` with its reason; every lost arm-round is named with its cause when known.
+  A series continued after a lost run keeps its data, but meets this line only when one invocation completes it; whether
+  a continued series may count (one restore per invocation) narrows this condition and is the owner's question.
 - The record holds, per arm and workload: prediction, observation, the verdict line, the drift numbers, the conditions
   (image id, `COMFY_REF`, model and LoRA hashes, the workload constants); the owner looked at the outputs and the record says
   so; a result inside the base's spread is written as NOT DECIDED; "quality equal" appears nowhere. The plan and its stories
