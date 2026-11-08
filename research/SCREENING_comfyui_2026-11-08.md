@@ -139,3 +139,19 @@ retired and pins torch 2.6.0, which has no RDNA4 support. None was tested on gfx
 
 One round per arm (no spread); quality judged by eye on few seeds; the mesh and motion metrics are home-made and only
 partly checked by hand; set B's out-of-memory cause (a leak or fragmentation) is not known; nothing here is a bench verdict.
+
+## 10. The Arcane style LoRA on the set-B keyframes (2026-11-08)
+
+Prediction (written before the run): the LoRA restyles set B's photoreal keyframes into a painted look; a higher denoise
+paints more but loses the character's details; strength 1.0 paints more than 0.7.
+
+Run: Z-Image Turbo bf16 + `z_image_arcane_v1.safetensors` (fetched to the store and the volume, its sha256 equal to the
+published one), img2img from set B's keyframes of shots 1 and 3 (8 steps, `res_multistep`, cfg 1, the set-B prompt without
+its photo-style words plus "Arcane style."), a grid of LoRA strength 0.7/1.0 x denoise 0.55/0.70: 5.0–7.2 s per image warm
+(22.4 s for the first, with the loads).
+
+Observed: all eight read as painted animation (painted backgrounds, drawn faces, matte painted cloth), far from the
+"Frozen" look of § 7; the character (silver hair, golden strand, green tunic and belt) survives. Denoise 0.55 keeps the face
+and pose closest to set B and the small ears; at 0.70 the ears grow into long elf ears again (against the operator's
+remark), the painting is stronger. Strength 1.0 paints a little more than 0.7. Proposed: strength 1.0, denoise 0.55; the
+operator's choice is asked. The LoRA's licence is research and non-commercial use only.
