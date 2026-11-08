@@ -1,6 +1,8 @@
 # PLAN — E2 stories: `comfy bench` under the supervisor, and the verdict over its records
 
-> Status: **plan only, nothing implemented yet, 2026-11-08.** Scope: the three stories of epic E2 of
+> Status: **plan only, nothing implemented yet, 2026-11-08 — written under epoch 1; to be rewritten for epoch 2 before E2's
+> first code (the parent's re-review settled its open points OP1–OP8 and changed the `wan5b` workload, the arms and the
+> evidence).** Scope: the three stories of epic E2 of
 > [PLAN_comfyui_r9700.md](PLAN_comfyui_r9700.md), section
 > [E2 — `comfy bench` under the supervisor, and the verdict over its records](PLAN_comfyui_r9700.md#e2--comfy-bench-under-the-supervisor-and-the-verdict-over-its-records):
 > the comfy mode of the ship test, the arm-round and its measurement contract, the verb `comfy bench` with the verdict over its folder,

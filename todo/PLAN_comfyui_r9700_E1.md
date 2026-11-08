@@ -1,6 +1,7 @@
 # PLAN — E1 stories: ComfyUI from the repository, with one owner of the card
 
-> Status: **plan only, nothing implemented yet, 2026-11-07.** Scope: the three stories of epic E1 of
+> Status: **S1–S3 merged (PR #18, 6be7a67, 2026-11-08); the three acceptance runs on the card are not run yet.** Written
+> 2026-11-07. Scope: the three stories of epic E1 of
 > [PLAN_comfyui_r9700.md](PLAN_comfyui_r9700.md), section
 > [E1 — ComfyUI from the repository](PLAN_comfyui_r9700.md#e1--comfyui-from-the-repository-fields-adapter-image-five-verbs-one-owner-of-the-card):
 > the machine fields and three adapter calls, the GPU ownership of the card, the image and the model sets with their two verbs.
