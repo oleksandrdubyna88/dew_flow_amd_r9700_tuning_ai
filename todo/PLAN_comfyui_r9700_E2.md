@@ -584,47 +584,699 @@ Out: the verb's grammar, `supervise`, the dry-run printing call site, the verdic
 
 ### Spec: written by Fable
 
-> **This section is Fable's.** Fable writes, in this file, under this heading: the scenarios BP1–BP14, BW1–BW18, BE1–BE7,
-> BA1–BA3, BF1–BF5, SC1–SC4 and AP1 in the detail of E2.S1's (each with its setup, its exact lines, its RED-first mark where it
-> has one), the brief for the Sonnet coder (read first, steps, commands, what to report) and the *Done when* of this story. Fable
-> may add a scenario, merge two or split one, and says so in one line. The cornerstone ledger line of the parent already names
-> this story (`:614–616`).
+> Written by Fable, 2026-11-08, against the parent at 025cbff (its text is bd36c56's with the epoch-2 wording of 025cbff: `fp8wmm`,
+> `TORCHINDUCTOR_CACHE_DIR=/cache/inductor`, E2 fetches the LoRA) and the code at 6be7a67. Sources read for it, each named where it
+> decides something: the parent whole; this document whole; E1.S2 as the model of depth; `lib/run_guarded.sh`, `lib/step.sh`,
+> `lib/series.sh`, `lib/comfy.sh`, `lib/adapter.sh`, `lib/fingerprint.py`, `lib/moe.sh:1–100`, `lib/moe_verb.sh:30–50`,
+> `lib/kernels.sh:30–70`, `lib/config.sh:95–110` and `:540–644`, `tests/stubs/wslc`, `tests/stubs/stub_common.sh:1–60`,
+> `comfyui/Containerfile`, `comfyui/entrypoint.sh`, `comfyui/models.conf`; the operator's hand-made `bench.py` and `lora_try.py` (read
+> only; nothing of their paths is here); PyTorch's TunableOp page (docs 2.15, read 2026-11-08); ComfyUI v0.44.0's `requirements.txt`,
+> `comfy/model_management.py` and `execution.py` (read 2026-11-08); the file list of the LoRA's repository (the Hugging Face API,
+> 2026-11-08). The ten questions are answered first, in their order; N2's design follows; then the contract as text, the scenarios,
+> the brief and the Done when. Two scenarios are added (BW19, BE8) and one is split (BP12 into BP12 and BP12v); each says so.
 
-What the spec must still settle after epoch 2 (the parent settled the eight open points of the epoch-1 version; these are left,
-and Opus has decided none of them):
+#### The ten questions, answered
 
-1. **The open points N1–N3 below.** Until they are answered, the spec builds the smallest fix of each and names the one line
-   that changes with the answer.
-2. **The seeds.** The three measured seeds are the same for every arm; the cold run's seed must differ from them, because
-   ComfyUI takes a node from its cache when its inputs are equal, and a measured run with the cold run's seed would time nothing
-   (BP3, BP6). The spec names the seeds and where they are written once.
-3. **Where the outputs go.** `/data` is a tmpfs; the outputs must reach the record, and the drift needs the base's round-1
-   outputs inside the container. The toolkit's existing way is an exchange folder under `$WORK_DIR/r9700/` mounted at `/work`
-   and read on the host with `container_host_path` (`lib/kernels.sh:46`, `kernels_exchange_dir`; `lib/series.sh:366–371`);
-   ComfyUI takes an `--output-directory` argument. The spec names the folder, its sweep and its growth row.
-4. **Cutting the log per measured run.** The whole log is saved before the container stops (`:387`); the load and recompile
-   flags need it cut per run (`:261–263`). The worker can read `wslc_logs` between runs (one `exec` of `bench.py` per run) or mark
-   the runs in the log; the spec picks the one the stub can prove and the acceptance can observe.
-5. **The values the parent leaves to the spec**: `run_max_s` and `cold_max_s` per workload (the parent's projections:
-   a `zimage` arm-round ≈ 2–3 min, a `wan5b` arm-round ≈ 12 min, the screening's `tunableop` cold run > 37 min, `:337–341`,
-   `:143`); the two TunableOp bounds (`:304`); the time an arm-round may need for the fit check before the deadline (the series
-   uses `R9700_ARM_SECONDS`, `lib/series.sh:291`); the bound of the free-card wait.
-6. **The grammar of `comfyui/arm_evidence.conf`** (`:178` says one row per arm keyed by name, activation and inertness): how a
-   log line, the absence of a line, a file with content, a node in every run's node list and a written cache are written, and
-   how the worker reads each from the arm-round's own record.
-7. **The environment of `exec`** (fact 2): whether `bench.py` reads `COMFY_BENCH_WEIGHT_DTYPE` and `COMFY_BENCH_COMPILE` from
-   its own environment (then the worker passes them on the `exec`), or from the container's.
-8. **An arm whose container does not start.** The series marks `unsupported/` after two failed starts (`lib/series.sh:326–350`);
-   the parent is silent for ComfyUI. The spec says whether a bench container that does not become ready is a failed try only,
-   or also an unsupported mark, and what the verdict then sees.
-9. **Missing model files.** A file of the workflow that is not in the models volume (the LoRA before its fetch, for one) fails
-   every try after the operator's server was stopped. The spec says whether the supervisor's half checks, before admission,
-   that the workflow's files are present (a throwaway container without the card, the shape of `_series_probe`,
-   `lib/series.sh:99`), or why not.
-10. **The LoRA's source and the test pins.** The LoRA's URL (the hand-made trial names the file
-    `Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors`, not its source) and the exact versions of the test requirements
-    "the same major versions as the image's" (fact 8: the repository's image is first built by E1's acceptance run 1; until
-    then the spec reads the majors from ComfyUI v0.44.0's requirements and the hand-made image, and says which).
+1. **N1–N3.** N1 and N3 are settled in the parent (`fp8wmm`; `TORCHINDUCTOR_CACHE_DIR=/cache/inductor` in the `compile` row). N2 is
+   designed below (*N2: the TunableOp file*) and stays open for the owner only for what the card must show.
+2. **The seeds.** ONE table in `comfyui/bench.py`, `SEEDS = {"cold": 4242, "measured": (1, 2, 3)}`: the cold run's seed is the hand
+   prototype's first seed; the measured seeds are the toolkit's (`WORKLOAD_BENCH["seeds"]`, `lib/fingerprint.py:38`). They differ
+   from each other and from the cold seed, so ComfyUI's cache re-executes the sampler in every measured run (its cache key is the
+   node's inputs; the text encoding, whose inputs do not change, stays cached after the cold run — the parent's `:252–256`). The
+   fingerprint records the table (question 5's `constants`); nothing else types a seed.
+3. **Where the outputs go.** The exchange folder `$WORK_DIR/r9700/comfyui/bench/<outdir name>/` (the toolkit's one way: `/work` is
+   `$WORK_DIR_WIN` mounted read-write, read on the host through `container_host_path`, `lib/serve.sh:93`; the MoE units' scratch
+   folder has the same life, `lib/moe.sh:19`). The bench container is started with `--output-directory
+   /work/r9700/comfyui/bench/<outdir name>/<arm>-<round>` (ComfyUI's own argument; `entrypoint.sh` appends it after the image's
+   words), so `/data` (the tmpfs) never holds an output; `bench.py` writes its run JSONs beside them. After the arm-round the worker
+   MOVES the folder's files into the record and removes the folder; before every arm-round it removes a folder of that tag left by a
+   kill (ours, scratch: the MoE rule). The drift's references are copied by the worker from `rounds/base-1/outputs/` into
+   `<exchange>/ref/` before the measured runs and removed after the drift. The growth row is this document's *The exchange folder*
+   row: at most one arm-round's outputs plus the base's round-1 references, swept by the worker, and by the next worker start after a
+   kill.
+4. **Cutting the log per measured run.** One `exec` of `bench.py` per run (four per arm-round: `cold`, `1`, `2`, `3`); after each the
+   worker saves the WHOLE log again (`wslc_logs` into `server.log`, replaced atomically) and the cut of run k is the lines the log
+   gained since the save before it (the log is append-only; a cut is a line range, `runs/<k>.log`). The stub proves it (its `exec`
+   of `bench.py` appends scripted lines to its log answer per run, SC3) and the acceptance observes it (the real log grows per
+   run). Not chosen: marks written into ComfyUI's log — the bench cannot write into the server's log, and `got prompt` /
+   `Prompt executed in` are ComfyUI's lines to change.
+5. **The values the parent leaves to the spec.** All are constants of `bench.py` (`CEILINGS` and `SEEDS` are in `constants`, which the
+   fingerprint records) or of the worker, none a `machine.env` field (the parent, `:195–197`):
+
+   | Value | `zimage` | `wan5b` | `sd15` | Basis |
+   |---|---|---|---|---|
+   | `run_max_s` | 300 | 600 | 120 | a measured run that the screening put at tens of seconds (`zimage`: fact 7; `sd15`: 2–2.3 s, the parent `:101`) and at 122–143 s for the FastWan clip (fact 1) is not a measurement of this workload past ten times that; for `wan5b` 600 s also catches the stall of fact 2 (the untiled decode: more than 10 min) |
+   | `cold_max_s` | 1800 | 2700 | 600 | the cold run holds the model load, the compile of `compile` (minutes, fact 7) and the bounded tuning of `tunableop`; 30 min is the bound the series' time budget can carry six times per `zimage` series (the parent `:337–341`: the series ≈ 1 h plus the six cold runs); `wan5b` adds the clip itself (≈ 2.5 min) and its load; `sd15` is the smoke workload |
+   | `PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS` | 10 | 10 | 10 | torch's default is 30 ms and 100 iterations per solution, the smaller honoured (the TunableOp page); the screening's unbounded cold run tuned for more than 37 min (fact 7), so the bounds are a third of the duration and a tenth of the iterations, and `cold_max_s` is the real ceiling |
+   | `PYTORCH_TUNABLEOP_MAX_TUNING_ITERATIONS` | 10 | 10 | 10 | the same row; the two words are the `tunableop` row of `comfyui/arms.conf` (one place) |
+   | the arm-round's time for the fit check | `cold_max_s + 3 × run_max_s + 600` (`zimage` 3300 s, `wan5b` 5100 s) | | | derived from the ceilings, never typed twice: the 600 s cover the cache clear, the container start and readiness, the free-card wait and the cache report; the test knob `R9700_COMFY_ARM_SECONDS` replaces the sum (the shape of `R9700_ARM_SECONDS`, `lib/series.sh:291`) |
+   | the free-card wait | 300 s, probes `t_scale 10` apart, `vram_free × 10 ≥ vram_total × 9` | | | a stopped container's memory comes back within seconds on a healthy driver; five minutes is what a driver recovering from a lost run may need; longer is a fault to record, not to wait out |
+
+   **What cannot be known before the card**: the real cold times of `tunableop` and `compile`, and the clip's time under the bench.
+   E2's acceptance measures them (its runs 1 and 2, and item 4's by-hand `tunableop` and `compile` arm-rounds when the operator
+   agrees) and records them; until then the table stands. A corrected value is a new experiment (the fingerprint differs) and
+   not a plan change: the parent leaves the values to this spec.
+6. **The grammar of `comfyui/arm_evidence.conf`.** One row per arm, three fields, exactly two `|`: `<arm> | <activation> |
+   <inertness>`. A field is `-` (nothing) or checks separated by ` ; ` (a `;` never appears inside a check), ALL required (an AND).
+   A check is `<kind>=<argument>`; the argument runs to the separator or the field's end and is never a regular expression with a
+   space trimmed. The kinds, and how the worker reads each from the arm-round's OWN record:
+
+   | Kind | Argument | True when | Read from |
+   |---|---|---|---|
+   | `log` | an extended regular expression (`grep -E`) | a line of the whole server log matches | `server.log` (the container's log from its start, the cold run included) |
+   | `nolog` | the same | NO line of the whole server log matches | `server.log` |
+   | `coldlog` | the same | a line of the COLD run's cut matches | `runs/cold.log` |
+   | `node` | a ComfyUI `class_type` | every MEASURED run's node list holds a node of that class that executed (not cached) | `runs/1.json` … `3.json`, `nodes` |
+   | `cache` | a folder name under `/cache` | the cold run's JSON reports at least one file under it after the cold run | `runs/cold.json`, `cache_after` |
+   | `tunable` | a file name under `/cache/tunableop` | the file the cache report copied into the record is non-empty, has at least one `Validator` line and at least one result row (four comma-separated fields, the operator name first) | `<file>` in the record (copied after the clean stop, below) |
+   | `argv` | one word | ComfyUI's `system.argv` (the cold run's JSON) holds the word; **never alone**: an activation field whose checks are all `argv` is refused by `comfy_bench_check` (the parent `:280–281`) | `runs/cold.json`, `server_argv` |
+
+   Activation absent → the arm-round is rejected, the reason `EVIDENCE: activation <check>: missing (<file>)` per missing check;
+   inertness fully present → the record says `inert on <workflow>` with every check's matched line, and the worker prints it. The
+   rows, with the exact ComfyUI strings (`comfy/model_management.py` v0.44.0 prints `Enabled fp16 accumulation.` and
+   `Set: torch.backends.cudnn.enabled = False for better AMD performance.` — read 2026-11-08; `Using pytorch attention` is
+   `comfy/ldm/modules/attention.py`'s, observed 2026-11-07, the parent `:95`; the model's and the VAE's dtype lines are
+   `comfy/model_base.py`'s `model weight dtype …, manual cast: …` and `comfy/sd.py`'s `VAE load device: …, dtype: …` — the coder
+   re-reads all five files at `COMFY_REF` and keeps the regular expressions as short as the lines allow):
+
+   ```text
+   # arm       | activation                                                                       | inertness
+   base        | log=Using pytorch attention                                                      | -
+   fp16acc     | log=Enabled fp16 accumulation                                                    | log=model weight dtype torch\.bfloat16 ; log=VAE load device.*dtype: torch\.bfloat16
+   fp8wmm      | log=model weight dtype torch\.float8_e4m3fn ; argv=fp8_matrix_mult                | -
+   tunableop   | tunable=tunableop_results.csv                                                    | -
+   miopen      | nolog=cudnn\.enabled = False ; coldlog=MIOpen\(HIP\): Info.*[Ff]ind                 | -
+   compile     | node=TorchCompileModel ; cache=inductor                                          | -
+   ```
+
+   `base`'s inertness is `-` (the reference is never inert). A recompile line is NEVER a check (the parent `:306`): it is the flag of
+   question 4's cut. The `tunable` check's "holds the workload's shapes" (`:304`) is read as "at least one result row": the GEMM shapes
+   of a workload are not known before the card (open point N6 below records what the acceptance adds).
+7. **The environment of `exec`.** `bench.py` reads `COMFY_BENCH_WEIGHT_DTYPE` and `COMFY_BENCH_COMPILE` from ITS OWN environment and
+   nowhere else, and refuses any other `COMFY_BENCH_*` name it finds (one line naming the legal two). The worker passes every
+   `COMFY_BENCH_*` word of the arm's environment field on the `exec` line as `env <word>... python3 …` (coreutils' `env`, in the
+   image), so the answer to fact 2 changes nothing: the container's `-e` words stay (the identity and the dry run show them), and
+   the program sees them either way. The acceptance still observes fact 2 (S3's item 4) and the record says what it saw.
+8. **An arm whose container does not start.** ONE try per worker start, no `unsupported/` mark: the arm-round goes to `rejected/` as
+   `UNSTARTED: <name> did not become ready (<ready_wait's reason>)` with the log tail, the container is stopped and seen gone, the
+   worker exits 1 — the supervisor counts a failed try and retries after its quiet wait, up to `MAX_FAILED_TRIES` (exit 7). Why not
+   the series' mark (`lib/series.sh:305–316`): the image passed its check and every arm's words are ComfyUI's own, so a start that
+   fails is a machine fault to retry, not an arm to skip for ever; and the bench folder's reader (S3's verdict) knows `rounds/` and
+   `rejected/` only (the parent *Records and growth*). The verdict then sees a missing arm-round: `INCOMPLETE`. An arm that refuses
+   its flags on every try stops the invocation at exit 7 with its three reasons; the operator runs the same command without that arm
+   (an arm left out is not a fingerprint difference, `lib/fingerprint.py:236`) and the other arms go on. The dry run shows the words.
+9. **Missing model files.** Checked BEFORE admission, in `comfy_bench_fingerprint` (the shape of `_series_probe`, `lib/series.sh:99`,
+   which the series' fingerprint already runs): one throwaway container (`wslc_run_once 120`, `--name <prefix>comfy-fp-<pid>`, the
+   models volume `:ro`, no `--gpus`, `--entrypoint sh`, the image) lists `<folder>/<file> <size>` for every file of the workflow
+   (its names come from `bench.py constants <workflow>`, the folders from `models.conf`); a file that is not there refuses with exit
+   2: `r9700: comfy: bench: /models/<folder>/<file> is not in the models volume (<set> of comfyui/models.conf); run bin/r9700 comfy
+   fetch <set> first` — before anything is stopped. The listing is kept in `record.env`-style words of the fingerprint's inputs
+   (`models_listing`) but the IDENTITY of a model file is its pin (question 10 and `:386`), never its size.
+10. **The LoRA's source and the test pins.** The LoRA is `Kijai/WanVideo_comfy`'s
+    `FastWan/Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors` (the file name the hand-made trial loaded, in that
+    repository's file list, read 2026-11-08 through the Hugging Face API: 660 874 456 bytes, LFS sha256
+    `79290493711b022e1c6e655d803715cd8a91a75cdb139856cad46f354e2f681c`). The `models.conf` line:
+    `wan5b loras https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/FastWan/Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors <sha256>`,
+    where `<sha256>` is what the coder reads ONCE from the source's `X-Linked-ETag` at the commit (`curl -sI -L`), the parent's
+    rule for every pin (`:175`); it is expected to equal the LFS hash above, and a difference is reported, not resolved. The test
+    pins: ComfyUI v0.44.0 requires `aiohttp>=3.11.8`, `numpy>=1.25.0`, `Pillow>=10.1.0` (its `requirements.txt`, read 2026-11-08);
+    the image's exact versions are not known before E1's acceptance run 1 (fact 8). The coder pins, in `tests/requirements.txt`,
+    the newest release on PyPI at coding time of `aiohttp` major 3, `numpy` major 2 (the base's torch 2.13 is built against
+    NumPy 2) and `Pillow`'s current major, with their dependencies as the file pins pytest's (`pip download --no-deps` per name,
+    then the dependency closure, each `==`), and the summary names the versions. S3's acceptance item 4 reads the image's three
+    versions; a differing MAJOR is a fix of the pins and a deviation, a differing minor is recorded.
+
+#### N2: the TunableOp file
+
+PyTorch's TunableOp page (docs 2.15, read 2026-11-08) says: "The output file is automatically created when the application
+terminates." and "This behavior can be controlled by the C++ and Python APIs but not the environment variables." The file is a CSV
+with `Validator` lines and rows of four comma-separated fields. So the premise of N2 holds: a container stopped by a signal that
+Python does not turn into a normal exit leaves no file, and every `tunableop` arm-round would be rejected for missing evidence. **The
+design keeps the parent's evidence row as it is and makes the file readable:**
+
+- **The clean stop.** Every arm-round that reaches its validation ends its container with a CLEAN STOP before the hard stop: the
+  worker runs `wslc_exec 30 <name> python3 -c '<_CB_SIGINT_PY>'`, a program of the standard library that sends `SIGINT` to pid 1
+  (`entrypoint.sh` `exec`s ComfyUI, so pid 1 is the server: `comfyui/entrypoint.sh:114`). ComfyUI's `main.py` catches
+  `KeyboardInterrupt` and returns normally; the interpreter then runs its exit handlers, which is when TunableOp writes
+  `PYTORCH_TUNABLEOP_FILENAME`. The worker then waits (`t_scale 60`, the list `t_scale 10` apart) until the container is no longer
+  listed (`--rm` removes it at exit); a container still listed after the wait gets the hard stop (`wslc_stop`, the list again) and
+  the record says `STOP=forced` in `record.env` — for every arm but `tunableop` a forced stop changes nothing; for `tunableop` the
+  file is then absent and the arm-round is rejected for missing evidence, which the reason names as the forced stop.
+- **The cache report.** After the container is gone, one throwaway container (`wslc_run_once 120`, `--name
+  <prefix>comfy-report-<pid>`, the bench cache volume read-write, no `--gpus`, `--entrypoint sh`, the image, the program
+  `_CB_REPORT_SH`: `du -s` of `/cache/miopen /cache/triton /cache/tunableop /cache/inductor`, then `--- tunableop_results.csv`
+  and the file's content) prints what the arm-round left in the bench cache; the worker writes its lines to `cache.txt` and the CSV
+  part to `tunableop_results.csv` in the record (empty when the file is absent; the `tunable` check reads this copy).
+- **Where the file goes.** The `tunableop` row sets `PYTORCH_TUNABLEOP_FILENAME=/cache/tunableop/tunableop_results.csv`; TunableOp
+  makes no folder, so the clear program (`_CB_CLEAR_SH`, question 6 of the worker below) makes `/cache/tunableop` and
+  `/cache/inductor` empty after it cleared them.
+- **The observation the card owes.** Whether `SIGINT` to pid 1 ends ComfyUI normally on the real engine, and whether the file is
+  written by the exit (the acceptance's item 4, `tunableop` by hand, `--rounds 1` on `zimage`: the record keeps `cache.txt`,
+  `tunableop_results.csv` and the `STOP=` word). If the stop is not clean there, the fallback that keeps the evidence row is
+  `PYTORCH_TUNABLEOP_VERBOSE=1` in the arm's row (TunableOp's own lines in the cold run, a `coldlog=` check): that is a change of
+  the evidence row and the owner's — N2 stays open for exactly that decision, and the stub cannot settle it (SC6 scripts both
+  outcomes so the worker's two paths are proven).
+
+The parent's "every ceiling ends the container" (`:249–251`) is untouched: a ceiling, a guard stop and a failed validation use the
+hard stop; only an arm-round that is being recorded ends cleanly, and it is still stopped and seen gone before the next arm-round.
+
+#### The contract as text
+
+**One arm-round, in order** (the worker, `bash lib/comfy_bench.sh <outdir> <workflow> <rounds> <arm>...`, `comfy_bench_main`):
+
+1. The worker sources its modules (`_CB_UNIT_SH`: `config run_guarded adapter serve restore wait_ready disk_gate guard_quiet series
+   comfy`; `_CB_UNIT_PY`: `fingerprint verdict`; both lists are also the fingerprint's `tools`, the A24 rule of `lib/series.sh:38–42`),
+   loads both tables (`arms_load "$(comfy_bench_arms_conf)"`, `comfy_evidence_load "$(comfy_bench_evidence_conf)"`), reads the
+   constants (`python3 bench.py constants <workflow>`), sweeps parts (`_cb_sweep_parts`: every `rounds/*.part-*` to `rejected/` as
+   `INTERRUPTED: <name> was left by run <run id> (its status: <the status file of RESULTS_DIR/runs/<run id>, or "not found">)`, the
+   cause when known) and removes the exchange folders of tags that have no final record.
+2. Per round `1..rounds`, the arms in the table's order given on the command line for an odd round and reversed for an even one
+   (`_cb_order`); a tag with a final record is skipped; so a re-run continues from the first missing arm-round in the balanced order.
+3. `_cb_gate <arm> <round>` (the series' `_series_gate` shape): the disk gate (`KIND=disk_gate`, exit 1), the quiet check (exit 3), the
+   fit (`_cb_round_seconds` = question 5, exit 4 with the count of what no longer fits).
+4. `_cb_recheck`: the identity re-built from the cheap components (both tables, the constants, `bench.py`'s and the modules' hashes,
+   the pins, the image id through `wslc_inspect`) and compared with `fingerprint.json`; a difference is `KIND=refused RC=2` with the
+   lines (BW15).
+5. The part folder `rounds/<tag>.part-<run id>/` and `record.env` (ARM, ROUND, RUN_ID, CONTAINER, STARTED_AT, FINGERPRINT, WORKFLOW,
+   IMAGE_ID; later VRAM_FREE_BEFORE, VRAM_TOTAL_BEFORE, STOP, INERT, INERT_EVIDENCE, FLAGS_RUN_1..3, FINISHED_AT).
+6. The bench cache: `wslc_volume_list`, `comfy_volume_ensure "<prefix>comfy-cache" <listing> bench` (list first, create only when
+   missing; its line reads `comfy: bench: created volume …`); then the clear, one throwaway container (`wslc_run_once 90`,
+   `--name <prefix>comfy-clear-<pid>`, the bench cache volume at `/cache`, `--entrypoint sh`, the image, `_CB_CLEAR_SH` = `du -s
+   /cache/miopen /cache/triton /cache/tunableop /cache/inductor 2> /dev/null; rm -rf /cache/miopen /cache/triton /cache/tunableop
+   /cache/inductor; mkdir -p /cache/miopen /cache/triton /cache/tunableop /cache/inductor`, no variable in it); its lines go to
+   `cache.txt` as `before clear: …`; a non-zero code refuses the arm-round (`KIND=refused`: "the bench cache could not be cleared
+   before the arm-round: a stale cache would be measured", the MoE rule `lib/moe.sh:286–292`).
+7. The exchange folder of the tag made empty; for an arm other than `base`, or for `base` in a round other than 1, the references
+   copied from `rounds/base-1/outputs/` into `<exchange>/ref/` when that record exists (else the drift is `unavailable`).
+8. The container: `wslc_run <name>` with `--gpus all --tmpfs /data:exec,size=8g -v <COMFY_MODELS_VOLUME>:/models:ro -v
+   <prefix>comfy-cache:/cache -v <WORK_DIR_WIN>:/work --shm-size 8g`, `-e <word>` per word of the arm's environment field, the image,
+   then `--output-directory /work/r9700/comfyui/bench/<outdir name>/<tag>` and the arm's argument words; `<name>` is
+   `container_name comfy-<arm>-<round>` (the label fits `^[a-z0-9][a-z0-9-]{0,39}$` for every arm name of the grammar up to 29
+   characters; `comfy_bench_check` refuses a longer one). No `-p`: the bench talks to the server from inside through `exec`. A run
+   call that fails: the list decides (E1's lesson, `lib/comfy.sh:253–258`): listed → stopped and seen gone; the attempt is
+   `rejected/` as `UNSTARTED`, exit 1.
+9. Readiness and the free card: `ready_wait <name> <READY_TIMEOUT_S> comfy_probe ready "comfy: bench:"` (E1's wait, the widened probe:
+   AP1); then `_cb_card_free <name>`: the probe every `t_scale 10` for at most `t_scale 300` until `vram_free × 10 ≥ vram_total × 9`;
+   the first and the last readings go to `record.env`; not free in time, or a probe without the two numbers → `UNSTARTED: the card is
+   not free (vram_free <f> of <t> after <n> s)` / `CARD: vram not reported by /system_stats`, the container stopped, exit 1.
+10. The runs, each one `wslc_exec <ceiling> <name> env <COMFY_BENCH_* words> python3 /work/r9700/comfyui/bench.py run <workflow> --tag
+    <tag> --run <cold|1|2|3> --out /work/r9700/comfyui/bench/<outdir name>/<tag>` with the ceiling `cold_max_s + 60` for the cold run
+    and `run_max_s + 60` for a measured one (the program's own ceiling is the inner one; the adapter's is the outer: a program that
+    does not return is ended by it, 124/137). After each: the log saved again and the cut written (`runs/<k>.log`); the program's
+    stdout appended to `bench.txt` (the measured runs print S1's three lines, the cold run prints `cold: <total_s> s` lines that the
+    worker keeps in `runs/cold.txt`, never in `bench.txt`); its code: 0 go on; 3 with `COLD_TIMEOUT <s>` → the arm-round rejected
+    `COLD_TIMEOUT: the cold run reached <s> s of cold_max_s <c>`, the container hard-stopped and seen gone, exit 1, nothing more runs;
+    3 with `RUN_TIMEOUT <s>` → `CEILING: run <k> reached <s> s of run_max_s <r>`; 1 → the program's last line as the reason
+    (`EXECUTION_ERROR: …`, `OUTPUT: …`, `CACHED: …`, `PROMPT: …`); 124/137 → `CEILING: the exec of run <k> was ended by the adapter`.
+    Every rejection here hard-stops the container first.
+11. The flags: per measured run the cut is searched for `_CB_LOAD_RE` (`Requested to load|loaded completely|loaded partially|
+    Unloading|models unloaded`) and `_CB_RECOMPILE_RE` (`[Rr]ecompil`); the counts go to `flags.txt` (`run 1: load 2, recompile 0`)
+    and `record.env` (`FLAGS_RUN_1=load=2,recompile=0`); never into `bench.txt` (S1's grammar admits no other line; open point N5).
+12. The drift: `wslc_exec 300 <name> python3 …/bench.py drift <workflow> --out <the tag's folder> --ref /work/…/ref` when the references
+    were copied: per measured seed `drift r=<n>: mad <v> psnr <v|identical>`; without references `drift: unavailable (<why>)` written
+    by the worker (`no base-1 record`, `base-1 rejected`, `the reference of seed <s> is missing`). Both to `drift.txt`.
+13. The validation, in this order: the container is still listed (`_cb_alive`; else `LOST: server alive 0` as the series says it);
+    the log saved a last time; `comfy-check-block --tag <tag> --workflow <workflow> --metrics "$(comfy_bench_metrics)" bench.txt`
+    (its lines as problems); four run JSONs and four outputs present (the cold run's output is kept too: `outputs/`); then the CLEAN
+    STOP and the cache report (N2); then the evidence (`_cb_evidence <arm>`: question 6; the activation problems and the inertness
+    word); `server.log` not empty. Any problem → `rejected/<tag>-<UTC stamp>/` with `reason` (the first line the kind, the others the
+    problems), exit 1.
+14. `FINISHED_AT`, ONE `mv -T` into `rounds/<tag>/`, the exchange folder of the tag removed, `recorded <tag>` (and `<tag>: inert on
+    <workflow> (<evidence>)` when inert), `sleep t_scale 10`.
+
+**What the worker never does**: stop or start `COMFY_CONTAINER` or `PROD_CONTAINER` (its stops name only containers it started,
+all prefixed), write outside `<outdir>`, `<RESULTS_DIR>/runs/<run id>` and the exchange folder, set a trap, take a lock, remove a
+volume, name `wslc` (the seam).
+
+**Exit codes of the worker**: 0 every arm-round of the invocation recorded; 1 an arm-round was rejected (kept in `rejected/`), the
+disk gate stopped (`KIND=disk_gate`) or a container could not be started; 2 a refusal (`KIND=refused`: the identity, a failed cache
+clear, a bench container that could not be stopped — `the container <name> is still listed after the stop; stop it by hand`); 3 not
+quiet; 4 the next arm-round no longer fits before the deadline.
+
+**`comfyui/bench.py`**, inside the container through `exec` (the image's Python; `aiohttp` for the transport as the prototype;
+`numpy` and `Pillow` only in `drift` and `check`), and on the host for the pure commands:
+
+- `workflows` → `sd15 wan5b zimage`, one per line, sorted; `metrics` → `total_s sampler_s vae_s`; `constants <workflow>` → one JSON
+  object: every pinned input of the graph (the model file names by folder, the prompt text, the empty negative prompt, width,
+  height, length, steps, sampler, scheduler, cfg, shift, the LoRA name and `strength_model`, the four named tile fields, the fps),
+  `seeds`, `ceilings` (`run_max_s`, `cold_max_s`), `metrics`, `nodes` (`sampler`, `vae`: the node ids the metrics time). These three
+  import nothing outside the standard library (BP1) and are the ONE table the graphs and the fingerprint read (BP2).
+- `graph <workflow> --seed <n> [--tag <t>]` → the ComfyUI prompt JSON on stdout (standard library; the fixture tests read the graph
+  without a server): `zimage` as the prototype's (`UNETLoader` with `weight_dtype` from `COMFY_BENCH_WEIGHT_DTYPE`, default
+  `default`; `CLIPLoader lumina2`; `VAELoader`; `ModelSamplingAuraFlow` shift 3.0; `ConditioningZeroOut` for the empty negative
+  prompt; `EmptySD3LatentImage` 1024×1024; `KSampler` 8 steps `res_multistep` `simple` cfg 1.0; `VAEDecode`; `SaveImage` with
+  `filename_prefix <tag>/<workflow>_r<run>`); `wan5b` text-to-video: `UNETLoader` (`wan2.2_ti2v_5B_fp16.safetensors`),
+  `LoraLoaderModelOnly` (the LoRA, `strength_model 1.0`) between the loader and `ModelSamplingSD3` shift 8.0, `CLIPLoader wan`,
+  `VAELoader`, `CLIPTextEncode` with the prototype's positive prompt and an EMPTY string for the negative, `Wan22ImageToVideoLatent`
+  WITHOUT an image input (text-to-video: the node's `start_image` is left unset; the coder confirms the node accepts it in v0.44.0
+  and else uses `EmptyHunyuanLatentVideo`-style empty latent that ComfyUI's Wan 2.2 template uses, and the summary says which),
+  1280×704, length 121, `KSampler` 3 steps `lcm` `simple` cfg 1.0, `VAEDecodeTiled` with `tile_size 512, overlap 64,
+  temporal_size 32, temporal_overlap 8` as named fields, `CreateVideo` 24 fps, `SaveVideo`; `sd15` as the prototype's with an
+  empty negative. `COMFY_BENCH_COMPILE=1` inserts `TorchCompileModel` (`backend inductor`) after the loader — after the LoRA for
+  `wan5b` — and points the shift node at it (BP13).
+- `run <workflow> --tag <tag> --run <cold|1|2|3> --out <dir>`: `GET /system_stats` (the argv, `vram_free`, `vram_total` before the
+  run); the websocket `/ws?clientId=<uuid>`; `POST /prompt`; `t0` at the POST; the node times from `executing` (the prototype's
+  loop; a node's time runs from its `executing` message to the next); `execution_cached` remembered (its `nodes`); an
+  `execution_error` ends the run at once with `EXECUTION_ERROR: node <node_id> (<node_type>): <exception_message>` and exit 1;
+  `executing` with `node: null` ends the loop; then `/history/<prompt id>` polled (0.5 s) until the entry exists; `total_s` is the
+  time from the POST to the first poll that finds it; a `status.status_str` that is not `success`, or a `status.messages` entry
+  named `execution_error`, fails the run the same way (BP7); the output's file name from `outputs[<save node>]` (`images` or
+  `video`: `filename`, `subfolder`), checked (below); the JSON written to `<out>/run-<k>.json` (`tag`, `workflow`, `run`, `seed`,
+  `started_at`, `total_s`, `nodes_s`, `node_order`, `cached_nodes`, `server_argv`, `env` (the `COMFY_BENCH_*` words), `vram_free_before`,
+  `vram_total_before`, `vram_free_after`, `output` (`file`, `width`, `height`, `frames`, `constant`), `cache_after` (per folder of
+  `/cache`: `files`, `bytes`, read with `os.walk`), `cold` true/false); for a measured run the three lines `<tag> <workflow> r=<n>
+  <metric>: <value>` (three decimals, `sampler_s` the sampler node's time, `vae_s` the decode node's, `total_s` as above) and
+  nothing for the cold run but `cold: total <s> s`. A measured run whose sampler node is in `cached_nodes` or missing from the
+  executed nodes exits 1 with `CACHED: the sampler did not execute (cached: …)` before any line is printed (BP6). A refused prompt
+  (`/prompt` without `prompt_id`) is `PROMPT: refused: <the body's error>`, exit 1, no timing (BP8). The whole run is under
+  `asyncio.wait_for` with `cold_max_s` or `run_max_s`: on the timeout the program prints `COLD_TIMEOUT <reached s>` or `RUN_TIMEOUT
+  <reached s>` and exits 3 (BP8, BP9).
+- `check <file> --workflow <workflow>` (run by `run` after every run, also usable alone): an image opens with Pillow, its size is
+  `width × height`, its pixels are not constant (`numpy`: the array's min equals its max → constant); a video's frame count by
+  `ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 <file>` equals `length`, and
+  its first, middle and last frame (decoded by `ffmpeg -f rawvideo -pix_fmt rgb24`) are not constant. A failure is `OUTPUT: <why>`,
+  exit 1 (BP10, BP11).
+- `drift <workflow> --out <dir> --ref <dir>`: per measured seed, the arm's output against the reference of the same seed (the file
+  names carry the run number, and the seed is the run's): images as `uint8` arrays, `mad` = the mean absolute difference, `psnr` =
+  `10·log10(255² / mse)` with three decimals, or the word `identical` when the mse is 0; a video frame by frame (decoded as above),
+  the mean of the frames' values; a missing reference → `drift r=<n>: unavailable (the reference of seed <s> is missing)`; never a
+  number for an absent pair (BP12, BP12v).
+
+The program's exit codes: 0; 1 a failed run or check (the last line names the kind); 2 a bad argument or an unknown `COMFY_BENCH_*`
+word; 3 a ceiling.
+
+**`comfyui/arms.conf`** (the four-field grammar; the mounts field empty in every row; the tests derive BA1 from this text):
+
+```text
+# arm       | ComfyUI arguments           | environment                                                                                                                                                              | mounts
+base        |                             |                                                                                                                                                                          |
+fp16acc     | --fast fp16_accumulation    |                                                                                                                                                                          |
+fp8wmm      | --fast fp8_matrix_mult      | COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn                                                                                                                                      |
+tunableop   |                             | PYTORCH_TUNABLEOP_ENABLED=1 PYTORCH_TUNABLEOP_FILENAME=/cache/tunableop/tunableop_results.csv PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS=10 PYTORCH_TUNABLEOP_MAX_TUNING_ITERATIONS=10 |
+miopen      |                             | COMFYUI_ENABLE_MIOPEN=1 MIOPEN_FIND_MODE=FAST MIOPEN_LOG_LEVEL=5                                                                                                         |
+compile     |                             | COMFY_BENCH_COMPILE=1 TORCHINDUCTOR_CACHE_DIR=/cache/inductor TORCH_LOGS=recompiles                                                                                      |
+```
+
+`MIOPEN_LOG_LEVEL=5` is the one word the parent's `miopen` row does not name: without a log level MIOpen prints no find line, and
+the parent's evidence row needs those lines (open point N7: a fix that makes the row's lines exist, the N3 precedent). The two
+TunableOp env names are torch's (`aten/src/ATen/cuda/tunable/README.md`; the docs page documents the Python setters with the same
+meanings and the 30 ms / 100 defaults); the coder confirms both names in the image's torch (`python3 -c "import torch.cuda.tunable"`
+and the README of the installed version) and the summary says so.
+
+**The identity** (`fingerprint.py build-comfy <inputs> --out <file>`, the components): `kind` (`comfy`), `workflow`, `image`
+(`{"ref": COMFY_IMAGE, "id": <Id from wslc_inspect>}`), `comfy_ref`, `arms` (as the vLLM build reads them: `read_arms`), `base`,
+`rounds`, `constants` (the `constants` JSON, whole), `models` (`{"<folder>/<file>": <pinned sha256>}` for the workflow's files, from
+`models.conf`), `tools` (`<module>_sh|_py <hash>` of `_CB_UNIT_SH`, `comfy_bench`, `comfy_bench_evidence` when it exists,
+`_CB_UNIT_PY`, and `bench_py`, `arms_conf`, `evidence_conf`), `machine` (`{"container_prefix": …}`). The inputs folder:
+`comfy.env` (`KIND= WORKFLOW= IMAGE_REF= IMAGE_ID= COMFY_REF= BASE= ROUNDS= CONTAINER_PREFIX=`), `arms/`, `constants.json`,
+`models` and `tools` (hex pairs). `compare`, `compare --merge`, `show` and `rounds_extended` are reused unchanged (a new arm and more
+rounds are extensions; `show kind` prints `comfy`). The build is refused over `rounds/` or `rejected/` without a stored file
+(`comfy_bench_fingerprint`'s line, the series' text with `bench` for `series`).
+
+#### Test scenarios
+
+RED first means what E2.S1 says. The worker scenarios run the worker through `bin/r9700 step --model <35B> comfy-bench -- bash
+lib/comfy_bench.sh <outdir> zimage <rounds> <arm>...` in `bench_setup` (`comfy_setup` + `step_setup`'s machine file, the operator's
+server running, the fingerprint built in the test shell by `comfy_bench_fingerprint <outdir> zimage <rounds> real <arm>...` with
+`RUN_DIR` set, the stub's default answers: readiness `ok`, the vram answer free, the bench answer `ok` for every run with the
+activation lines of every arm appended to the log at the cold run, the clear and the report answering). `R9700_COMFY_ARMS_CONF` and
+`R9700_COMFY_EVIDENCE_CONF` point at the REAL tables unless a scenario copies one. `R9700_TIME_SCALE=100`, `R9700_CEILING_SCALE=1`
+as the lifecycle tests. The exchange root is `$R9700_WORK_DIR/r9700/comfyui/bench`. `argv_of_verb run <n>` gives a container's
+argv; the bench container's name is `r9700tune-comfy-<arm>-<round>`.
+
+**`bench.py` against the fixture server (`tests/test_comfy_bench_py.py`)** — `tests/fixtures/comfy/comfy_server.py` is an `aiohttp`
+server on `127.0.0.1:<free port>` started per test (recorded for the runner's killer), scripted by a JSON the test writes: per
+prompt the websocket messages to send with delays, the history entry, the output file to write into `--output-directory` (a
+PNG of the asked size made with Pillow, or a video made by `ffmpeg -f lavfi -i testsrc=size=1280x704:rate=24 -frames:v <n>`),
+the `/system_stats` answer. `ffmpeg` and `ffprobe` are prerequisites of the suite (GitHub's Ubuntu runner carries them; a local
+machine without them fails BP11 and BP12v with their names: `research/module_tests.md` *How it is run* says so).
+
+- BP1 *The pure commands run on the host with the standard library.* `python3 -I -S comfyui/bench.py workflows` prints exactly
+  `sd15`, `wan5b`, `zimage`; `metrics` prints `total_s sampler_s vae_s`; both exit 0 with `-S` (no site packages: an import of
+  `aiohttp`, `numpy` or `PIL` at module level would fail here — the companion: `python3 -I -S -c "import aiohttp"` fails on the
+  runner). RED first (the file does not exist).
+- BP2 *One table.* `constants zimage` is JSON with `seeds`, `ceilings`, `inputs`, `nodes`, `metrics`; `graph zimage --seed 1` holds
+  every value of `constants.inputs` at its node (the test walks the graph and asserts each: 1024, 1024, 8, `res_multistep`,
+  `simple`, 1.0, 3.0, the three model file names, the empty negative as `ConditioningZeroOut`); `graph wan5b --seed 1`: the
+  `LoraLoaderModelOnly` node with the LoRA name and `strength_model` 1.0 between `unet` and `shift`, `shift` 8.0, 121, 1280×704,
+  3 steps `lcm`, cfg 1.0, the negative `CLIPTextEncode` text `""`, `VAEDecodeTiled` with the four named fields and their values, and
+  no node of a class that takes an image file (`LoadImage`); `constants wan5b` names `lora` and `tile` fields with those values and
+  `ceilings` `{"run_max_s": 600, "cold_max_s": 2700}`; `zimage` `{300, 1800}`; `sd15` `{120, 600}`.
+- BP3 *The seeds.* `constants <w>` has `seeds.cold` 4242 and `seeds.measured` `[1, 2, 3]` for every workflow; `graph zimage --seed 7`
+  puts 7 in the `KSampler`; the fixture's recorded prompts of `run --run cold` then `--run 1 2 3` carry the seeds 4242, 1, 2, 3.
+- BP4 *The lines.* Four `run` calls against the fixture (each a success): the cold run prints no `r=` line and one `cold: total
+  <s> s` line; each measured run prints exactly `<tag> zimage r=<n> total_s: <v>`, `… sampler_s: …`, `… vae_s: …`, in that
+  order, three decimals; the twelve lines written to a file pass `python3 lib/verdict.py comfy-check-block --tag base-1 --workflow
+  zimage --metrics "total_s sampler_s vae_s"` (S1's command: this test needs S1 merged). RED first.
+- BP5 *What is timed.* The fixture sends `executing` for `pos`, `sampler`, `vae`, `save`, then `null`, with scripted gaps (0.2,
+  0.5, 0.3, 0.1 s) and writes the history 0.2 s after the last message: the JSON's `nodes_s.sampler` is within 0.1 of 0.5 and
+  `nodes_s.vae` of 0.3; the printed `sampler_s` and `vae_s` equal them; `total_s` is at least the sum plus the history delay and at
+  most that plus 1 s; `cached_nodes` is the fixture's `execution_cached` list; `cold` is true only for `--run cold`; `seed`,
+  `server_argv` (the fixture's `system.argv`) and `vram_free_before`/`vram_total_before` are the fixture's numbers (BP14 folds in here).
+- BP6 *A cached sampler is not a measurement.* The fixture lists `sampler` in `execution_cached` and sends no `executing` for it: exit
+  1, the last line `CACHED: the sampler did not execute (cached: sampler)`, no `r=` line. RED first.
+- BP7 *An execution error fails at once, and the history's error too.* `execution_error` with `node_id sampler`, `node_type KSampler`,
+  `exception_message "boom"` after `pos`: exit 1 within 1 s of the message, the last line `EXECUTION_ERROR: node sampler
+  (KSampler): boom`; a run whose websocket shows no error but whose history has `status.status_str` `error` and a message
+  `["execution_error", {...}]`: exit 1 with the same kind. RED first.
+- BP8 *A refused prompt and a run past its ceiling.* `/prompt` answering `{"error": {"message": "x"}}` with 400: exit 1, `PROMPT:
+  refused: x`, no timing line, no websocket message waited for; a measured run whose fixture delays the final `executing` by 3 s under
+  `COMFY_BENCH_TEST_RUN_MAX_S=1` (a test knob of `bench.py`, the environment only, replacing the table's `run_max_s`; its row in
+  *Test knobs*): exit 3, `RUN_TIMEOUT 1.0` (one decimal, at least 1.0, under 2.0), within 2 s. RED first (the ceiling).
+- BP9 *`COLD_TIMEOUT`.* `--run cold` under `COMFY_BENCH_TEST_COLD_MAX_S=1` with the same delay: exit 3, `COLD_TIMEOUT 1.0`; a worker
+  scenario (BW7) shows nothing follows. RED first.
+- BP10 *The image check.* A 1024×1024 noise PNG passes `check`; a 512×512 one fails `OUTPUT: size 512x512, expected 1024x1024`; a
+  constant grey 1024×1024 fails `OUTPUT: the image is constant (every pixel <v>)`; `run` with the fixture writing each of the three:
+  the first exits 0, the others 1 with the same line. RED first.
+- BP11 *The video check.* A 121-frame `testsrc` clip passes `check --workflow wan5b`; a 97-frame clip fails `OUTPUT: 97 frames, expected
+  121 (ffprobe -count_frames)`; a 121-frame clip of a constant colour (`color=c=gray`) fails `OUTPUT: the frames are constant`. RED first.
+- BP12 *The drift of images.* Two identical PNGs: `drift r=1: mad 0.000 psnr identical`; a PNG against a copy with every pixel
+  raised by 1 (clipped): `mad 1.000` (within 0.01) and a finite three-decimal `psnr` (`48.131` for an 8-bit image without clipping:
+  the test computes the expected value with the same formula, not by hand); no reference file for seed 2: `drift r=2: unavailable
+  (the reference of seed 2 is missing)`, exit 0; the numbers never appear for that seed. RED first.
+- BP12v (split from BP12) *The drift of a video.* Two identical 24-frame clips: `identical`; a clip against the same with a 10 % brighter
+  middle frame: a finite `psnr` and a `mad` above 0; the values are the mean over the frames (the test checks `mad` against the
+  per-frame mean it computes from the decoded arrays).
+- BP13 *The arm words reach the graph.* `COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn graph zimage --seed 1`: the `UNETLoader`'s
+  `weight_dtype` is `fp8_e4m3fn`; without the word it is `default`; `COMFY_BENCH_COMPILE=1 graph wan5b`: a `TorchCompileModel`
+  node (`backend inductor`) whose `model` input is `["lora", 0]` and the shift node's model is `["compile", 0]`; for `zimage` the
+  compile's input is `["unet", 0]`; `COMFY_BENCH_FROB=1`: exit 2, one line `COMFY_BENCH_FROB is not a bench word; legal:
+  COMFY_BENCH_WEIGHT_DTYPE, COMFY_BENCH_COMPILE`; without either word the graph equals `base`'s (byte-equal JSON). RED first.
+- BP14 *The card readings* — folded into BP5 (the fixture's `vram_free`, `vram_total` are in the cold run's JSON and in every run's).
+
+**The worker and the arm-round (`tests/test_comfy_bench.sh`)**
+
+- BW1 *One fresh prefixed container with the isolation words.* `step … zimage 1 base`: exit 0; exactly one `run -d` call of a name
+  starting `r9700tune-comfy-base-1`; its argv holds, as whole words, `--tmpfs` followed by `/data:exec,size=8g`, `-v` followed by
+  `comfy-models:/models:ro`, `-v` followed by `r9700tune-comfy-cache:/cache`, `--gpus all`, `--shm-size 8g`, `--output-directory`
+  followed by `/work/r9700/comfyui/bench/<outdir name>/base-1`, and no word `comfy-data`, `comfy-cache:/cache` (the operator's),
+  `-p`, `--highvram`, `--lowvram`, `--normalvram`, `--gpu-only`, `--novram`, `--cpu`; a run with `--tmpfs /data` and no `:exec`
+  fails this assertion (the test asserts the exact word). With `zimage 1 base fp16acc`: two `run -d` calls, two names, the second
+  after the first's `stop` or its clean-stop `exec` (call order). RED first.
+- BW2 *The cache clear before every arm-round.* `zimage 2 base`: before each bench container's `run -d` one foreground `run --rm` of
+  a name `r9700tune-comfy-clear-<n>` whose program names `/cache/tunableop` and `mkdir -p`; `rounds/base-1/cache.txt` starts with
+  `before clear:` lines holding the stub's size answer (`answers/comfy_cache`, default `12 /cache/miopen`); `answers/comfy_clear_rc
+  2`: the worker exits 2, the outcome `KIND=refused` with `the bench cache could not be cleared`, no bench container was started, the
+  supervisor's exit 2 (no retry), `vllm` restored. RED first (the refusal).
+- BW3 *The bench cache volume is made only when missing.* No `$STUB/volumes/r9700tune-comfy-cache`: one `volume list`, one `volume
+  create r9700tune-comfy-cache` before the clear's run, stdout `comfy: bench: created volume r9700tune-comfy-cache`; with the file
+  present: no create. `fail-volume-list 3`: exit 1, the arm-round `rejected/` with `the volume list failed`.
+- BW4 *The free-card wait.* `answers/comfy_vram` (call k takes line k, the last repeats; default `34000000000 34359738368`) scripted
+  as three lines `1000000000 34359738368` then `33000000000 34359738368`: the record's `VRAM_FREE_BEFORE=33000000000`,
+  `VRAM_TOTAL_BEFORE=34359738368`, four probe `exec` calls before the first `bench.py` exec (one readiness, three waits), at least
+  two `t_scale 10` sleeps apart; all lines `1000000000 …`: exit 1, `rejected/base-1-*/reason` = `UNSTARTED: the card is not free
+  (vram_free 1000000000 of 34359738368 after 300 s)`, the container stopped and not alive, no `bench.py` exec; the probe answering
+  `vram: not in the answer`: `CARD: vram not reported by /system_stats`. RED first.
+- BW5 *A container that does not become ready.* `answers/comfy_ready` = `fail`, `READY_TIMEOUT_S=60`: the arm-round in `rejected/`
+  with `UNSTARTED: r9700tune-comfy-base-1 not ready after <n> s (…)`, its `server.log` saved (the stub's log answer), `stop
+  r9700tune-comfy-base-1` logged, the container not alive before the worker's exit (call order: `logs` < `stop` < the worker's
+  last line), exit 1; through `step` with `MAX_FAILED_TRIES=2`: two attempts, exit 7, one `pwsh.exe -Detach`. No `unsupported/`
+  folder ever exists (question 8). RED first.
+- BW6 *Every ceiling ends the container.* (a) `answers/comfy_bench_mode.1` = `slow 5` with `COMFY_BENCH_TEST_RUN_MAX_S` unset and the
+  worker's exec ceiling scaled to 1 s (`R9700_COMFY_TEST_EXEC_S=1`, a knob of the worker that replaces `run_max_s + 60`; its row in
+  *Test knobs*): the exec returns 124, `rejected/…/reason` starts `CEILING: the exec of run 1 was ended by the adapter`, `stop
+  r9700tune-comfy-base-1` is logged after it and the container is not alive at the worker's exit; (b) `answers/comfy_bench_mode.cold`
+  = `cold_timeout`: BW7; (c) a guard stop: `R9700_RAM_MIN_MB` above the stub's RAM answer during a `slow` run → the supervisor's RAM
+  guard stops the session, `_step_stop_containers` stops the prefixed container, the attempt is swept as `INTERRUPTED` by the next
+  worker start, and no container is alive at the supervisor's exit (the existing L-scenarios' shape); (d) `kill -TERM $SUP` during a
+  `slow` run → exit 143, the container stopped by the cleanup, `vllm` listed again. In every case the next arm-round (when one runs)
+  starts after the `stop` and a `list` that no longer shows the name (call order). RED first for (a).
+- BW7 *`COLD_TIMEOUT`.* `answers/comfy_bench_mode.cold` = `cold_timeout` (the stub prints `COLD_TIMEOUT 1801.0` and exits 3): the
+  arm-round in `rejected/base-1-<stamp>/` with `reason` line 1 `COLD_TIMEOUT: the cold run reached 1801.0 s of cold_max_s 1800`, no
+  measured run exec, the container stopped, exit 1; `rounds/` holds no `base-1`; the word `slower` appears nowhere in the worker's
+  output or the reason. RED first.
+- BW8 *A complete arm-round by ONE rename.* `zimage 1 base`: `rounds/base-1/` holds `record.env` (the keys of the contract step 5 with
+  `STOP=clean`, `INERT=no`), `bench.txt` (nine lines, passes `comfy-check-block`), `runs/cold.json 1.json 2.json 3.json`, `runs/cold.log
+  1.log 2.log 3.log`, `runs/cold.txt`, `server.log` (equal to the stub's whole log answer at the last save), `outputs/` with four files,
+  `evidence.txt`, `drift.txt`, `flags.txt`, `cache.txt`; the exchange folder `…/bench/<outdir name>/base-1` is gone; no `.part-`
+  folder remains; the call log shows exactly one `mv`-free transition (the test watches `rounds/` through the run: a `base-1.part-*`
+  then `base-1`, never both); the `logs` call count is 5 (after each run and before the stop). RED first.
+- BW9 *A rejected arm-round.* (a) `answers/comfy_bench_mode.2` = `error`: `rejected/base-1-<stamp>/reason` line 1 `EXECUTION_ERROR:
+  node sampler (KSampler): boom`, exit 1; (b) `answers/comfy_bench_mode.1` = `constant`: `OUTPUT: the image is constant (…)`; (c)
+  `answers/comfy_bench_lines` with the `r=3 vae_s` line left out: `reason` holds `check-block: expected 9 lines, found 8` and `missing
+  r=3 vae_s`; (d) `answers/comfy_bench_mode.1` = `cached`: `CACHED: …`. Each: the container stopped, `rounds/base-1` absent, the
+  worker exit 1, the step's failed try counted (`failed try 1 of 3` in the supervisor log). RED first for (c).
+- BW10 *The load flag.* `answers/comfy_bench_log.2` = two lines `Requested to load WAN21` and `loaded completely 9.5 1.2 True`: `flags.txt`
+  has `run 2: load 2, recompile 0` and `run 1: load 0, recompile 0`; `record.env` `FLAGS_RUN_2=load=2,recompile=0`; `bench.txt` holds
+  no such line (it still passes `comfy-check-block`). RED first.
+- BW11 *The recompile flag.* With `compile` (its default stub log answer at the cold run: a `TorchCompileModel` node in every run's
+  JSON and `cache_after.inductor.files` 3) and `answers/comfy_bench_log.3` = `Recompiling function forward in /opt/x.py:12`: `flags.txt`
+  `run 3: load 0, recompile 1`; `evidence.txt` names `node=TorchCompileModel: present` and `cache=inductor: present (3 files)`, and
+  the recompile line is not among the evidence; with the cold run's `cache_after.inductor.files` 0: rejected `EVIDENCE: activation
+  cache=inductor: missing (runs/cold.json: 0 files)` although the recompile line is there. RED first.
+- BW12 *The balanced order.* `zimage 2 base fp16acc`: the bench containers' run calls in log order are `base-1`, `fp16acc-1`,
+  `fp16acc-2`, `base-2` (read from the names); `zimage 3 base fp16acc` after that: `base-3`, `fp16acc-3` only.
+- BW13 *The part sweep.* A planted `rounds/base-1.part-20261108T000000Z-1/` with a `record.env` naming `RUN_ID=20261108T000000Z-1` and
+  a planted `$RESULTS_DIR/runs/20261108T000000Z-1/status` = `interrupted`: the next worker start moves it to
+  `rejected/base-1-<stamp>/` with `reason` `INTERRUPTED: base-1.part-20261108T000000Z-1 was left by run 20261108T000000Z-1 (its status:
+  interrupted)`, the worker's first lines say so, and `base-1` is then run (not skipped); without the status file: `(its status: not
+  found)`. The exchange folder `…/bench/<outdir name>/base-1` planted with a file is removed at that start. RED first.
+- BW14 *The resume after a lost arm-round.* `zimage 2 base fp16acc` through `step_bg`; `wait_for` the `exec` of `bench.py` for
+  `fp16acc-2`'s cold run; `kill -KILL $SUP` (no cleanup); then `comfy_bench_left <outdir> 2 base fp16acc` prints `2`,
+  `comfy_bench_recorded` `2`; the same `step` command again: the sweep's line names `fp16acc-2.part-…` and the run id, the bench
+  containers started are `fp16acc-2` then `base-2` (round 2 reversed, continued from the first missing), exit 0, four records, the two
+  kept records byte-for-byte unchanged (the test hashes them before and after). RED first.
+- BW15 *The identity re-check before every arm-round.* `zimage 2 base` with `on-stop-r9700tune-comfy-base-1` (the stub's hook at the
+  first container's end) appending one argument word to the `base` row of the arms copy: the second arm-round is not started; the
+  outcome is `KIND=refused RC=2` with a line `fingerprint differs: arms.base.args: …`; the supervisor exits 2 without a retry; one
+  record. The same with the evidence copy's `base` row changed (`fingerprint differs: tools.evidence_conf: …`), with `bench.py`'s placed
+  copy touched (the tools hash), and with `answers/inspect` answering another `Id` (`fingerprint differs: image.id: …`). RED first.
+- BW16 *The gate before every arm-round.* The disk gate answering a new record (the stub's `disk` answers): the worker's outcome
+  `KIND=disk_gate`, exit 1, no container; `set_load 9` after the first arm-round: exit 3 before the second (`NOT QUIET: fp16acc round 1
+  (…)`), the supervisor waits and admits again when the load falls; `R9700_COMFY_ARM_SECONDS=100000`: exit 4 at the first gate,
+  `comfy-bench: 2 arm-rounds no longer fit before the deadline`, the supervisor's exit 6; the default allowance for `zimage` is read
+  back as 3300 (the worker prints `fit: <n> s per arm-round` once at its start).
+- BW17 *The drift pairing.* `zimage 2 base fp16acc`: before `fp16acc-1`'s measured runs the files of `rounds/base-1/outputs/` with run
+  numbers 1–3 are in `…/bench/<outdir name>/ref/` (the test's `on-start-` hook of the `fp16acc` container copies the folder listing
+  to a file); `rounds/fp16acc-1/drift.txt` holds the stub's three `drift r=<n>:` lines; `rounds/base-2/drift.txt` the same (base against
+  base-1); `rounds/base-1/drift.txt` is `drift: unavailable (base-1 is the reference)`; with `rounds/base-1` planted as a `rejected/`
+  attempt only: `fp16acc-1`'s `drift: unavailable (no base-1 record)`; `ref/` is gone after each arm-round. RED first.
+- BW18 *Never the operator's containers.* `comfyui` NOT listed (the owner check would refuse) but `vllm` running: the worker's `stop`
+  calls name only `r9700tune-comfy-*`; no `stop vllm` from the worker (the supervisor's one stop is before the worker); a
+  `comfyui-fetch` container planted stays alive through the run; every `run` the worker made has a name starting `r9700tune-`.
+- BW19 (added) *The clean stop and the forced stop.* Default: the stop of a validated arm-round is one `exec r9700tune-comfy-base-1
+  python3 -c <program naming SIGINT>` after the last `logs`, the stub ends the container, no `stop` call for it, `record.env`
+  `STOP=clean`, one report container (`run --rm --name r9700tune-comfy-report-<n>` whose program names `tunableop_results.csv`) after
+  the container is gone (call order: the clean-stop `exec` < a `list` without the name < the report's `run`); `answers/comfy_clean_stop`
+  = `ignore`: the container stays, then `stop r9700tune-comfy-base-1` after `t_scale 60`, `STOP=forced`, the record still final for
+  `base`; for `tunableop` with `ignore`: rejected `EVIDENCE: activation tunable=tunableop_results.csv: missing (the stop was forced:
+  the file is written at the server's exit)`. With `answers/comfy_tunableop` holding two `Validator` lines and one result row and a
+  clean stop: `rounds/tunableop-1/tunableop_results.csv` equals it and `evidence.txt` says `tunable=tunableop_results.csv: present (1
+  row)`. RED first.
+
+**The evidence (`tests/test_comfy_bench.sh`)** — each arm with its default stub answers, then one answer removed or changed.
+
+- BE1 *Present → recorded; absent → rejected.* `fp16acc`: `evidence.txt` has `activation log=Enabled fp16 accumulation: present
+  (server.log:<n>)` and the record is final; with `answers/comfy_evidence.fp16acc` emptied: `rejected/fp16acc-1-*/reason` line 1
+  `EVIDENCE: activation log=Enabled fp16 accumulation: missing (server.log)`, exit 1. RED first.
+- BE2 *The argv alone is never activation.* `fp8wmm` with the stub's `system.argv` holding `--fast fp8_matrix_mult` and the log
+  answer without the `float8_e4m3fn` line: rejected naming `log=model weight dtype torch\.float8_e4m3fn: missing`; with the line and
+  an argv without the word: rejected naming `argv=fp8_matrix_mult: missing (runs/cold.json)`; both present: final. An evidence copy
+  whose `fp8wmm` activation is `argv=fp8_matrix_mult` alone: `comfy_bench_check` exits 2 before the lock with `r9700: comfy: bench:
+  arm_evidence.conf: fp8wmm: the activation evidence is the argv alone; a passed flag is never proof it acted`. RED first.
+- BE3 *`fp16acc` inert only with both bf16 lines.* Log answer with `model weight dtype torch.bfloat16, manual cast: None` and `VAE
+  load device: cuda:0, offload device: cpu, dtype: torch.bfloat16`: `record.env` `INERT=yes`, `INERT_EVIDENCE=` both lines, the
+  worker prints `fp16acc-1: inert on zimage (…)`; with the VAE line `dtype: torch.float16`: `INERT=no`, no inert line. RED first.
+- BE4 *`tunableop` needs rows.* `answers/comfy_tunableop` empty: rejected `tunable=tunableop_results.csv: missing (empty)`; only
+  `Validator` lines: `missing (no result row)`; a row: present (BW19).
+- BE5 *`miopen`.* Log answer without `cudnn.enabled = False` and with `MIOpen(HIP): Info [Find] …` in the cold cut: final; with the
+  `Set: torch.backends.cudnn.enabled = False for better AMD performance.` line: rejected `nolog=cudnn\.enabled = False: present
+  (server.log:<n>)`; without a find line in the cold cut (one only in run 2's cut): rejected `coldlog=…: missing (runs/cold.log)`.
+- BE6 *`compile`.* BW11's two halves; plus a measured run whose JSON lacks the node (`answers/comfy_bench_nodes.2` without
+  `TorchCompileModel`): rejected `node=TorchCompileModel: missing (runs/2.json)`.
+- BE7 *`base`.* With the attention line: final; without it: rejected `log=Using pytorch attention: missing (server.log)`.
+- BE8 (added) *The evidence table's grammar.* `comfy_evidence_load` on a copy: a row with one `|` → 2, `r9700: comfy: <file>:<n>: a row
+  has three fields (arm, activation, inertness), this one has 2`; an unknown kind `foo=x` → `… unknown check kind "foo"; legal: log,
+  nolog, coldlog, node, cache, tunable, argv`; an empty argument `log=` → `… the check "log=" has no argument`; a row twice → `… defined
+  twice`; `-` fields load as none. RED first.
+
+**The tables (`tests/test_comfy_bench.sh`)**
+
+- BA1 *The six rows.* `arms_load comfyui/arms.conf` → `arms_names` is exactly `base fp16acc fp8wmm tunableop miopen compile` in file
+  order; `base` has empty args, env and mounts; `fp16acc`'s args are exactly `--fast fp16_accumulation` and its env empty; `fp8wmm`
+  `--fast fp8_matrix_mult` and `COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn`; `tunableop` no args and the four `PYTORCH_TUNABLEOP_*` words;
+  `miopen` the three `MIOPEN`/`COMFYUI_ENABLE_MIOPEN` words; `compile` the three words of its row; every mounts field empty (the test
+  reads the expectation from this spec's table, typed once in the test).
+- BA2 *One evidence row per arm, both ways.* The arm names of `arms.conf` equal the row keys of `arm_evidence.conf` as sets;
+  `comfy_bench_check zimage 1 base` on copies with a `miopen` row removed from the evidence → 2, `arm "miopen" has no row in
+  arm_evidence.conf`; with an extra `frob` evidence row → 2, `arm_evidence.conf names "frob", which is not an arm of arms.conf`.
+- BA3 *No forbidden word.* No row's env holds `PYTORCH_HIP_ALLOC_CONF` (trap 1), no row's args hold a memory-mode word, `--listen`,
+  `--port`, `--output-directory`, `--base-directory`, `--models-directory` (the worker's own), no row's mounts field is non-empty;
+  `tunableop` carries both tuning bounds and the file name; `compile` carries `TORCHINDUCTOR_CACHE_DIR=/cache/inductor` (N3). A copy
+  with `PYTORCH_HIP_ALLOC_CONF=expandable_segments:True` in a row: `comfy_bench_check` exits 2 naming trap 1. RED first (the check).
+
+**The identity (`tests/test_comfy_bench.sh`, `tests/test_fingerprint.py`)**
+
+- BF1 *A version-1 document.* After `comfy_bench_fingerprint <outdir> zimage 2 real base fp16acc`: `fingerprint.py show <file> kind` →
+  `comfy`; `show … workflow` → `zimage`; `show … base` → `base`; `show … rounds` → `2`; `show … arms` → `base fp16acc`; `show …
+  image.ref` → `comfyui-r9700:local`; `show … image.id` → the stub's `sha256:stub`; `show … comfy_ref` → `v0.44.0`; `show …
+  constants.seeds.cold` → `4242`; `show … constants.ceilings.cold_max_s` → `1800`; `show … models` lists `diffusion_models/z_image_turbo_bf16.safetensors`,
+  `text_encoders/qwen_3_4b.safetensors`, `vae/ae.safetensors` and no `loras/` key; `show … tools` names `bench_py`, `arms_conf`,
+  `evidence_conf`, `comfy_bench_sh`, `fingerprint_py`, `verdict_py`; `compare <file> <file>` → 0, nothing. In Python
+  (`tests/test_fingerprint.py`): `build-comfy` over a hand-written inputs folder gives these leaves, and a `comfy.env` without
+  `IMAGE_ID=` fails with `fingerprint: comfy.env: IMAGE_ID= is missing`, exit 2. RED first (`build-comfy` is not a command).
+- BF2 *A change refuses, an extension merges.* After BF1: a copy of `arms.conf` with `--fast fp16_accumulation --x` for `fp16acc` →
+  `comfy_bench_fingerprint … real …` exits 2 with `fingerprint differs: arms.fp16acc.args: ["--fast","fp16_accumulation"] ->
+  ["--fast","fp16_accumulation","--x"]` on stderr, the stored file unchanged, no container call; the same for an edited evidence
+  row (`tools.evidence_conf`), a `bench.py` edit (`tools.bench_py`; the placed copy is re-placed first), a changed pin in a
+  `models.conf` copy (`models.diffusion_models/z_image_turbo_bf16.safetensors`, BF5), another `COMFY_REF` (`comfy_ref`), another
+  inspect `Id` (`image.id`); `… 3 real base fp16acc` → `fingerprint: rounds extended 2 -> 3`, merged; `… 2 real base fp16acc
+  miopen` → `fingerprint: arm miopen added`, merged; `dry` writes nothing (no file in a new outdir, the stored file byte-identical).
+- BF3 *No new fingerprint over records whose identity is lost.* `rounds/` present and no `fingerprint.json`: exit 2 with the
+  series' line with `bench` (`comfy: bench: <outdir> has rounds/ or rejected/ but no fingerprint.json: …; use a new --out name`),
+  nothing written; `dry` the same.
+- BF4 *A missing image.* `answers/inspect_rc 1`: exit 2, `r9700: comfy: bench: the image comfyui-r9700:local is not there (inspect
+  code 1); run bin/r9700 comfy build first`, no fingerprint, no container; a missing model file (the throwaway container's listing
+  answer `answers/comfy_models_listing` without the VAE line): exit 2, `/models/vae/ae.safetensors is not in the models volume
+  (zimage of comfyui/models.conf); run bin/r9700 comfy fetch zimage first`; the listing container's argv has `comfy-models:/models:ro`,
+  no `--gpus`, `--entrypoint sh`. RED first.
+- BF5 *The model identity is the pin, for the workflow's files only.* `comfy_bench_fingerprint … wan5b 1 real base`: `show … models`
+  lists exactly the four `wan5b` files of `models.conf` including `loras/Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors`
+  with the pinned hash; a `models.conf` copy with that pin changed: BF2's difference naming the `loras/` key; a changed pin of an
+  `sd15` file: no difference for `wan5b`.
+
+**The stub and the probe (`tests/test_stubs.sh`, `tests/test_adapter_comfy.sh`)**
+
+- SC1 *The bench answers.* `wslc exec r9700tune-comfy-base-1 env COMFY_BENCH_X=1 python3 /work/r9700/comfyui/bench.py run zimage --tag
+  base-1 --run 1 --out /work/r9700/comfyui/bench/o/base-1` (the container recorded): writes `run-1.json` (a JSON with `nodes`,
+  `cached_nodes`, `server_argv` from `answers/comfy_bench_json` or the default) and `zimage_r1_00001_.png` (a stub file) into
+  `$R9700_WORK_DIR/r9700/comfyui/bench/o/base-1/`, prints the three lines `base-1 zimage r=1 total_s: 12.345` … (from
+  `answers/comfy_bench_lines`, lines keyed `r=<n> <metric>: <v>` with the tag and workflow prefixed by the stub; default
+  values 12.345, 10.000, 1.500 for run 1 and +0.010 per run), appends `answers/comfy_bench_log.<run>` to `answers/logs` (for the cold
+  run also `answers/comfy_evidence.<arm>`, default the activation lines of this spec's table per arm, the arm from the name), exit 0;
+  `--run cold` prints `cold: total 40.000 s` and writes `run-cold.json` with `cold: true`, `cache_after` from `answers/comfy_bench_cache`
+  (default inductor 0 files; `compile`: 3). `answers/comfy_bench_mode.<run>` (or `.<arm>.<run>`): `ok`, `error` (prints `EXECUTION_ERROR:
+  node sampler (KSampler): boom`, 1), `constant` (`OUTPUT: the image is constant (every pixel 128)`, 1), `cached`, `refused` (`PROMPT:
+  refused: x`, 1), `slow <s>` (sleeps, recorded sleeper), `cold_timeout` (`COLD_TIMEOUT 1801.0`, 3), `run_timeout`, `hang` (`stub_hang`).
+  `drift` prints three `drift r=<n>: mad 0.000 psnr identical` lines (or `answers/comfy_drift`). An exec into a name not listed
+  fails as today. RED first.
+- SC2 *The clear container.* A foreground `run --rm --name r9700tune-comfy-clear-1 -v r9700tune-comfy-cache:/cache --entrypoint sh img -c
+  <program naming /cache/tunableop>`: prints `answers/comfy_cache` (default `12 /cache/miopen` and three more lines) with CRLF, removes
+  the files under `$STUB/cache/` (the stub's bench cache content, planted by a test) and exits `answers/comfy_clear_rc` (default 0).
+- SC3 *The log grows per run.* After SC1's cold run and run 1: `wslc logs r9700tune-comfy-base-1` prints the planted `answers/logs`
+  plus the evidence lines plus run 1's scripted lines, in that order, so a worker that saves after each exec sees a growing file.
+- SC4 *The isolation words are logged as given.* The detached run's `calls.argv` block holds `--tmpfs` and `/data:exec,size=8g` as two
+  consecutive lines and `comfy-models:/models:ro` as one line (the stub already records every argument; this pins it for BW1).
+- SC5 (added) *The report container and the clean stop.* A foreground run whose program names `tunableop_results.csv`: prints
+  `answers/comfy_cache_report` (default four `du` lines, `--- tunableop_results.csv`, then `answers/comfy_tunableop` when present),
+  exit `answers/comfy_report_rc` (default 0); `wslc exec <name> python3 -c <program naming SIGINT>`: ends the container's record (as
+  `stop` does) unless `answers/comfy_clean_stop` is `ignore`; prints nothing; exit 0.
+- SC6 (added) *The widened readiness answer.* `answers/comfy_ready` `ok` now prints `device cuda:0 AMD Radeon AI PRO R9700 : native`,
+  `vram_free <f>`, `vram_total <t>` (from `answers/comfy_vram`, call k line k, default `34000000000 34359738368`; the word `none` prints
+  `vram: not in the answer` instead of the two lines) and `ready`; E1's CS2 still finds its `device` line.
+- AP1 *The widened probe.* `comfy_probe_program` against a fake `urlopen` (E1's AW5 shape): a 200 with `{"devices": [{"name": "cuda:0 X
+  : native", "vram_total": 34359738368, "vram_free": 34000000000}]}` → `device cuda:0 X : native`, `vram_free 34000000000`,
+  `vram_total 34359738368`, `ready`, exit 0; without the two keys → `device …`, `vram: not in the answer`, `ready`, exit 0 (ComfyUI is
+  ready; the card reading is a separate fact, never 0); a non-integer `vram_free` → the same `not in the answer` line; every AW5
+  failure case unchanged; E1's AW5 assertions on the first and last lines still hold. RED first.
+
+#### Brief for the Sonnet coder
+
+Read first: this section whole, *Facts every story uses*, *The seam between S2 and S3*; the parent's *The bench's measurement
+contract*, *The tuning series* and *Records and growth*; `lib/series.sh` whole (the worker you mirror: `series_unit`,
+`_series_gate`, `_series_recheck`, `_series_validate`, `_series_reject`, `series_sweep_parts`, `series_fingerprint`,
+`_series_probe`); `lib/kernels.sh:1–80`; `lib/moe.sh:60–100` and `lib/moe_verb.sh:30–50` (`moe_place`); `lib/comfy.sh:40–104`,
+`:404–444`; `lib/run_guarded.sh:1–46`, `:224–287`, `:443–493`; `lib/step.sh` whole; `lib/adapter.sh:1–40`, `:84–110`, `:291–334`,
+`:520–525`; `lib/fingerprint.py` whole; `lib/verdict.py` as S1 merged it (`comfy-check-block`); `comfyui/entrypoint.sh`;
+`tests/stubs/wslc:143–237`, `:328–371`; `tests/stubs/stub_common.sh:1–60`; `tests/lib/comfycase.sh`, `tests/lib/stepcase.sh`,
+`tests/lib/seriescase.sh`; `tests/test_series.sh:1–80`; `tests/test_comfy.sh:619–660` (MC1); ComfyUI v0.44.0's
+`comfy/model_management.py`, `comfy/model_base.py`, `comfy/sd.py`, `comfy/model_patcher.py`, `comfy/ldm/modules/attention.py`
+(the exact evidence and flag strings), `execution.py` and `server.py` (`/system_stats`, `/history`); the hand-made prototype (the
+main session gives its location; copy no path or name from it). Reuse, never copy: `series_left`, `series_recorded`,
+`_series_reject`, `_series_disk_gate`, `_series_stamp`, `_series_iso`, `_series_hash_path`, `moe_place`, `container_name`,
+`container_host_path`, `comfy_volume_ensure`, `ready_wait`, `comfy_probe`, `_rg_listing_tries`, `wslc_*`, `t_scale`,
+`outcome_write`, `quiet_check`, `disk_gate_check`, `arms_load`/`arm_args`/`arm_env`/`arm_mounts`, `comfy_models_load`,
+`fingerprint.py`'s `read_arms`, `hex_pairs`, `document_of`, `write_atomic`, `read_document`. No line of `lib/comfy_bench*.sh`,
+`comfyui/bench.py` or the tests names `wslc` as a command word (the seam).
+
+1. **`comfyui/bench.py`** (new; a docstring in the style of `lib/fingerprint.py`'s: the commands, the exit codes, the ONE table).
+   Order: the constants table and `constants`/`workflows`/`metrics`/`graph` (standard library; the imports of `aiohttp`, `numpy`,
+   `PIL` happen inside the functions that need them, so BP1's `-S` run passes); then `check` and `drift`; then `run` (the
+   prototype's loop, widened as *The contract as text* says). Two test knobs, the environment only: `COMFY_BENCH_TEST_RUN_MAX_S`,
+   `COMFY_BENCH_TEST_COLD_MAX_S` (BP8, BP9). Under 800 lines; if the graphs push it over, `comfyui/bench_graphs.py` beside it
+   (placed as an `optional`-less second `required` asset row; its hash in `tools`).
+2. **`comfyui/arms.conf`, `comfyui/arm_evidence.conf`** exactly as the two tables above (a header comment each: the grammar in one
+   paragraph, the parent's arm table as the source, the two words the spec adds and why — `MIOPEN_LOG_LEVEL`, the TunableOp file).
+3. **`comfyui/models.conf`**: the `wan5b loras …` line (question 10); the hash read once with `curl -sI -L` and the command and its
+   answer in the summary. `tests/test_comfy.sh` MC1: the parity row for the LoRA's pin (`:643`'s shape).
+4. **`lib/comfy_bench.sh`** (new; the header in the style of `lib/series.sh:1–27`: the seam functions of this document's table, the
+   worker's codes, the record, the test knobs `R9700_COMFY_ARMS_CONF`, `R9700_COMFY_EVIDENCE_CONF`, `R9700_COMFY_ARM_SECONDS`,
+   `R9700_COMFY_TEST_EXEC_S`). The seam functions as the table names them, then the worker's: `comfy_evidence_load <file>` (the
+   arrays `_CE_ACT[<arm>]`, `_CE_INERT[<arm>]`, each a `;`-joined list; BE8's refusals in one pass, the `comfy_models_load` shape),
+   `_cb_order`, `_cb_sweep_parts`, `_cb_gate`, `_cb_recheck`, `_cb_clear`, `_cb_start`, `_cb_card_free`, `_cb_run <k>`, `_cb_cut <k>`,
+   `_cb_flags <k>`, `_cb_drift`, `_cb_validate`, `_cb_clean_stop`, `_cb_gone <name>`, `_cb_report`, `_cb_evidence`, `_cb_check_one
+   <kind> <argument> <part>` (one function per kind is fine; the dispatch is a `case`), `comfy_bench_unit`, `comfy_bench_main`, the
+   two-face tail. The constants `_CB_CLEAR_SH`, `_CB_REPORT_SH`, `_CB_SIGINT_PY` (`import os, signal; os.kill(1, signal.SIGINT)`),
+   `_CB_LOAD_RE`, `_CB_RECOMPILE_RE`, `_CB_ROUND_OVERHEAD_S=600`, `_CB_CARD_WAIT_S=300`, `_CB_STOP_WAIT_S=60`, `_CB_EXCHANGE=/work/r9700/comfyui/bench`.
+   Messages `comfy-bench: <text>` on stdout (the worker's lines go to the step log) and `r9700: comfy: bench: <text>` on stderr for
+   the seam's refusals. If the file passes 700 lines, the evidence and drift functions move to `lib/comfy_bench_evidence.sh`,
+   sourced by both faces and listed in `_CB_UNIT_SH`.
+5. **`lib/fingerprint.py`**: `build-comfy <inputs> --out <file>` (`cmd_build_comfy`, `build_comfy_components`: `read_comfy_env`
+   with the eight required keys, `read_arms`, `constants.json` loaded as JSON, `hex_pairs` for `models` and `tools`); the docstring's
+   command list; `compare`, `show`, `--merge`, `check-quality` untouched (`tests/test_fingerprint.py`'s existing cases pass with no
+   edit; BF1's Python cases are new tests in that file).
+6. **`lib/adapter.sh`**: `_COMFY_PROBE_PY` widened (AP1; the two lines between `device` and `ready`; `int()` of each value, the
+   `not in the answer` line on any failure of that read); `comfy_probe` unchanged; the header row. `tests/test_adapter_comfy.sh`: AP1;
+   E1's AW5 adjusted only where it asserted the line COUNT (say so in the summary).
+7. **`tests/requirements.txt`**: the pins (question 10). `tests/run.mjs` installs it already (`:319–329`); nothing else changes there.
+8. **The stub**: `tests/stubs/wslc` — in `exec_in`, before the `*system_stats*` branch, a branch for a word matching `*/bench.py` after
+   optional `env` words (`comfy_bench_call`), one for a `-c` program holding `SIGINT` (`comfy_clean_stop`); in `run_container`, before
+   the generic foreground branch, `comfy_clear_is` (a program naming `/cache/tunableop` and `rm -rf`) → `comfy_clear_answer`,
+   `comfy_report_is` (a program naming `tunableop_results.csv`) → `comfy_report_answer`, `comfy_listing_is` (a program naming
+   `/models` and `stat`) → `answers/comfy_models_listing` (default: the files of every set with sizes); the `ok` readiness answer's
+   four lines; `tests/stubs/stub_common.sh`'s header gains every new file: `answers/comfy_bench_mode[.<arm>].<run>`,
+   `comfy_bench_lines`, `comfy_bench_json`, `comfy_bench_log.<run>`, `comfy_bench_nodes.<run>`, `comfy_bench_cache`,
+   `comfy_evidence.<arm>`, `comfy_drift`, `comfy_cache`, `comfy_clear_rc`, `comfy_cache_report`, `comfy_report_rc`,
+   `comfy_tunableop`, `comfy_clean_stop`, `comfy_vram`, `comfy_models_listing`, and `cache/` (the stub's bench cache content).
+9. **`tests/fixtures/comfy/comfy_server.py`** (new; `aiohttp`; scripted by a JSON path in `COMFY_FIXTURE_SCRIPT`; writes only below
+   the folder it is given; records its pid for the runner) and **`tests/test_comfy_bench_py.py`** (BP1–BP13, BP12v; the server started
+   per test on a free port, `bench.py` run as a subprocess with `COMFY_BENCH_API=http://127.0.0.1:<port>`, a test knob of the program
+   — the environment only, default `http://127.0.0.1:8188` — with its row in *Test knobs*).
+10. **`tests/test_comfy_bench.sh`** (BW1–BW19, BE1–BE8, BA1–BA3, BF1–BF5's bash half; `bench_setup` as *Test scenarios* defines it;
+    every wait a bounded `wait_for`; every process recorded; `kill_recorded_pids "$CASE"` where containers are left);
+    **`tests/test_fingerprint.py`** (BF1's Python cases); **`tests/test_stubs.sh`** (SC1–SC6).
+11. **`research/module_tests.md`**: the rows of `tests/test_comfy_bench.sh`, `tests/test_comfy_bench_py.py`, `tests/fixtures/comfy/`;
+    the knobs of steps 1, 4, 9 and the stub files of step 8 in *Test knobs*; `ffmpeg`/`ffprobe` as a prerequisite in *How it is run*;
+    in *What it does not prove*: the eight unverified facts of *Facts every story uses* (the stub stands in for each; S3's acceptance
+    observes them), and N2's clean stop. Nothing in `README.md`, `research/architecture.md` or `research/module_comfyui.md` (S3's).
+
+**Never**: a second implementation of the part sweep, the rejection, the fingerprint document, the placement or the readiness wait;
+a `bench.txt` line that is not S1's grammar; a seed, a ceiling or a tile value typed anywhere but the constants table; a stop of a
+container whose name is not prefixed; a `machine.env` field; an edit of `lib/config.sh`, `config/arms.conf`, `lib/comfy.sh`'s modes,
+S1's `verdict.py` paths or `tests/test_verdict*.py`; a real network call in a test (the LoRA's hash is read once by you, by hand, and
+pinned).
+
+**Commands.**
+
+```bash
+node tests/run.mjs tests/test_comfy_bench.sh tests/test_comfy_bench_py.py tests/test_fingerprint.py tests/test_stubs.sh tests/test_adapter_comfy.sh tests/test_comfy.sh tests/test_series.sh tests/test_verdict_comfy.py
+node tests/run.mjs
+bash tests/check_static.sh
+node .agents/conventions/tools/plan-lifecycle.mjs
+```
+
+Report the runner's PASS line per file and its total, the static check's exit code, each RED observation (the failing line, then
+the pass), the LoRA's `X-Linked-ETag` as read with its command, the three pins with the command that chose them, the two TunableOp
+names as confirmed in torch, the five ComfyUI strings as read at `COMFY_REF`, and the line count of every new file.
+
+#### Done when
+
+- BP1–BP13 and BP12v, BW1–BW19, BE1–BE8, BA1–BA3, BF1–BF5, SC1–SC6 and AP1 pass through `node tests/run.mjs` with the pinned
+  requirements installed by the runner; every refusal and guard marked RED first was seen failing first and the summary says how.
+- One arm-round in the stub world is one fresh prefixed container with `--tmpfs /data:exec,size=8g`, the models volume `:ro` and
+  the bench cache cleared before it; a cold run past `cold_max_s` is `COLD_TIMEOUT` and nothing follows; every ceiling, guard stop and
+  rejection ends the container and sees it gone; an arm-round without its activation evidence is rejected and an inert `fp16acc` is
+  recorded as inert; a load and a recompile are flagged per measured run outside `bench.txt`; the record is made by ONE rename and
+  holds the files of contract step 14; the same command continues from the first missing arm-round in the balanced order after a lost
+  one and refuses another experiment before any container; the clean stop is recorded as `clean` or `forced`.
+- `bench.py` against the fixture server prints the three metrics per measured run and nothing for the cold run, fails fast on an
+  `execution_error`, a refused prompt, a cached sampler, a wrong size, a constant image or a truncated video, and computes the drift
+  with `identical` for an exact match and `unavailable` for a missing reference; its pure commands run with `-S`.
+- `fingerprint.py build-comfy` writes a version-1 document with `kind` `comfy` that `compare`, `--merge` and `show` read unchanged;
+  `tests/test_fingerprint.py`'s existing cases and `tests/test_verdict*.py` pass with no edit.
+- The LoRA line is in `models.conf` with its pin read once from the source and MC1's parity row; the three pins are in
+  `tests/requirements.txt`; the two tables carry the rows of this spec; `bash tests/check_static.sh` exits 0 (the seam is still
+  exactly `lib/adapter.sh`); `node .agents/conventions/tools/plan-lifecycle.mjs` is clean; every new file is under 800 lines; CI green.
 
 ---
 
@@ -963,6 +1615,10 @@ the approved contract goes through the parent's ledger after a review.
   fixture's terms and the acceptance (or the by-hand run of its item 4) observes it before E3. If the file is written only on a
   clean exit, the evidence row changes (for example to TunableOp's own verbose lines in the cold run) — a change of the
   evidence table, the owner's.
+  Design (Fable, 2026-11-08; the S2 spec, *N2: the TunableOp file*): PyTorch's page confirms the file is written when the process ends,
+  so every recorded arm-round ends its container with a clean stop (SIGINT to pid 1, the server's normal exit) before the hard stop,
+  and a report container copies the file into the record; the evidence row is unchanged. Open for the owner only if the acceptance
+  sees that the clean stop does not end ComfyUI normally on the card: the fallback (TunableOp's own verbose lines) changes the row.
 - **N3 — `compile`'s activation evidence needs the inductor cache in `/cache`.** The evidence is "the inductor cache written in
   the cold run" (`:306`), and the bench cache is said to hold "the inductor cache of `compile`" (`:399`). The arm's environment
   names only `COMFY_BENCH_COMPILE=1` and `TORCH_LOGS=recompiles` (`:306`); by PyTorch's documentation the inductor writes its
@@ -974,6 +1630,26 @@ the approved contract goes through the parent's ledger after a review.
   `wan5b` LoRA line is added by E2 (`:175`), so that fetch cannot hold it, and a `wan5b` bench before a second fetch fails at its
   cold run. Smallest fix, applied in this document without a parent change: S3's acceptance step 0 runs `bin/r9700 comfy fetch
   wan5b` after E2 is merged (only the LoRA downloads). Settled 2026-11-08: the parent's E2 *Depends on* now says so.
+- **N5 — the flags cannot be lines of `bench.txt`.** The parent says a measured run with a load or a recompile "is flagged in
+  `bench.txt`" (`:262–263`), and S1's grammar (this document, VC9) refuses any line of a bench file that is not a bench line.
+  Smallest fix, built by the S2 spec: the flags are `flags.txt` beside `bench.txt` and `FLAGS_RUN_<n>=` words of `record.env`;
+  `bench.txt` holds the block only. Not a plan change: the contract — every measured run's load and recompile are flagged and a
+  reader sees whether a time includes a transfer or a compile — holds; where the flag is written is the record's layout.
+- **N6 — `tunableop`'s "holds the workload's shapes".** The evidence row (`:304`) names the workload's shapes, which are not known
+  before the card. The S2 spec reads the check as "non-empty, with `Validator` lines and at least one result row" and keeps the
+  file in the record; S3's acceptance item 4 records the real rows. Pinning the shapes afterwards is a stricter check that
+  satisfies the row as written: not a plan change, and open only for the list of shapes.
+- **N7 — the `miopen` row needs a MIOpen log level.** Its evidence is "MIOpen's find lines in the cold run" (`:305`), and MIOpen
+  prints no find line unless `MIOPEN_LOG_LEVEL` is set (ComfyUI prints none of its own; checked in `comfy/model_management.py`
+  v0.44.0, 2026-11-08). Smallest fix, built by the S2 spec: `MIOPEN_LOG_LEVEL=5` in the `miopen` row of `comfyui/arms.conf`, the
+  N3 precedent (a word that makes the parent's own evidence sentence true is not a change). Open for the value only: the acceptance's
+  by-hand run says whether level 5 prints the find lines or 6 is needed, and the row is corrected (a new experiment, not a plan change).
+- **N8 — the inert arm in the verdict's output.** The parent says an arm whose inertness evidence is present "is reported as inert on
+  <workload>, with the evidence, never as 'no gain'" (`:279`). The S2 record carries it (`record.env` `INERT=yes`, `INERT_EVIDENCE=`,
+  `evidence.txt`, the worker's stdout line); S3's `comfy_bench_verdict` as specified above prints only S1's verdict lines. Smallest
+  fix, for S3's coder (Opus's section; recorded here, not applied): one `note: <arm> inert on <workflow> (<evidence>)` line per arm
+  whose round-1 `record.env` says `INERT=yes`, printed before the `invoking:` line. Not a plan change: the parent requires it and S3's
+  text omitted it.
 
 ## Settled in epoch 2
 
