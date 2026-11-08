@@ -273,3 +273,18 @@ restarted before EVERY clip. Prediction (§ 16): every clip ~1000 s. Observed: 1
 1005.2 s — as predicted (the old rule gave ~1790 s for every second clip). By eye on frames of every shot: one adult face,
 braids and costume throughout; the ears small and mostly hidden by the hair; natural running and climbing. Both narrations
 mixed in (the last frame held ~2 s while the narrator finishes).
+
+## 18. The voiced films had no sound — the mixer fixed and made to check its output (2026-11-08)
+
+The operator found every voiced film silent and not seekable. Observed (ffprobe): the audio stream was 0.008 s long with a
+start time of ~1.9e14 s and a mean of −91 dB, while the source WAVs were fine (6.7 s of speech each). The one-step mix
+(film + six WAVs, `adelay` + `amix` in one ffmpeg call) lost the audio timestamps; the broken start time also broke seeking.
+The check had looked only at the script's own printout, never at the written file.
+
+Fix (voiceover.py): step 1 renders the narration alone (every line reset to t=0 with `asetpts=PTS-STARTPTS`, one channel,
+delayed with `adelay=…:all=1`, mixed, loudness-normalised to −16 LUFS, padded to the film's length) into a WAV; step 2 muxes
+the film and that WAV with `-movflags +faststart`. Both files are checked: an audio stream shorter than the film by more
+than 0.5 s, starting away from 0, or with a mean below −50 dB refuses the film. Re-made: eight voiced films, audio 32.4–33.0
+s, start 0.000, mean −21.2 / −21.6 dB.
+
+Also: the operator rated the Arcane 14B film (§ 16) as good ("came out really well").
