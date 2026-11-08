@@ -211,7 +211,7 @@ card):
 
 1. Whether `wslc run -v <volume>:<path>` makes a missing named volume, or fails (E1 always lists, then creates: `lib/comfy.sh:76`).
 2. Whether a process started by `wslc exec` sees the environment the container was started with (`-e`): `bench.py` runs through
-   `exec` and reads `COMFY_BENCH_WEIGHT_DTYPE` (`fp8w_mm`) and `COMFY_BENCH_COMPILE` (`compile`) (`:303`, `:306`).
+   `exec` and reads `COMFY_BENCH_WEIGHT_DTYPE` (`fp8wmm`) and `COMFY_BENCH_COMPILE` (`compile`) (`:303`, `:306`).
 3. `/system_stats` `devices[0].vram_total` (the prototype reads only `vram_free`; E1's probe only `name`).
 4. ComfyUI's websocket messages other than `executing` and `execution_error` (`execution_start`, `execution_cached`,
    `execution_success`), and a `/history/<prompt id>` entry's `outputs` (its `status` was seen by hand, above).
@@ -265,7 +265,7 @@ fp16acc-2 zimage r=3 total_s: 12.345
 
 `<arm>` `[a-z0-9]+`, `<round>` `[1-9][0-9]*`, `<workflow>` `[a-z0-9]+`, `<n>` one of the three measured runs `1 2 3`, `<metric>`
 `[a-z][a-z0-9_]*`, `<value>` a non-negative decimal `[0-9]+(\.[0-9]+)?` (seconds). The arm names of the parent (`base`,
-`fp16acc`, `fp8w_mm`, `tunableop`, `miopen`, `compile`, `:301–306`) hold an `_` in one case: **`fp8w_mm` does not match
+`fp16acc`, `fp8wmm`, `tunableop`, `miopen`, `compile`, `:301–306`) hold an `_` in one case: **`fp8wmm` does not match
 `[a-z0-9]+`** — open point N1. Until it is settled, this story's grammar is the parent's arm grammar (`_RE_ARM`,
 `lib/config.sh:102`, `[a-z0-9]+`) and N1 names the one place that changes. A COMPLETE block of a tag is exactly one line for every
 pair (run 1..3, metric of `--metrics`): 9 lines for the three metrics. A block starts at its `r=1 <first metric>` line (the vLLM
@@ -443,11 +443,11 @@ the verb row `bench`, `:229`; the tests of `:421–434`):
   websocket; S1's lines for the measured runs only; one JSON per run; the fast failures and both ceilings; the output check
   (dimensions, frame count by `ffprobe -count_frames`, pixels not constant); the drift (mean absolute pixel difference and PSNR,
   per seed, with `numpy` and `Pillow`); the commands `workflows` and `metrics` of the seam, standard library only (`:176`).
-- `comfyui/arms.conf` (new): `base`, `fp16acc`, `fp8w_mm`, `tunableop`, `miopen`, `compile` in the four-field grammar of
+- `comfyui/arms.conf` (new): `base`, `fp16acc`, `fp8wmm`, `tunableop`, `miopen`, `compile` in the four-field grammar of
   `config/arms.conf` (`:177`, `:299–306`), with `tunableop`'s two tuning bounds set from the image's torch documentation (`:304`).
 - `comfyui/arm_evidence.conf` (new): one row per arm, keyed by its name, with its ACTIVATION evidence and its INERTNESS evidence as
   the parent's table gives them (`:178`, `:273–281`, `:299–306`): `fp16acc` inert only when the model's compute dtype line AND
-  the VAE's dtype line are bf16; `fp8w_mm` active only with the loader's `float8_e4m3fn` line AND the flag in the argv;
+  the VAE's dtype line are bf16; `fp8wmm` active only with the loader's `float8_e4m3fn` line AND the flag in the argv;
   `tunableop` active only with a non-empty results file holding the workload's shapes; `miopen` by the absence of
   `cudnn.enabled = False` and MIOpen's find lines in the cold run; `compile` by the node in every measured run AND the inductor
   cache written in the cold run; the argv alone never activation evidence (`:280–281`).
@@ -553,7 +553,7 @@ Out: the verb's grammar, `supervise`, the dry-run printing call site, the verdic
 **The evidence (`tests/test_comfy_bench.sh`)**
 
 - BE1 Each arm's ACTIVATION evidence present → recorded beside the timings; absent → the arm-round rejected with an `EVIDENCE:` reason naming what is missing.
-- BE2 The argv alone (`/system_stats` `system.argv` holding the flag) is never activation evidence: `fp8w_mm` with the flag and no `float8_e4m3fn` line is rejected.
+- BE2 The argv alone (`/system_stats` `system.argv` holding the flag) is never activation evidence: `fp8wmm` with the flag and no `float8_e4m3fn` line is rejected.
 - BE3 `fp16acc` is reported *inert on <workload>* only when the model's compute dtype line AND the VAE's dtype line are bf16; with an fp16 VAE line it is an acting arm.
 - BE4 `tunableop`'s results file must be non-empty and hold the workload's shapes; an empty file or one without them rejects.
 - BE5 `miopen` is active only when the cold run has no `cudnn.enabled = False` line and has MIOpen's find lines.
@@ -952,13 +952,9 @@ New after epoch 2: each is a conflict between the parent at bd36c56 and the code
 document was rewritten. Each names the line, what is wrong and the smallest fix. None is applied to the parent here; a change of
 the approved contract goes through the parent's ledger after a review.
 
-- **N1 — `fp8w_mm` is not a legal arm name.** The parent names the arm `fp8w_mm` (`:303`, `:345`, `:376`). Every arm name in the
-  toolkit is `^[a-z0-9]+$` (`_RE_ARM`, `lib/config.sh:102`): `arms_load` refuses a row named `fp8w_mm`, the series grammar
-  refuses the word, `verdict.py`'s `arm_name` type refuses it (`lib/verdict.py:395–398`), and the bench line grammar of E2.S1
-  (`<arm>-<round>`) could not tell it apart with an `_` either way. Smallest fix: the owner renames the arm `fp8wmm` (one word in
-  the parent's table and prediction); the other fix — widening `_RE_ARM` to allow `_` — changes the grammar of `config/arms.conf`,
-  the series and the vLLM verdict, which no epic of this plan owns. Until the answer, S1 keeps `[a-z0-9]+` and S2 cannot load
-  the row as written.
+- **N1 — the arm name (settled, 2026-11-08).** The parent named the arm with an underscore, which `_RE_ARM` (`^[a-z0-9]+$`,
+  `lib/config.sh:102`) and `verdict.py`'s `arm_name` (`lib/verdict.py:395–398`) refuse. The parent now names it `fp8wmm`: a
+  fix that only satisfies the toolkit's existing grammar, not a plan change. `_RE_ARM` stays as it is.
 - **N2 — `tunableop`'s activation evidence may never be readable.** The evidence is "the results file is not empty and holds the
   workload's shapes" (`:304`). By PyTorch's documentation (not read in this repository, fact 6) TunableOp keeps its results in
   memory and writes the file when the process ends; the bench stops its container with a signal, and ComfyUI is not known to
@@ -973,11 +969,11 @@ the approved contract goes through the parent's ledger after a review.
   cache under `/tmp` in the container unless `TORCHINDUCTOR_CACHE_DIR` says otherwise (fact 7), so neither the clear nor the
   evidence check would see it. Smallest fix: the `compile` row of `comfyui/arms.conf` also sets `TORCHINDUCTOR_CACHE_DIR` under
   `/cache` (`/cache/inductor`). This only makes the parent's own two sentences true (plan-change-control: "a fix that only
-  satisfies the plan as written" is not a change); S2's spec applies it unless the owner says otherwise.
+  satisfies the plan as written" is not a change); Settled 2026-11-08: the parent's `compile` row now sets `TORCHINDUCTOR_CACHE_DIR=/cache/inductor`.
 - **N4 — the LoRA is not in E1's fetch.** E2's acceptance takes its models from E1's acceptance run 2 (`:558–559`), but the
   `wan5b` LoRA line is added by E2 (`:175`), so that fetch cannot hold it, and a `wan5b` bench before a second fetch fails at its
   cold run. Smallest fix, applied in this document without a parent change: S3's acceptance step 0 runs `bin/r9700 comfy fetch
-  wan5b` after E2 is merged (only the LoRA downloads). Listed so the parent's *Depends on* can say so at its next edit.
+  wan5b` after E2 is merged (only the LoRA downloads). Settled 2026-11-08: the parent's E2 *Depends on* now says so.
 
 ## Settled in epoch 2
 
@@ -992,7 +988,7 @@ The eight open points of the epoch-1 version (8814640) are settled in the parent
 - **OP5 — the `wan5b` steps:** the FastWan 3-step `lcm` text-to-video workload with its pinned LoRA; 50 steps a quality reference
   by hand (`:118–124`, `:318–328`, `:175`).
 - **OP6 — the arm evidence:** `comfyui/arm_evidence.conf`, activation and inertness, keyed by arm; `fp8mm` replaced by the pair
-  `fp8w_mm`; the argv never activation evidence alone (`:158`, `:178`, `:273–281`, `:299–306`).
+  `fp8wmm`; the argv never activation evidence alone (`:158`, `:178`, `:273–281`, `:299–306`).
 - **OP7 — the test dependency:** exact pins of `aiohttp`, `numpy` and `Pillow` in `tests/requirements.txt` (`:430–434`).
 - **OP8 — `--tmpfs` and the read-only volume:** built as written, `--tmpfs /data:exec,size=8g` (a plain one is `noexec`),
   observed 2026-11-08; a fallback is the owner's (`:238–248`).

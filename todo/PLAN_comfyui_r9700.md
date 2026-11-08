@@ -4,7 +4,7 @@
 > under *Plan changes*). E1 is DONE except its
 > three acceptance runs on the card (PR #18, squash-merged as 6be7a67: the fields, the adapter calls, `comfy
 > build|start|stop|status|fetch`, the owner check in `supervise` and `step_run`). E2 has its stories document only
-> (8814640), which must be rewritten for epoch 2 before E2's first code; E3 is not started. E2's code starts after that rewrite.
+> rewritten for epoch 2 (d3bee61); its cornerstone spec E2.S2 is Fable's next. E3 is not started.
 > Scope: a new `comfyui/` folder (the image recipe and the programs that run inside it), a `comfy` verb of
 > `bin/r9700`, new optional fields of `machine.env`, new adapter calls, their tests and documents, and the GPU acceptance
 > runs that measure ComfyUI arms on the R9700.
@@ -300,10 +300,10 @@ follow-up for the owner, not an arm.
 |---|---|---|---|---|
 | `base` | ComfyUI's own choice (pytorch attention, cudnn off on AMD) | the reference | the attention line `Using pytorch attention` | — |
 | `fp16acc` | `--fast fp16_accumulation` | fp16 matmul accumulation; it acts only on fp16 matmuls | ComfyUI's `Enabled fp16 accumulation` line | the model's compute dtype line AND the VAE's dtype line are bf16 (`zimage`): only then reported inert, as the screening saw (fact 7); an fp16 VAE makes it an acting arm (the approving round) |
-| `fp8w_mm` | `COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn` (the loader's `weight_dtype`, set by `bench.py`) **and** `--fast fp8_matrix_mult` | RDNA4 has fp8 matrix hardware and ComfyUI sets `SUPPORT_FP8_OPS` for gfx1201; the flag acts only on fp8 WEIGHTS, and the pair measured −15 % (`zimage`) and −7 % (`wan5b`, 20 steps) on the sampler in the screening; fp8 weights alone were slower. It replaces the flag-only arm `fp8mm` of epoch 1: with bf16/fp16 model weights the flag can touch only the fp8 text encoder of `wan5b`, which the measured runs cache after the cold run, so the flag alone is inert in every measured run | the loader's weight dtype line (`float8_e4m3fn`) AND the flag in the argv | — (both DiTs are cast) |
+| `fp8wmm` | `COMFY_BENCH_WEIGHT_DTYPE=fp8_e4m3fn` (the loader's `weight_dtype`, set by `bench.py`) **and** `--fast fp8_matrix_mult` | RDNA4 has fp8 matrix hardware and ComfyUI sets `SUPPORT_FP8_OPS` for gfx1201; the flag acts only on fp8 WEIGHTS, and the pair measured −15 % (`zimage`) and −7 % (`wan5b`, 20 steps) on the sampler in the screening; fp8 weights alone were slower. It replaces the flag-only arm `fp8mm` of epoch 1: with bf16/fp16 model weights the flag can touch only the fp8 text encoder of `wan5b`, which the measured runs cache after the cold run, so the flag alone is inert in every measured run | the loader's weight dtype line (`float8_e4m3fn`) AND the flag in the argv | — (both DiTs are cast) |
 | `tunableop` | `PYTORCH_TUNABLEOP_ENABLED=1`, its results file in the bench cache, and the per-shape tuning bounds of torch's TunableOp (`PYTORCH_TUNABLEOP_MAX_TUNING_DURATION_MS`, `PYTORCH_TUNABLEOP_MAX_TUNING_ITERATIONS`; the values are set in E2's spec from the image's torch documentation) | hipBLASLt GEMM tuning per shape; the cold run tunes, the measured runs read the file. Unbounded, the screening's cold run tuned the VAE for more than 37 minutes (fact 7), so the bounds and `cold_max_s` keep it inside one arm-round or reject it as `COLD_TIMEOUT` | the results file is not empty and holds the workload's shapes (the cold run and the measured runs are one process whose environment is fixed at its start, so no per-run tuning switch exists to read) | — |
 | `miopen` | `COMFYUI_ENABLE_MIOPEN=1`, `MIOPEN_FIND_MODE=FAST` | ComfyUI turns cudnn/MIOpen off for every AMD arch after RDNA2; on these two DiT models it can only change the VAE, and FAST keeps the search out of a multi-minute stall (the screening: VAE equal warm, cold VAE 7.8 s) | the absence of ComfyUI's `cudnn.enabled = False` line and MIOpen's find lines in the cold run | the sampler has no convolution: `sampler_s` is reported as information only for this arm |
-| `compile` | `COMFY_BENCH_COMPILE=1`: `bench.py` inserts `TorchCompileModel` (inductor, no CUDA graphs) after the loader | the DiTs are full of pointwise chains between their GEMMs; the compile cost lands in the cold run and the record keeps it separately; a recompile in a measured run is flagged (fact 7: two of three warm runs recompiled) | the `TorchCompileModel` node in every measured run's node list AND the inductor cache written in the cold run with `TORCH_LOGS=recompiles` set (a recompile line is the flag above, not activation evidence) (a node's presence proves the wrapper ran, not that the compiled graph did) | — |
+| `compile` | `COMFY_BENCH_COMPILE=1` and `TORCHINDUCTOR_CACHE_DIR=/cache/inductor` (so the inductor cache the evidence reads is in the bench cache, not the container's `/tmp`): `bench.py` inserts `TorchCompileModel` (inductor, no CUDA graphs) after the loader | the DiTs are full of pointwise chains between their GEMMs; the compile cost lands in the cold run and the record keeps it separately; a recompile in a measured run is flagged (fact 7: two of three warm runs recompiled) | the `TorchCompileModel` node in every measured run's node list AND the inductor cache written in the cold run with `TORCH_LOGS=recompiles` set (a recompile line is the flag above, not activation evidence) (a node's presence proves the wrapper ran, not that the compiled graph did) | — |
 
 `--use-quad-cross-attention` was a planned arm and is dropped (both consultants, 2026-11-07): it replaces the fused SDPA
 that now works with a chunked fallback made for cards without one, so it can only be slower, and on the video workload a
@@ -342,7 +342,7 @@ runs of fact 1 and fact 7, one run each; the feasibility run replaces them.
 
 **Prediction, recorded before any run** (rule: measurement § 4), informed by the screening of fact 7 (one round each, not a
 verdict): `fp16acc` inert on `zimage` (bf16 weights) and acting on the `wan5b` sampler (fp16 DiT), which at 3 steps is a small
-part of the clip; `fp8w_mm` −10 to −20 % on the `zimage` sampler and −5 to −10 % on `wan5b`'s, with a visible drift (another
+part of the clip; `fp8wmm` −10 to −20 % on the `zimage` sampler and −5 to −10 % on `wan5b`'s, with a visible drift (another
 composition at the same seed on `zimage`); `tunableop` faster after its tuning run, 5–15 % on the sampler, or `COLD_TIMEOUT`
 when the bounds do not hold it inside `cold_max_s`; `miopen` changes only `vae_s`, either way, and `sampler_s` not at all;
 `compile` 0–10 % on the `zimage` sampler once compiled, with recompiles in measured runs flagged, and a cold run minutes longer;
@@ -373,7 +373,7 @@ better. Three layers, none of them claiming more than it can:
    output is missing or its arm-round was rejected, the drift is written `unavailable (<why>)`, never computed against
    another run; computed in the container with the image's numpy and Pillow, next to the same numbers for the base against
    ITSELF across rounds (the reference the vLLM series lacked, `dew_flow_benchmark · research/RESULTS_vllm_029_r9700_speed_options.md`
-   § 8). A same-seed base is expected to be identical; an arm far outside that is pointed out to the reader (`fp8w_mm` is
+   § 8). A same-seed base is expected to be identical; an arm far outside that is pointed out to the reader (`fp8wmm` is
    predicted to be one).
 3. **A person's look** — the outputs side by side under the record, with the arm names; the series document says which arms
    changed the output and that the owner looked. "Faster, outputs reviewed" is the strongest claim; "quality equal" is not
@@ -532,7 +532,7 @@ operator's work or records an out-of-memory as a result, and no later step catch
 ### E2 — `comfy bench` under the supervisor, and the verdict over its records
 
 The stories of this epic are [PLAN_comfyui_r9700_E2.md](PLAN_comfyui_r9700_E2.md) (written 2026-11-08 under epoch 1; E2.S2 is
-the cornerstone). **That document must be rewritten by Opus before E2's first code**: its eight open points are settled in
+the cornerstone). **That document was rewritten by Opus for epoch 2 (d3bee61)**: its eight open points are settled in
 this plan (OP1 the file split, OP2 entry 1.2, OP3 NOT DECIDED, OP4 the tiled decode as a constant with named fields, OP5 the
 FastWan workload, OP6 the evidence table with activation and inertness, OP7 the pinned test requirements, OP8 built as written
 and observed first), and the `wan5b` workload, the arm table, the evidence, the cold-run ceiling, the recompile flag and the
@@ -556,7 +556,7 @@ parts of the documents and the tile-field correction in `research/module_comfyui
 `verdict` over each folder; the engine features of OP8 observed; the operator's cache volume measured once.
 
 **Depends on.** E1 (the image, the volumes, the fields, the owner check, the model sets fetched — E1's acceptance runs 1 and 2
-give E2's acceptance its image and its models).
+give E2's acceptance its image and its models; the FastWan LoRA line is E2's, so E2's acceptance fetches `wan5b` again first).
 
 **Done when.**
 - Against the stub, each `bench` case of the Tests section passes and each refusal was seen failing first; an
