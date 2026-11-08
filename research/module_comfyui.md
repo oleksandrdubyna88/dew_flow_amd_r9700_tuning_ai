@@ -166,13 +166,130 @@ Two facts from hand runs of the Wan 2.2 TI2V 5B model (the `wan5b` set) in this 
 
 ## Acceptance on the R9700 (E1)
 
-Not run yet. The operator's session runs the three runs after the merge and fills this section: the prediction is written here BEFORE the first command, then each command with its output in a fenced block, the commit it ran at, the date, and what the record does not settle. It is not an `ACCEPTANCE_*.md` file: a second file of that name would also pull `POST_DEPLOY.md` through `tests/test_docs.sh`.
+Run on 2026-11-08 (below). The operator's session runs the three runs after the merge and fills this section: the prediction is written here BEFORE the first command, then each command with its output in a fenced block, the commit it ran at, the date, and what the record does not settle. It is not an `ACCEPTANCE_*.md` file: a second file of that name would also pull `POST_DEPLOY.md` through `tests/test_docs.sh`.
 
 1. `bin/r9700 comfy build`. Prediction: the check prints `device AMD Radeon AI PRO R9700` and `matmul ok`; the build takes less than `COMFY_BUILD_MAX_S`; `COMFY_IMAGE` then names the stamped tag, and the image it named before (the hand-made build) is left untagged, the one untagged image this change adds, removed by the operator by its id. To record: the wall time, the check's four lines, the raw `wslc image list` before and after (it checks the parse of `wslc_image_list` and the size the growth row carries), and the raw output of the promotion's `tag`. A real `rmi` runs first at the fifth passed build; its output is added to this section then (until then the stub's text stands, as `module_tests.md` says).
 2. `bin/r9700 comfy fetch zimage wan5b` with `COMFY_STORE_WIN` set. Prediction: every file ends `fetch: done ... sha256 <the pin>`, the store first. To record: the lines, the wall time, the raw output of `wslc volume list` once (it checks the parse of `wslc_volume_list`; a different shape is a fix and a deviation).
 3. `bin/r9700 comfy start --stop-vllm`, then by hand in the Windows browser on `127.0.0.1:<COMFY_PORT>` ComfyUI's own Z-Image Turbo workflow at 1024x1024. Prediction: the start prints the R9700 device line, the log shows `Using pytorch attention`, the image is correct. While it runs, the one owner of the card on the real machine: `bin/r9700 step --model <a model file> probe -- true` exits 2 naming `bin/r9700 comfy stop`, and `bin/r9700 comfy status` afterwards still lists `COMFY_CONTAINER` (nothing was stopped). Then `bin/r9700 comfy stop`. To record: the lines, the image's time, the log line, and that the operator looked at the image.
 
 The output shapes of `wslc volume list`, `wslc volume create`, `wslc inspect` and `wslc image list` were observed by hand on 2026-11-07; the output of `tag` and `rmi` was not. The hand-made folder is not used for any of the three runs.
+
+### Run of 2026-11-08 at 6be7a67
+
+The operator agreed to the three runs on 2026-11-08 and is at the machine for run 3. The predictions above stand as written before this run; nothing below was known when they were written. The operator's hand-made ComfyUI container is stopped before run 1 (`build` refuses while it is listed). Run 2 sets `COMFY_STORE_WIN` in a copy of the machine file (the operator's own file is unchanged).
+
+#### Run 1 — `bin/r9700 comfy build` (2026-11-08)
+
+```
+comfy: build: device AMD Radeon AI PRO R9700
+comfy: build: comfyui-r9700:local now names comfyui-r9700:20261108T084516Z
+rc=0 wall=116s
+```
+
+`wslc image list` before:
+
+```
+REPOSITORY      TAG                                                        IMAGE ID       CREATED        SIZE
+comfyui-r9700   local                                                      5662f4cbd417   19 hours ago   27.3GB
+<none>          <none>                                                     b6251d5327b0   19 hours ago   27.3GB
+<none>          <none>                                                     7ce514fe9121   19 hours ago   27.3GB
+<none>          <none>                                                     9ededce696b1   20 hours ago   27.3GB
+rocm/vllm       rocm10.1.0_ubuntu24.04_py3.14-pytorch_2.13.0_vllm-0.29.0   2d41964ed4f4   5 weeks ago    75.2GB
+rocm/pytorch    rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.13.0       3bc80bb6db38   5 weeks ago    25.2GB
+```
+
+`wslc image list` after:
+
+```
+REPOSITORY      TAG                                                        IMAGE ID       CREATED          SIZE
+comfyui-r9700   20261108T084516Z                                           3a98d3d4baa5   24 seconds ago   27.3GB
+comfyui-r9700   local                                                      3a98d3d4baa5   24 seconds ago   27.3GB
+<none>          <none>                                                     5662f4cbd417   19 hours ago     27.3GB
+<none>          <none>                                                     b6251d5327b0   19 hours ago     27.3GB
+<none>          <none>                                                     7ce514fe9121   19 hours ago     27.3GB
+<none>          <none>                                                     9ededce696b1   20 hours ago     27.3GB
+rocm/vllm       rocm10.1.0_ubuntu24.04_py3.14-pytorch_2.13.0_vllm-0.29.0   2d41964ed4f4   5 weeks ago      75.2GB
+rocm/pytorch    rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.13.0       3bc80bb6db38   5 weeks ago      25.2GB
+```
+
+Observation against the prediction: the build passed in 116 s (well under `COMFY_BUILD_MAX_S`; most layers came from the
+engine's cache), the check found the R9700, and `COMFY_IMAGE` (`comfyui-r9700:local`) now names the stamped tag. The image it
+named before (`5662f4cbd417`, the hand-made build) is left untagged as predicted; three older untagged hand-made images were
+already there before the run (`b6251d5327b0`, `7ce514fe9121`, `9ededce696b1`), not added by this change. Deviation: the verb
+prints only the `device` line, not the check's four lines; `matmul ok` is required by the promotion gate
+(`lib/comfy.sh:556`), so a passed build proves it, but the line is not shown. The raw output of the promotion's `tag` is not
+printed by the verb either (it printed nothing on success); the `now names` line stands for it. No `rmi` ran (first build).
+
+#### Run 2 — `bin/r9700 comfy fetch zimage wan5b` with `COMFY_STORE_WIN` set (2026-11-08)
+
+```
+fetch: done vae/ae.safetensors 320M sha256 afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38
+fetch: done text_encoders/qwen_3_4b.safetensors 7.5G sha256 6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a
+fetch: done diffusion_models/z_image_turbo_bf16.safetensors 12G sha256 2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6
+fetch: done vae/wan2.2_vae.safetensors 1.4G sha256 e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156
+fetch: done diffusion_models/wan2.2_ti2v_5B_fp16.safetensors 9.4G sha256 456f901338bd9eadbded3828b819109a9b68e8a525ca5cf8d0049a69fcfeca1e
+fetch: done text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors 6.3G sha256 c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68
+rc=0 wall=430s
+```
+
+`wslc volume list`:
+
+```
+DRIVER    VOLUME NAME
+guest     vllm-cache
+guest     hf-cache
+guest     comfy-cache
+guest     comfy-data
+guest     comfy-models
+```
+
+Observation: every file ends `fetch: done … sha256 <the pin>`, the store checked first (the files were already in the store
+and the volume, so the run verified them; 430 s, mostly hashing). The volume list has the shape `wslc_volume_list` parses.
+
+#### Run 3 — `bin/r9700 comfy start --stop-vllm`, the browser, the one owner (2026-11-08)
+
+```
+comfy: start: comfyui ready after 21 s
+comfy: start: device cuda:0 AMD Radeon AI PRO R9700 : native
+comfy: start: open http://127.0.0.1:8188
+rc=0 wall=22s
+```
+
+The server log: `Device: cuda:0 AMD Radeon AI PRO R9700 : native`, `Using pytorch attention`, `ComfyUI version: 0.44.0`.
+While it ran:
+
+```
+$ bin/r9700 step --model models/qwen3.8-27b-awq.env probe -- true
+r9700: the operator's ComfyUI (comfyui) is listed and holds the card; run bin/r9700 comfy stop first
+step rc=2
+$ bin/r9700 comfy status
+comfy: status: comfyui: running
+comfy: status: vllm: not running
+comfy: status: image comfyui-r9700:local: created 2026-11-08T08:46:59.73343829Z
+comfy: status: volume comfy-models: present
+comfy: status: volume comfy-data: present
+comfy: status: volume comfy-cache: present; size: not known (the engine reports no volume size)
+status rc=0
+```
+
+The operator opened ComfyUI's own Z-Image Turbo template in the Windows browser at 1024x1024 and ran it: the image was
+correct (the operator looked at it); `Prompt executed in 23.53 seconds` (the first run, with the model load).
+
+Then, after the operator's test:
+
+```
+$ bin/r9700 comfy stop
+comfy: stop: stopped comfyui
+stop rc=0
+comfy: status: comfyui: not running
+comfy: status: vllm: not running
+```
+
+#### What this record does not settle
+
+- The verb hides the check's four lines and the raw `tag` output; the parse of `wslc image list` is checked by the run, the
+  output of `tag` and `rmi` is still only the stub's text.
+- The image's time is one cold run, not a measurement (E2's bench measures).
 
 ## Acceptance on the R9700 (E2)
 
