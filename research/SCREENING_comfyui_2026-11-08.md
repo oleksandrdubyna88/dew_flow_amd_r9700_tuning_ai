@@ -288,3 +288,25 @@ than 0.5 s, starting away from 0, or with a mean below −50 dB refuses the film
 s, start 0.000, mean −21.2 / −21.6 dB.
 
 Also: the operator rated the Arcane 14B film (§ 16) as good ("came out really well").
+
+## 19. Episode 2 (2026-11-08): keyframes, narration, and a model-swap slowdown
+
+The operator's story for episode 2: she settles in the cave and rests; a nuclear winter comes (black clouds, a dead
+forest, mutated animals); darker; at the end she leaves, finds an old military 4x4 ("a Hummer"), starts it and races into
+the sunset; the narration in the episode-1 storyteller style. Eight shots of ~5 s: Qwen-Image 2512 keyframes of set B's
+character (cold desaturated colours for the winter shots 3–7), restyled with the Arcane LoRA (1.0, denoise 0.55), then
+Wan 2.2 A14B + lightx2v with the gaze words, the server restarted before every clip (§ 16–17). The truck is described
+as "boxy military off-road truck like a classic Humvee, without any logo" so no brand mark is drawn.
+
+Observed while making the keyframes:
+- Alternating the two image models per shot (Qwen-Image 20 GB, then Z-Image for the restyle) made each image take 37–210 s
+  instead of ~7 s on a server just restarted after the host's reboot, and one restyle failed with "RuntimeError: Fault
+  failed: 2" in the text encoder. Rendering all Qwen keyframes first and all restyles after (each model loaded once) on a
+  restarted server: 6–33 s per image and no fault.
+- Shot 8 came out with the truck driving TOWARD the camera; eight re-rolls: "view from behind … driving away … into the
+  sunset" gives the rear view, but two seeds added people on the roof and one a car-brand-like emblem; adding "nobody on the
+  roof or around the vehicle, the driver hidden inside, a plain tailgate with no emblem" gave a clean rear view (seed 358).
+- The mutated wolves read as ordinary wolves (only slightly gaunt); accepted for this episode.
+
+Narration (eight lines, the same two cloned storyteller voices): Qwen3-TTS one batch 82.6 s for 42.5 s of audio (RTF 1.94);
+VoxCPM2 10 steps 113.2 s for 44.0 s (RTF 2.57; the GPU had just been freed by ComfyUI). The mixer now counts the lines.
