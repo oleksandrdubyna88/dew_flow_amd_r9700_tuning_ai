@@ -1,10 +1,9 @@
 # PLAN — ComfyUI on the R9700 in a wslc container, as verbs of this toolkit, with a measured tuning series
 
 > Status: **epoch 2 approved 2026-11-08** (by reviewers, after the stop at entry 1.2 and the whole-plan re-review; the record
-> under *Plan changes*). E1 is DONE except its
-> three acceptance runs on the card (PR #18, squash-merged as 6be7a67: the fields, the adapter calls, `comfy
-> build|start|stop|status|fetch`, the owner check in `supervise` and `step_run`). E2 has its stories document only
-> rewritten for epoch 2 (d3bee61); its cornerstone spec E2.S2 is Fable's next. E3 is not started.
+> under *Plan changes*). E1 is DONE with its three acceptance runs recorded (PR #18, 6be7a67; the record in PR #19,
+> `research/module_comfyui.md` § Acceptance on the R9700 (E1)). E2 is merged (PR #20, 0e05147: S1 the comfy verdict, S2 the
+> measurement contract, S3 `comfy bench`); its acceptance on the card is owed. E3 is not started.
 > Scope: a new `comfyui/` folder (the image recipe and the programs that run inside it), a `comfy` verb of
 > `bin/r9700`, new optional fields of `machine.env`, new adapter calls, their tests and documents, and the GPU acceptance
 > runs that measure ComfyUI arms on the R9700.

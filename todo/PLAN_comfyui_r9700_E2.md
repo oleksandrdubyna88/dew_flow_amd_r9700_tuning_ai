@@ -1,6 +1,6 @@
 # PLAN — E2 stories: `comfy bench` under the supervisor, and the verdict over its records
 
-> Status: **plan only, nothing implemented yet; the epoch-2 version, 2026-11-08** (rewritten after the parent's re-review,
+> Status: **S1–S3 merged in PR #20 (0e05147, 2026-11-08); the acceptance on the card is owed; the epoch-2 version** (rewritten after the parent's re-review,
 > which cut the epoch-1 version 8814640 and kept its split; written against the parent at bd36c56). Scope: the three stories of
 > epic E2 of [PLAN_comfyui_r9700.md](PLAN_comfyui_r9700.md), section
 > [E2 — `comfy bench` under the supervisor, and the verdict over its records](PLAN_comfyui_r9700.md#e2--comfy-bench-under-the-supervisor-and-the-verdict-over-its-records):
