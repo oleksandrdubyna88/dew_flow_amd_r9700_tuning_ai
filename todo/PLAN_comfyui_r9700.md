@@ -31,11 +31,12 @@ Narrowed: no — the goal, the Definition of Done and the three epics stand; the
 | Work | Where | Verdict | Action |
 |---|---|---|---|
 | E1 — the fields, the adapter calls, `comfy build\|start\|stop\|status\|fetch`, the owner check in `supervise` and `step_run`; PR #18, 6be7a67 | main | fits | kept; the revised text names `supervise`'s owner check as the bench's refusal (entry 1.2) and E1's three acceptance runs stay owed |
-| E2 stories document, 8814640 | pushed, unmerged (feat/comfyui-e2) | fits | kept; rewritten by Opus before E2's first code, because OP1 and OP3–OP7 are settled here and the `wan5b` workload, the arm table and the evidence table changed |
+| E2 stories document, 8814640 | pushed, unmerged (feat/comfyui-e2) | cut | fix forward, no revert: Opus rewrites it on feat/comfyui-e2 before E2's first code, because its text contradicts the revised plan (the epoch-1 arm `fp8mm`, `PLAN_comfyui_r9700_E2.md:412`; the 20-step `uni_pc` `wan5b`, `:149`, as the time basis, `:547`; OP1–OP8 still open, `:847-891`; the parent's epoch-1 line numbers); its split into S1–S3 and its cornerstone E2.S2 are kept |
 | the stop commit 3bbbef2 (entry 1.2 and the status) | pushed, unmerged (feat/comfyui-e2) | fits | kept |
 
-  (The verdict and action cells are the revision's proposal; the Opus judge of plan-change-control step 5 confirms or corrects
-  them. Nothing in the revision below is a ledger entry: it is the baseline epoch 2 is approved on.)
+  (The Opus judge of plan-change-control step 5, 2026-11-08, confirmed rows 1 and 3 and corrected row 2 from `fits` to `cut`:
+  a pushed document whose text contradicts the revised plan is cut and fixed forward, never reverted. Nothing in the revision
+  below is a ledger entry: it is the baseline epoch 2 is approved on.)
 
 ## Goal
 
