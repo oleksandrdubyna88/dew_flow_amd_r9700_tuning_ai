@@ -28,7 +28,7 @@ supervised_verbs() {
 }
 
 # the verbs OC1 holds a legal command line for; a verb added to `supervise` without a row here fails the first assertion of OC1
-OC1_ROWS="linear-bench moe-tune prefixtest run series step"
+OC1_ROWS="comfy linear-bench moe-tune prefixtest run series step" # comfy: E2.S3, `comfy bench` (`supervise comfy`)
 
 # oc1_run <verb>: the one legal command line of the verb (the setup of tests/lib/runcase.sh makes the prepares pass)
 oc1_run() {
@@ -39,6 +39,7 @@ oc1_run() {
     linear-bench) r9700 linear-bench "$MODEL_35B" ;;
     prefixtest) r9700 prefixtest "$MODEL_35B" ;;
     run) plan_write oc1 "linear-bench $KMODEL"; r9700 run "$PLAN" ;;
+    comfy) r9700 comfy bench zimage base ;;
   esac
 }
 
