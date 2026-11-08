@@ -12,7 +12,9 @@
 #                         both: 1 when the scale is not a positive integer, 2 on bad seconds
 #   state_dir             the state directory: R9700_STATE_DIR, else ${XDG_STATE_HOME:-$HOME/.local/state}/r9700
 #   marker_path           <state dir>/recovery.env
-#   lock_take <verb>      flock -n on <state dir>/lock (descriptor 9), holder line "<pid> <verb> <UTC time>"; 0, 4 when held, 2 on a bad state dir
+#   lock_take <verb> [<lock file name>]   flock -n on <state dir>/<lock file name> (default `lock`; descriptor 9), holder line "<pid> <verb> <UTC time>"; 0, 4 when held, 2 on
+#                         a bad state dir or a bad file name. The one other file in use is comfy-fetch.lock (`comfy fetch`): a process holds at most one of the two locks
+#                         (fetch never takes the GPU lock, and no verb under the GPU lock calls fetch)
 #   lock_release          closes descriptor 9
 #   proc_ticks <pid>      field 22 of /proc/<pid>/stat (the start time in clock ticks); empty for a pid that is not there
 #   session_pids <sid>    the pids whose session id (field 6) is <sid>
@@ -36,7 +38,8 @@
 #                         `supervise` (right after the prepare, through _rg_card_free) and by _step_admit (lib/step.sh), so no verb under the supervisor starts a run beside it
 #   comfy_owners_check <listing>  the card-free admission of the ComfyUI verb's locked entry (lib/comfy.sh): comfy_owner_check, then the same for the operator's server
 #                         (PROD_CONTAINER); 2 and one line for the first owner found. NOT called by `supervise` or _step_admit: those verbs stop the server themselves
-#   _rg_listing_tries     the container list with up to 3 tries, t_scale 10 apart; sets _RG_LISTING (0) or _RG_LIST_ERR (1: the first line of the last answer, else `code <n>`)
+#   _rg_listing_tries [<lister>]   a list with up to 3 tries, t_scale 10 apart (the lister is a function, default wslc_list; `comfy build` passes wslc_image_list); sets _RG_LISTING (0) or
+#                         _RG_LIST_ERR (1: the first line of the last answer, else `code <n>`). Called directly, never in $(...): a substitution would lose both variables
 #   _rg_card_free         _rg_listing_tries, then comfy_owner_check: `supervise`'s check; 2 with one line when ComfyUI is listed or the list cannot be read
 #   _rg_cleanup_hook_run  what cleanup_once calls: the hook as a background fork under an ENFORCED ceiling (t_ceiling 60 + the 5 s grace) that ends
 #                         its whole tree with _rg_tree_kill; neither a failed nor a killed hook changes the cleanup's result: the restore runs
@@ -92,17 +95,23 @@ state_dir() { printf '%s\n' "${R9700_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/s
 
 marker_path() { printf '%s/recovery.env\n' "$(state_dir)"; }
 
-# lock_take <verb>: the atomic operation is the kernel's flock(2), which a SIGKILL releases. The lock file is opened for append (opening it
+# lock_take <verb> [<lock file name>]: the atomic operation is the kernel's flock(2), which a SIGKILL releases. The lock file is opened for append (opening it
 # for write would empty the holder line a refused taker is about to read); the winner then rewrites it. Descriptor 9 belongs to the
-# supervisor alone: every child it starts is started with 9>&- (amendment A1), or a surviving child would keep the lock after a SIGKILL.
+# supervisor alone: every child it starts is started with 9>&- (amendment A1), or a surviving child would keep the lock after a SIGKILL. The second argument is a
+# file NAME of the state directory (default `lock`, the GPU lock); `comfy fetch` takes comfy-fetch.lock with the same descriptor on purpose: the adapter closes 9 in every
+# child, so a SIGKILL of the fetch verb frees its lock at once and no long-running download client holds it.
 lock_take() {
-  local dir file line
+  local dir file line name="${2-lock}"
+  if ! [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$ ]]; then
+    echo "lock_take: \"$name\" is not a lock file name" >&2
+    return 2
+  fi
   dir="$(state_dir)"
   if ! mkdir -p -m 700 "$dir" 2> /dev/null; then
     echo "r9700: the state directory $dir cannot be made" >&2
     return 2
   fi
-  file="$dir/lock"
+  file="$dir/$name"
   exec 9>> "$file"
   if ! flock -n 9; then
     line=""
@@ -456,14 +465,15 @@ comfy_owners_check() {
   return 2
 }
 
-# _rg_listing_tries: up to 3 tries of the container list, t_scale 10 apart (the A22 shape of _restore_prepare: a transient fault of the engine must not decide a refusal). 0 and the
-# listing in _RG_LISTING; 1 and _RG_LIST_ERR = the first line of the last answer (`code <n>` when it said nothing: the list call keeps no stderr of the child). Called in the
-# caller's own shell, not in a command substitution, so that both variables reach the caller. A plain call, not _rg_run: there is no run folder yet.
+# _rg_listing_tries [<lister>]: up to 3 tries of a list, t_scale 10 apart (the A22 shape of _restore_prepare: a transient fault of the engine must not decide a refusal). The lister is
+# a function name, default wslc_list (the container list); `comfy build` passes wslc_image_list. 0 and the listing in _RG_LISTING; 1 and _RG_LIST_ERR = the first line of the last
+# answer (`code <n>` when it said nothing). Called in the caller's own shell, not in a command substitution, so that both variables reach the caller. A plain call, not _rg_run:
+# there is no run folder yet.
 _rg_listing_tries() {
-  local i out rc
+  local i out rc lister="${1:-wslc_list}"
   _RG_LISTING="" _RG_LIST_ERR=""
   for i in 1 2 3; do
-    out="$(wslc_list 2>&1)"
+    out="$($lister 2>&1)"
     rc=$?
     if [ "$rc" -eq 0 ]; then _RG_LISTING="$out"; return 0; fi
     [ "$i" -lt 3 ] && sleep "$(t_scale 10)" 9>&-

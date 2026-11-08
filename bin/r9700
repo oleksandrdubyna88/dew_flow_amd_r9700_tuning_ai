@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
 # verdict (E1.S3: the arm-round records of a series and the ship test read back from them), moe-tune (E2.S3: chunk, merge, activate, ab), linear-bench and
-# prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each), run (E3.S2: a plan file of steps under ONE supervisor), comfy (E1.S2 of the
-# ComfyUI plan: start, stop, status of the operator's ComfyUI on the same card, one owner of the card at a time).
+# prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each), run (E3.S2: a plan file of steps under ONE supervisor), comfy (E1.S2 and E1.S3 of the
+# ComfyUI plan: start, stop, status of the operator's ComfyUI on the same card, one owner of the card at a time; build the image from comfyui/ and fetch its model sets).
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
@@ -12,14 +12,18 @@
 #   0 ok
 #   1 verdict: at least one arm is INCOMPLETE (verdict.py's own code); comfy start: the operator's server could not be stopped, or a volume, the remove or the run call failed
 #     (nothing of ComfyUI is left running; the operator's server was restored when this invocation had stopped it); comfy stop: the container did not stop; comfy status: a state
-#     could not be read
+#     could not be read; comfy build: the build or the check of the built image failed (COMFY_IMAGE is not moved and the rejected stamped tag is removed), the image list could not be
+#     read before the build, the stamped tag exists already, or the promotion's tag failed; comfy fetch: a file did not arrive with its pinned sha256
 #   2 config or arguments refused; a series refused to go on (the identity changed, no fingerprint over records); verdict input error;
 #     moe-tune: a refused argument, a model with MOE_DTYPE=none, a merge input error, an activation refused (not a record, or a server is listed);
 #     linear-bench: a model with no LINEAR_SHAPES; linear-bench and prefixtest: a refused argument, a length that does not fit the context, a --name that
 #     names the record of another experiment, a placed file that differs from its source; comfy: a refused argument or mode, a machine config refused (the two name rules of
-#     COMFY_CONTAINER among them), a start beside the operator's listed server without --stop-vllm, a container list that failed three times; every verb under the supervisor:
-#     the operator's ComfyUI is listed (the line names bin/r9700 comfy stop)
-#   4 another run holds the lock (comfy start holds it through its readiness wait)
+#     COMFY_CONTAINER among them), a start beside the operator's listed server without --stop-vllm, a container list that failed three times; comfy build: the operator's
+#     ComfyUI or the operator's server is listed (nothing was placed or built), or COMFY_IMAGE's tag has the shape of a build stamp; comfy fetch: an unknown set, a malformed
+#     comfyui/models.conf, a source that publishes another sha256 than the pinned one, or a container list that failed three times; every verb under the supervisor: the operator's
+#     ComfyUI is listed (the line names bin/r9700 comfy stop)
+#   4 another run holds the lock (comfy start and comfy build hold it through their work); comfy fetch: another fetch holds <state dir>/comfy-fetch.lock, or a fetch container is
+#     still running
 #   5 the restore did not become ready, or was not started beside the operator's ComfyUI (the marker stays); comfy start: ComfyUI did not become ready (its log tail is saved, it is
 #     stopped, the operator's server is restored when this invocation stopped it), or the container list could not be read after the launch (nothing stopped; the line names
 #     comfy stop and init; the marker stays when the operator's server is owed)
@@ -580,7 +584,8 @@ verb_run() {
 
 # ---------- comfy (E1.S2 of the ComfyUI plan) ----------
 # verb_comfy <mode> [arguments]: the modes are the functions comfy_mode_<mode> of lib/comfy.sh (the list is derived from them, never typed): start [--stop-vllm] [-- <main.py args>]
-# holds the lock through its readiness wait; stop and status take none. The mode and its arguments are checked before the lock.
+# holds the lock through its readiness wait; build [--no-cache] holds it through the build and its check; fetch <set>... holds a lock of its own (comfy-fetch.lock); stop and status
+# take none. The mode and its arguments (and the sets of a fetch) are checked before any lock.
 verb_comfy() {
   local mode="${1:-}"
   if [ -z "$mode" ]; then

@@ -12,6 +12,8 @@
 #   comfy_owner_line [<name>] / comfy_server_line [<name>] / comfy_restore_line   the exact lines of the owner check, the card-free admission and the restore
 #   lock_free               0 when the lock file can be taken now
 #   alive <container>       0 while the stub container's record is a live process
+#   calls_of_verb <verb>    how many `wslc <verb> ...` calls the call log holds (the first word after wslc; 0 when nothing was called)
+#   argv_of_verb <verb> [<n>]  ARGV: the argument array of the n-th (default: last) `wslc <verb> ...` call, from calls.argv
 
 # shellcheck source=tests/lib/runcase.sh
 source "$HERE/lib/runcase.sh"
@@ -75,3 +77,29 @@ comfy_restore_line() { printf "r9700: restore: vllm not started: the operator's 
 lock_free() { flock -n "$R9700_STATE_DIR/lock" true; }
 
 alive() { [ -f "$STUB/containers/$1.pid" ] && kill -0 "$(pid_of "$1")" 2> /dev/null; }
+
+calls_of_verb() {
+  [ -f "$STUB/calls.log" ] || { echo 0; return 0; }
+  awk -v v="$1" '$3 == "wslc" && $4 == v { n++ } END { print n + 0 }' "$STUB/calls.log"
+}
+
+# argv_of_verb <verb> [<n>]: the blocks of calls.argv whose first argument is <verb>; ARGV is the n-th of them (default the last), empty when there is none
+argv_of_verb() {
+  local want="$1" pick="${2:-last}" line n=0 in=0
+  local -a cur=()
+  ARGV=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ $line == '@@ '* ]]; then
+      cur=()
+      in=1
+    elif [ -z "$line" ]; then
+      if [ "$in" = 1 ] && [ "${cur[0]:-}" = "$want" ]; then
+        n=$((n + 1))
+        if [ "$pick" = last ] || [ "$pick" = "$n" ]; then ARGV=("${cur[@]}"); fi
+      fi
+      in=0
+    elif [ "$in" = 1 ]; then
+      cur+=("$line")
+    fi
+  done < "$STUB/calls.argv"
+}

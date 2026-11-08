@@ -1,0 +1,56 @@
+# ComfyUI on the AMD Radeon AI PRO R9700 (gfx1201) in a wslc container (no Docker).
+# The base brings ROCm 10.1 and a ROCm build of PyTorch 2.13; under wslc the GPU is reached through /dev/dxg
+# (librocdxg ships in the base), not /dev/kfd. Checked 2026-11-07: torch.cuda.is_available() True, R9700, fp16 matmul OK.
+# Everything Python lives in this image or in its volumes; nothing is installed on Windows or in the WSL distro.
+#
+# This file is built by `bin/r9700 comfy build` (lib/comfy.sh). The verb places it, with entrypoint.sh and fetch_model.sh, in
+# $WORK_DIR/r9700/comfyui/ and builds from that folder; BASE and COMFYUI_REF come from COMFY_BASE_IMAGE and COMFY_REF of machine.env
+# (both validated at the load of the config: an image reference and a git tag word). The defaults below are the field table's defaults.
+
+ARG BASE=rocm/pytorch:rocm10.1.0_ubuntu24.04_py3.12_pytorch_release_2.13.0
+FROM ${BASE}
+
+ARG COMFYUI_REF=v0.44.0
+
+# git for the Manager (custom nodes are git repos), ffmpeg for video and audio nodes, curl for fetch_model.sh (it runs in this image).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ffmpeg curl ca-certificates python3.12-venv \
+ && rm -rf /var/lib/apt/lists/*
+
+# Keep the base's torch family and ROCm packages exactly as they are: every later pip install (ours, the Manager's,
+# a custom node's) gets these as constraints, so pip can never swap torch for a CUDA build from PyPI.
+RUN python3 -m pip list --format=freeze \
+      | grep -iE '^(torch|torchvision|torchaudio|triton|pytorch-triton-rocm|amd-[a-z0-9-]+|rocm[a-z0-9-]*)==' \
+      > /opt/rocm-constraints.txt \
+ && cat /opt/rocm-constraints.txt
+
+RUN git clone --depth 1 --branch ${COMFYUI_REF} https://github.com/comfyanonymous/ComfyUI.git /opt/ComfyUI \
+ && python3 -m pip install --no-cache-dir -c /opt/rocm-constraints.txt \
+      -r /opt/ComfyUI/requirements.txt -r /opt/ComfyUI/manager_requirements.txt
+
+COPY entrypoint.sh /opt/entrypoint.sh
+RUN chmod 0755 /opt/entrypoint.sh
+
+# /data  (volume comfy-data):   custom_nodes, user (workflows, Manager settings), input, temp, and venv: a venv with
+#                               --system-site-packages made at the first start. torch/ROCm come from this image; what
+#                               custom nodes install goes into the venv, so it survives a rebuild of the image.
+#                               (Not PIP_USER: with it `pip list` shows only the user site, and the Manager then reports
+#                               "PyTorch is not installed" and reinstalls dependencies that are already there.)
+# /models (volume comfy-models): checkpoints, loras, vae, text_encoders, diffusion_models, ...
+# /cache (volume comfy-cache):   MIOpen and Triton kernel caches, so the second start is faster.
+# NOT set: PYTORCH_HIP_ALLOC_CONF=expandable_segments:True (AMD's RX 9000 guide recommends it). Under wslc/dxg it makes
+#          the first GPU allocation fail with "hipErrorInvalidValue", and ComfyUI then disables flash attention.
+#          Measured 2026-11-07: without it, SDPA flash and efficient attention both run on gfx1201.
+ENV PIP_CONSTRAINT=/opt/rocm-constraints.txt \
+    UV_CONSTRAINT=/opt/rocm-constraints.txt \
+    VIRTUAL_ENV=/data/venv \
+    PATH=/data/venv/bin:$PATH \
+    MIOPEN_USER_DB_PATH=/cache/miopen \
+    MIOPEN_CUSTOM_CACHE_DIR=/cache/miopen \
+    TRITON_CACHE_DIR=/cache/triton \
+    HIP_VISIBLE_DEVICES=0
+
+WORKDIR /opt/ComfyUI
+EXPOSE 8188
+ENTRYPOINT ["/opt/entrypoint.sh"]
+CMD []

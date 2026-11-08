@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # `bin/r9700 comfy` and the one owner of the card (E1.S2): the owner check of every verb under the supervisor (OC1-OC5), the two-owner admission of the locked entry (OC6-OC8),
 # the cleanup and `init` never stopping the operator's ComfyUI (NR7), the restore's half and the marker (RM2-RM4), `comfy stop` (CT1-CT5) and `comfy status` (CU1-CU3).
-# `comfy start` is tests/test_comfy_start.sh, the name rules are tests/test_config_comfy.sh. Every test body is a function t_<guarantee>; each runs in its own subshell and
+# The image files (IM1-IM5) and comfyui/models.conf (MC1-MC3) of E1.S3 are here too. `comfy start` is tests/test_comfy_start.sh, the name rules are tests/test_config_comfy.sh,
+# `comfy build` is tests/test_comfy_build.sh, `comfy fetch` tests/test_comfy_fetch.sh and comfyui/fetch_model.sh tests/test_comfy_fetch_model.sh. Every test body is a function t_<guarantee>; each runs in its own subshell and
 # writes only below $R9700_TEST_ROOT. Waits are bounded polls on a call-log line or a file, never a fixed sleep.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -468,6 +469,223 @@ t_a_stop_that_fails_followed_by_a_list_that_fails_says_the_list_failed() {
   assert_contains "$ERR" "comfyui did not stop (code 1)" "the stop failed"
   assert_contains "$ERR" "the container list failed 3 times (" "and the list after it failed too, which the line says"
   kill_recorded_pids "$CASE"
+}
+
+# ---- the image files (E1.S3: IM1-IM5) -----------------------------------------------------------------------------------------------------------------
+
+CF="$REPO/comfyui/Containerfile"
+EP="$REPO/comfyui/entrypoint.sh"
+
+# code_lines <file>: the lines that are not comments (a comment line starts with #, after any blanks)
+code_lines() { grep -vE '^[[:space:]]*#' "$1"; }
+
+# comment_block_with <file> <word> <word>: 0 when ONE block of consecutive comment lines holds both words
+comment_block_with() {
+  awk -v a="$2" -v b="$3" '
+    /^[[:space:]]*#/ { blk = blk "\n" $0; next }
+    { if (index(blk, a) && index(blk, b)) f = 1; blk = "" }
+    END { if (index(blk, a) && index(blk, b)) f = 1; exit !f }' "$1"
+}
+
+# arg_default <Containerfile> <ARG name>: the default of an `ARG <name>=<value>` line
+arg_default() { sed -n "s/^ARG $2=//p" "$1" | head -n 1; }
+
+# field_default <KEY>: the default config_keys prints for a field (read, never typed)
+field_default() { config_keys | awk -v k="$1" '$2 == k { print $4 }'; }
+
+# IM1
+t_the_image_never_sets_the_hip_allocator_option_and_says_why() {
+  comfy_setup "$FUNCNAME"
+  assert_eq "" "$(code_lines "$CF" | grep -n 'PYTORCH_HIP_ALLOC_CONF')" "no code line of the Containerfile names PYTORCH_HIP_ALLOC_CONF"
+  assert_eq "" "$(code_lines "$EP" | grep -n 'PYTORCH_HIP_ALLOC_CONF')" "no code line of entrypoint.sh names it"
+  assert_exit 0 "a comment block of the Containerfile names it with hipErrorInvalidValue" -- comment_block_with "$CF" PYTORCH_HIP_ALLOC_CONF hipErrorInvalidValue
+  # the scan is alive: a planted copy that sets it in its ENV line is found by the same grep
+  { cat "$CF"; printf 'ENV PYTORCH_HIP_ALLOC_CONF=expandable_segments:True\n'; } > "$CASE/planted.Containerfile"
+  assert_contains "$(code_lines "$CASE/planted.Containerfile" | grep -n 'PYTORCH_HIP_ALLOC_CONF')" "PYTORCH_HIP_ALLOC_CONF" "the same grep finds it in a planted copy"
+}
+
+# IM2
+t_the_builds_defaults_are_the_field_tables() {
+  comfy_setup "$FUNCNAME"
+  assert_eq "$(field_default COMFY_BASE_IMAGE)" "$(arg_default "$CF" BASE)" "ARG BASE equals the default of COMFY_BASE_IMAGE"
+  assert_eq "$(field_default COMFY_REF)" "$(arg_default "$CF" COMFYUI_REF)" "ARG COMFYUI_REF equals the default of COMFY_REF"
+  assert_contains "$(field_default COMFY_REF)" "v" "the field default was read (a scan that reads nothing would pass)"
+  sed 's/^ARG COMFYUI_REF=.*/ARG COMFYUI_REF=v0.0.1/' "$CF" > "$CASE/planted.Containerfile"
+  assert_eq "no" "$([ "$(field_default COMFY_REF)" = "$(arg_default "$CASE/planted.Containerfile" COMFYUI_REF)" ] && echo yes || echo no)" "a planted copy with another tag fails the same comparison"
+}
+
+# entry_world <name>: a case folder, a root for the entrypoint and a python3 in front of PATH that adds --without-pip to `-m venv` (the host may have no ensurepip; the image has python3.12-venv).
+# The shim follows testing.md's shim clause: it resolves the real python3 ONCE, at its first install, with its own folder removed from the lookup, compares REAL paths, refuses a result inside its own folder and
+# bakes the absolute path in; a later install keeps what the first one baked, and the shim never looks python3 up at run time (two shims that re-resolve would bake each other).
+entry_world() {
+  comfy_setup "$1"
+  ROOT="$CASE/root"
+  SHIM="$CASE/shim"
+  mkdir -p "$ROOT" "$SHIM"
+  local real shim_real dir path_without="" IFS_SAVE="$IFS"
+  shim_real="$(readlink -f "$SHIM")"
+  if [ ! -e "$SHIM/python3" ]; then
+    IFS=:
+    for dir in $PATH; do
+      [ "$(readlink -f "${dir:-.}" 2> /dev/null)" = "$shim_real" ] || path_without+="${path_without:+:}$dir"
+    done
+    IFS="$IFS_SAVE"
+    real="$(PATH="$path_without" command -v python3)" || { _assert_fail "entry_world" "no python3 outside the shim folder"; return 1; }
+    real="$(readlink -f "$real")"
+    case $real/ in
+      "$shim_real"/*) _assert_fail "entry_world" "the real python3 resolved to $real, inside the shim folder"; return 1 ;;
+    esac
+    printf '%s\n' '#!/usr/bin/env bash' "if [ \"\${1:-}\" = -m ] && [ \"\${2:-}\" = venv ]; then exec \"$real\" -m venv --without-pip \"\${@:3}\"; fi" "exec \"$real\" \"\$@\"" > "$SHIM/python3"
+    chmod 755 "$SHIM/python3"
+  fi
+  PATH="$SHIM:$PATH"
+  export PATH
+}
+
+# entry_run [<extra arg>...]: the entrypoint in dry mode against $ROOT
+entry_run() { R9700_TEST_COMFY_ROOT="$ROOT" R9700_TEST_ENTRY_DRY=1 bash "$EP" "$@"; }
+
+# IM3a
+t_the_python_shim_never_resolves_to_itself_when_it_is_installed_twice() {
+  entry_world "$FUNCNAME"
+  local first
+  first="$(cat "$SHIM/python3")"
+  entry_world "$FUNCNAME"
+  assert_eq "$first" "$(cat "$SHIM/python3")" "a later install keeps what the first one baked"
+  assert_not_contains "$(cat "$SHIM/python3")" "$SHIM" "the baked program is not inside the shim folder"
+  assert_exit 0 "the shim runs (a shim that baked itself would exec itself without end)" -- timeout 20 python3 -c 'print(1)'
+  assert_eq "1" "$OUT" "and reaches the real python3"
+}
+
+# IM3
+t_the_manager_uses_pip_in_each_of_its_three_starting_states() {
+  entry_world "$FUNCNAME"
+  local cfg="$ROOT/data/user/__manager/config.ini"
+  assert_exit 0 "no config.ini" -- entry_run
+  assert_eq "[default]|use_uv = False" "$(tr '\n' '|' < "$cfg" | sed 's/|$//')" "the file is made with [default] and use_uv = False"
+  printf '[default]\nuse_uv = True\nother = 1\n' > "$cfg"
+  assert_exit 0 "use_uv = True" -- entry_run
+  assert_eq "[default]|use_uv = False|other = 1" "$(tr '\n' '|' < "$cfg" | sed 's/|$//')" "that line becomes use_uv = False"
+  printf '[default]\nother = 1\n' > "$cfg"
+  assert_exit 0 "a [default] section and no use_uv line" -- entry_run
+  assert_eq "[default]|use_uv = False|other = 1" "$(tr '\n' '|' < "$cfg" | sed 's/|$//')" "the line is added under it"
+  assert_exit 0 "and a run again changes nothing" -- entry_run
+  assert_eq "1" "$(grep -c '^use_uv' "$cfg")" "one use_uv line"
+}
+
+# IM4
+t_a_venv_of_another_python_version_is_moved_aside_never_deleted_and_one_of_this_version_is_kept() {
+  entry_world "$FUNCNAME"
+  local host other aside
+  host="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+  other=3.11.0
+  [ "$host" != "$other" ] || other=3.10.0
+  mkdir -p "$ROOT/data/venv"
+  printf 'home = /usr/bin\nversion = %s\n' "$other" > "$ROOT/data/venv/pyvenv.cfg"
+  : > "$ROOT/data/venv/marker"
+  assert_exit 0 "a venv made with Python $other" -- entry_run
+  aside="$(ls -d "$ROOT/data/venv.python-$other."* 2> /dev/null | head -n 1)"
+  assert_exit 0 "the old venv is in venv.python-$other.<stamp>" -- test -f "$aside/marker"
+  if [[ ${aside##*.} =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then assert_eq ok ok "its stamp is a UTC stamp"; else assert_eq "<YYYYMMDDTHHMMSSZ>" "${aside##*.}" "its stamp is a UTC stamp"; fi
+  assert_exit 0 "a new venv was made" -- test -x "$ROOT/data/venv/bin/python"
+  assert_exit 0 "with the system site packages of the image (torch and ROCm come from it)" -- grep -qx 'include-system-site-packages = true' "$ROOT/data/venv/pyvenv.cfg"
+  assert_missing "$ROOT/data/venv/marker" "without the old files"
+  : > "$ROOT/data/venv/kept"
+  assert_exit 0 "a second run" -- entry_run
+  assert_exit 0 "keeps the venv of this version (a marker planted in it survives)" -- test -f "$ROOT/data/venv/kept"
+  assert_eq "1" "$(ls -d "$ROOT/data/venv.python-"* | wc -l | tr -d ' ')" "and moves nothing else aside"
+}
+
+# IM5
+t_comfyui_starts_with_the_volumes_folders_and_the_extra_arguments() {
+  entry_world "$FUNCNAME"
+  local -a want got
+  local d
+  assert_exit 0 "the dry run with extra arguments" -- entry_run --reserve-vram 2
+  mapfile -t got <<< "$OUT"
+  want=("$ROOT/data/venv/bin/python" /opt/ComfyUI/main.py --listen 0.0.0.0 --port 8188 --base-directory "$ROOT/data" --models-directory "$ROOT/models" --enable-manager --reserve-vram 2)
+  assert_eq "$(printf '%s|' "${want[@]}")" "$(printf '%s|' "${got[@]}")" "one word per line: the venv's python, main.py, ComfyUI's arguments, then the extra ones"
+  for d in data/custom_nodes data/user data/input data/output data/temp cache/miopen cache/triton; do
+    assert_exit 0 "$d exists below the root" -- test -d "$ROOT/$d"
+  done
+  for d in checkpoints loras vae text_encoders diffusion_models clip_vision controlnet upscale_models embeddings audio_encoders latent_upscale_models model_patches; do
+    assert_exit 0 "models/$d exists below the root" -- test -d "$ROOT/models/$d"
+  done
+  assert_missing "/data/venv.python-never" "nothing was made outside the root (a root-less path is not touched)"
+}
+
+# ---- comfyui/models.conf (E1.S3: MC1-MC3) -------------------------------------------------------------------------------------------------------------
+
+# mc_conf <name> <line>...: a models.conf copy of the test; sets R9700_COMFY_MODELS_CONF (the test knob of comfy_models_conf) and MC_FILE
+mc_conf() {
+  local name="$1"
+  shift
+  MC_FILE="$CASE/$name.conf"
+  printf '%s\n' "$@" > "$MC_FILE"
+  export R9700_COMFY_MODELS_CONF="$MC_FILE"
+}
+
+# MC1
+t_every_line_of_the_real_models_conf_is_well_formed() {
+  comfy_setup "$FUNCNAME"
+  local conf="$REPO/comfyui/models.conf" set dir url sha rest n=0 bad="" dup
+  while read -r set dir url sha rest; do
+    n=$((n + 1))
+    [[ $set =~ ^[a-z0-9]+$ && $dir =~ ^[a-z_]+$ && $url =~ ^https://[^[:space:]]+$ && $sha =~ ^[0-9a-f]{64}$ && -z $rest ]] || bad+="$set/$dir "
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$conf")
+  assert_eq "" "$bad" "every non-comment line has a set, a folder, an https URL and a 64-character lower-case sha256"
+  assert_exit 0 "the scan is alive: the file has lines" -- test "$n" -ge 7
+  dup="$(grep -vE '^[[:space:]]*(#|$)' "$conf" | awk '{ n = split($3, p, "/"); print $2, p[n] }' | sort | uniq -d)"
+  assert_eq "" "$dup" "no basename twice in one folder"
+  assert_exit 0 "comfy_models_load returns 0 on the real file" -- comfy_models_load "$conf"
+  assert_contains "$(grep 'z_image_turbo_bf16.safetensors' "$conf")" "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6" "parity row: the pin of z_image_turbo_bf16.safetensors"
+  assert_eq "$n" "${#_COMFY_M_SHA[@]}" "the parse read every line"
+}
+
+# MC2
+t_a_malformed_line_is_refused_with_its_place() {
+  comfy_setup "$FUNCNAME"
+  local good="zimage vae https://h.example/r/ae.safetensors $(printf 'a%.0s' $(seq 1 64))" short
+  short="$(printf 'a%.0s' $(seq 1 63))"
+  mc_conf short "# header" "$good" "zimage vae https://h.example/r/b.safetensors $short"
+  assert_exit 2 "a 63-character hash" -- comfy_models_load "$MC_FILE"
+  assert_eq "r9700: comfy: $MC_FILE:3: the sha256 is not 64 lower-case hex characters" "$ERR" "names the file, the line and the problem"
+  mc_conf three "zimage vae https://h.example/r/b.safetensors"
+  assert_exit 2 "three words" -- comfy_models_load "$MC_FILE"
+  assert_contains "$ERR" "r9700: comfy: $MC_FILE:1: " "names the place"
+  assert_contains "$ERR" "four words" "and says four words"
+  mc_conf upper "Zimage vae https://h.example/r/b.safetensors $(printf 'a%.0s' $(seq 1 64))"
+  assert_exit 2 "a set Zimage" -- comfy_models_load "$MC_FILE"
+  assert_contains "$ERR" "r9700: comfy: $MC_FILE:1: the set" "names the place and the set"
+  mc_conf twice "$good" "zimage vae https://other.example/x/ae.safetensors $(printf 'b%.0s' $(seq 1 64))"
+  assert_exit 2 "the same file twice in a folder" -- comfy_models_load "$MC_FILE"
+  assert_contains "$ERR" "r9700: comfy: $MC_FILE:2: " "the second place"
+  assert_contains "$ERR" "ae.safetensors" "names the file"
+  mc_conf more "zimage vae http://h.example/r/b.safetensors $(printf 'a%.0s' $(seq 1 64))" "zimage ../x https://h.example/r/c.safetensors $(printf 'a%.0s' $(seq 1 64))" "zimage vae https://h.example/r/d.safetensors $short"
+  assert_exit 2 "three bad lines in one file" -- comfy_models_load "$MC_FILE"
+  assert_eq "3" "$(grep -c "^r9700: comfy: $MC_FILE:" <<< "$ERR")" "all are reported in one pass, one line each"
+  local pin hostile
+  pin="$(printf 'a%.0s' $(seq 1 64))"
+  for hostile in "https://h.example/r/-x.bin" "https://h.example/r/.." "https://h.example/r/." "https://h.example/r/dir/" "https://h.example/r/a[1].bin" "https://h.example/r/a{1,2}.bin" 'https://h.example/r/a"b.bin' 'https://h.example/r/a\b.bin' 'https://h.example/r/a`b.bin' "https://h.example/r/a.bin?x=[1]" "https://h.example/r/a b.bin"; do
+    mc_conf hostile "zimage vae $hostile $pin"
+    assert_exit 2 "a hostile file name or url [$hostile]" -- comfy_models_load "$MC_FILE"
+    assert_contains "$ERR" "r9700: comfy: $MC_FILE:1: " "[$hostile] names the place"
+  done
+  mc_conf good "zimage vae https://h.example/r/a-b_c.1.bin?download=true $pin"
+  assert_exit 0 "a plain name with a query is accepted (the scan is alive: the same shapes are not all refused)" -- comfy_models_load "$MC_FILE"
+}
+
+# MC3
+t_the_legal_sets_are_the_files() {
+  comfy_setup "$FUNCNAME"
+  local conf="$REPO/comfyui/models.conf" want
+  want="$(grep -vE '^[[:space:]]*(#|$)' "$conf" | awk '!seen[$1]++ { printf "%s%s", sep, $1; sep = " " }')"
+  assert_contains " $want " " zimage " "the scan is alive: the awk over the file finds zimage"
+  comfy_models_load "$conf"
+  assert_eq "$want" "$(comfy_sets | tr '\n' ' ' | sed 's/ $//')" "comfy_sets prints the set names in file order, each once"
+  mc_conf custom "b vae https://h.example/r/x.bin $(printf 'a%.0s' $(seq 1 64))" "a vae https://h.example/r/y.bin $(printf 'a%.0s' $(seq 1 64))" "b vae https://h.example/r/z.bin $(printf 'a%.0s' $(seq 1 64))"
+  comfy_models_load "$MC_FILE"
+  assert_eq "b a" "$(comfy_sets | tr '\n' ' ' | sed 's/ $//')" "a copy named by R9700_COMFY_MODELS_CONF: file order, once each"
 }
 
 run_all_tests

@@ -33,6 +33,42 @@ t_the_marker_records_the_comfy_container_and_a_marker_without_it_still_reads() {
   assert_contains "$ERR" "marker: $MARKER_FILE:12: COMFY_CONTAINER:" "naming the file, the line and the key"
 }
 
+# holder_named <verb> <lock file name>: a process that holds that lock file of the state directory (exec'd sleep, so its pid is the holder's); sets HOLDER
+holder_named() {
+  ( lock_take "$1" "$2" || exit 1; : > "$CASE/held-$2"; exec sleep 30 ) &
+  HOLDER=$!
+  disown "$HOLDER"
+  guard_pid "$HOLDER" "holder-$HOLDER"
+  local i
+  for i in $(seq 1 100); do [ -e "$CASE/held-$2" ] && return 0; sleep 0.1; done
+  return 1
+}
+
+# FL1
+t_lock_take_takes_a_named_lock_file_of_the_state_directory_and_the_default_is_unchanged() {
+  lc_setup "$FUNCNAME"
+  local line bad
+  holder_named comfy-fetch comfy-fetch.lock
+  read -r line < "$R9700_STATE_DIR/comfy-fetch.lock"
+  if [[ $line =~ ^$HOLDER\ comfy-fetch\ [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]]; then assert_eq ok ok "comfy-fetch.lock holds <pid> comfy-fetch <time>"; else assert_eq "$HOLDER comfy-fetch <time>" "$line" "comfy-fetch.lock holds <pid> comfy-fetch <time>"; fi
+  assert_exit 4 "a second taker of the same file is refused" -- lock_take comfy-fetch comfy-fetch.lock
+  local since="${line##* }"
+  assert_eq "r9700: another run holds $R9700_STATE_DIR/comfy-fetch.lock: pid $HOLDER, comfy-fetch, since $since" "$ERR" "its line names the file, the pid, the verb and the time"
+  holder_named step lock
+  assert_exit 0 "meanwhile the GPU lock was taken by another process: the two files are two locks" -- test -f "$R9700_STATE_DIR/lock"
+  read -r line < "$R9700_STATE_DIR/lock"
+  assert_contains "$line" "$HOLDER step" "the GPU lock's holder line is the step's"
+  kill -KILL "$HOLDER"
+  for bad in "a/b" ".hidden" "-x" "" "../lock" "a b" "lock/"; do
+    assert_exit 2 "lock_take with the name [$bad] is refused" -- lock_take x "$bad"
+    assert_eq "lock_take: \"$bad\" is not a lock file name" "$ERR" "[$bad] one line"
+  done
+  assert_eq "comfy-fetch.lock lock" "$(ls "$R9700_STATE_DIR" | grep -v '^restore' | tr '\n' ' ' | sed 's/ $//')" "no file was made for a refused name"
+  assert_exit 0 "one argument: the default file lock is free again" -- lock_take step
+  read -r line < "$R9700_STATE_DIR/lock"
+  assert_contains "$line" " step " "and holds the line of its taker"
+}
+
 # a probe double: prints what the test scripted in $CASE/probe.words, one word per line
 probe_double() { cat "$CASE/probe.words"; }
 

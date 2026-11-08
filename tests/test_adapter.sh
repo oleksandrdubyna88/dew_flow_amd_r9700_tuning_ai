@@ -108,6 +108,15 @@ t_carriage_returns_are_removed_by_every_adapter_function() {
   printf 'ok\n' > "$STUB/answers/comfy_ready"
   assert_exit 0 "comfy_probe" -- comfy_probe r9700tune-a
   assert_not_contains "$OUT" "$CR" "comfy_probe: no CR"
+  printf 'img t sha256:%064d\n' 1 > "$STUB/images"
+  assert_exit 0 "wslc_tag" -- wslc_tag img:t img:u
+  assert_not_contains "$OUT" "$CR" "wslc_tag: no CR"
+  assert_exit 0 "wslc_rmi" -- wslc_rmi img:u
+  assert_contains "$(wslc rmi img:t)" "$CR" "the stub prints the CRs for rmi too (so the test can fail)"
+  assert_not_contains "$OUT" "$CR" "wslc_rmi: no CR"
+  assert_exit 0 "wslc_image_list" -- wslc_image_list
+  assert_contains "$(wslc image list)" "$CR" "the stub prints the CRs for image list too (so the test can fail)"
+  assert_not_contains "$OUT" "$CR" "wslc_image_list: no CR"
   assert_exit 0 "restore_start" -- restore_start
   assert_not_contains "$OUT" "$CR" "restore_start: no CR"
   assert_contains "$(wslc build -t x .)" "$CR" "the stub prints the CRs of a Windows executable for build (so the test can fail)"
@@ -332,9 +341,13 @@ t_the_ceiling_is_the_documented_one_for_each_function() {
   wslc_remove a > /dev/null
   wslc_inspect a > /dev/null
   comfy_probe a > /dev/null
+  printf 'img t sha256:%064d\n' 1 > "$STUB/images"
+  wslc_tag a:b c:d > /dev/null
+  wslc_rmi img:t > /dev/null
+  wslc_image_list > /dev/null
   assert_missing "$CASE/sleeps" "t_scale (the sleeps' scale) was never asked for a ceiling"
   # every call asks for the kill-after grace (5) and then its ceiling
-  assert_eq "5 120 5 33 5 60 5 60 5 60 5 30 5 60 5 120 5 70 5 77 5 60 5 60 5 60 5 60 5 20" "$(tr '\n' ' ' < "$CASE/ceilings" | sed 's/ $//')" "run 120, exec the argument, list 60, stop 60, logs 60, ram 30, disk 60, restore_start 120, probe 70 through exec, build the argument, volume list 60, volume create 60, remove 60, inspect 60, the ComfyUI probe through exec 20"
+  assert_eq "5 120 5 33 5 60 5 60 5 60 5 30 5 60 5 120 5 70 5 77 5 60 5 60 5 60 5 60 5 20 5 60 5 60 5 60" "$(tr '\n' ' ' < "$CASE/ceilings" | sed 's/ $//')" "run 120, exec the argument, list 60, stop 60, logs 60, ram 30, disk 60, restore_start 120, probe 70 through exec, build the argument, volume list 60, volume create 60, remove 60, inspect 60, the ComfyUI probe through exec 20, tag 60, rmi 60, image list 60"
   kill_recorded_pids "$CASE"
 }
 

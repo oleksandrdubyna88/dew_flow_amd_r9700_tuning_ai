@@ -17,6 +17,9 @@
 #   wslc_volume_create <name>               volume create <name>; prints the child's output (stdout and stderr merged)                  60 s
 #   wslc_remove <name>                      remove <name> (a STOPPED container keeps its name until it is removed); prints the child's output   60 s
 #   wslc_inspect <reference>                inspect <reference> (an image or a container); prints the JSON the engine answers                    60 s
+#   wslc_tag <source> <target>              tag <source> <target>: a second name for an image; prints the child's output                         60 s
+#   wslc_rmi <repository>:<tag>             rmi <exact tag>: removes ONE tag, never an id, a pattern or an option; prints the child's output       60 s
+#   wslc_image_list                         `image list --no-trunc`: `<repository> <tag> <id>` per image, one per line, no header                60 s
 #   comfy_probe <name>                      the readiness check of the operator's ComfyUI through wslc_exec 20: prints
 #                                           `device <name>` and `ready`, or `system_stats: HTTP <status>` / `system_stats: <exception class>` and returns 1   20 s
 #   win_ram_mb                              the Windows "Available MBytes" integer; nothing and 1 when it is not an integer    30 s
@@ -35,6 +38,7 @@
 
 _ADAPTER_NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$' # a container name never starts with "-": it can never be read as an option
 _ADAPTER_REF_RE='^[A-Za-z0-9][A-Za-z0-9._:/-]*$' # an image reference has "/" and ":"; it never starts with "-" and has no space
+_ADAPTER_TAGGED_RE='^[A-Za-z0-9][A-Za-z0-9._/-]*:[A-Za-z0-9._-]+$' # an EXACT image tag <repository>:<tag>: no bare repository (the engine would read :latest), no pattern, no option
 
 # The Windows PowerShell commands of the old guards, one argv element each (ram_guard_all.sh line 8, disk_gate.sh line 7).
 _ADAPTER_RAM_PS='[int](Get-Counter "\Memory\Available MBytes").CounterSamples[0].CookedValue'
@@ -404,6 +408,47 @@ wslc_build() {
   fi
   shift
   _adapter_call --merge "$_adapter_ceiling" "$R9700_WSLC" build "$@" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_tag <source> <target>: `tag <source> <target>` (alias `image tag`): the target names the image the source names. Both words are references (the check of wslc_inspect), and
+# there are exactly two. The output of a tag, on success and on failure, was not observed by hand (E1's acceptance records it); the argv shape is the engine's own help text.
+wslc_tag() {
+  _adapter_drop_lock
+  local _adapter_word
+  for _adapter_word in "${1:-}" "${2:-}"; do
+    if ! [[ $_adapter_word =~ $_ADAPTER_REF_RE ]]; then
+      echo "wslc_tag: \"$_adapter_word\" is not a reference (letters, digits, . _ : / -; no leading -)" >&2
+      return 2
+    fi
+  done
+  if [ "$#" -ne 2 ]; then
+    echo "wslc_tag: two references are needed (a source and a target), got $#" >&2
+    return 2
+  fi
+  _adapter_call --merge 60 "$R9700_WSLC" tag "$1" "$2" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_rmi <exact tag>: `rmi <repository>:<tag>` (alias `image remove`), ONE reference. The word must be an exact tag: a bare repository would be read as :latest, an image id
+# (`sha256:...`, or its short hex form) or a pattern could remove more than one image, and a word that starts with - is an option (-f). Neither -f nor --no-prune is ever passed.
+# A short hex id has no colon, so the tag shape already refuses it; `sha256:<hex>` has one and is refused by name. The output of an rmi was not observed by hand.
+wslc_rmi() {
+  _adapter_drop_lock
+  if [ "$#" -ne 1 ] || ! [[ ${1:-} =~ $_ADAPTER_TAGGED_RE ]] || [[ $1 == sha256:* ]]; then
+    echo "wslc_rmi: \"$*\" is not an exact image tag (<repository>:<tag>; never an id, a pattern or an option)" >&2
+    return 2
+  fi
+  _adapter_call --merge 60 "$R9700_WSLC" rmi "$1" | tr -d '\r' 9>&-
+  return "${PIPESTATUS[0]}"
+}
+
+# wslc_image_list: `image list --no-trunc`: the first three columns of every row after the header, `<repository> <tag> <id>`. Observed by hand on the operator's PC (2026-11-07,
+# through pwsh.exe): the header is `REPOSITORY TAG IMAGE ID CREATED SIZE`, a row is `comfyui-r9700 local sha256:<64 hex> 6 hours ago 27.3GB`, an untagged image is
+# `<none> <none> sha256:<64 hex> ...`. CREATED is several words ("6 hours ago") and SIZE never matters, so only $1 $2 $3 are read: none of them holds a space.
+wslc_image_list() {
+  _adapter_drop_lock
+  _adapter_call --quiet 60 "$R9700_WSLC" image list --no-trunc | tr -d '\r' 9>&- | awk 'NR > 1 && NF { print $1, $2, $3 }' 9>&-
   return "${PIPESTATUS[0]}"
 }
 

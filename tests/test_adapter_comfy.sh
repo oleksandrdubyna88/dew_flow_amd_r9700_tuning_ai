@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The adapter calls of the ComfyUI verb (E1.S2): wslc_remove, wslc_inspect and the readiness probe of the operator's ComfyUI (scenarios AW1, AW2, AW5; AW3 and AW4 extend the
-# ceiling and carriage-return tests of tests/test_adapter.sh). A separate file because tests/test_adapter.sh would pass the file-size limit. Every test body is a function
+# ceiling and carriage-return tests of tests/test_adapter.sh); and the three image calls of E1.S3: wslc_tag, wslc_rmi, wslc_image_list (AI1-AI3; AI4 and AI5 extend the same two tests). A separate file because tests/test_adapter.sh would pass the file-size limit. Every test body is a function
 # t_<guarantee>; each runs in its own subshell and writes only below $R9700_TEST_ROOT.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -114,6 +114,75 @@ t_comfy_probe_runs_the_program_through_exec_and_keeps_the_name_check() {
   assert_exit 2 "an option for a name" -- comfy_probe -x
   assert_contains "$ERR" "comfy_probe" "names the function"
   kill_recorded_pids "$CASE"
+}
+
+# AI1
+t_wslc_tag_hands_on_two_references_and_refuses_anything_else_before_a_call() {
+  setup_case "$FUNCNAME"
+  printf 'comfyui-r9700 20261107T120000Z sha256:%064d\n' 1 > "$STUB/images"
+  assert_exit 0 "wslc_tag of two references" -- wslc_tag comfyui-r9700:20261107T120000Z comfyui-r9700:local
+  argv_of wslc
+  assert_eq "tag|comfyui-r9700:20261107T120000Z|comfyui-r9700:local" "$(IFS='|'; echo "${ARGV[*]}")" "the argv is tag <source> <target>"
+  assert_not_contains "$OUT" "$CR" "no CR in what it prints"
+  rm -f "$STUB/calls.log" "$STUB/calls.argv"
+  local -a bad
+  local i
+  for i in 1 2 3 4; do
+    case $i in
+      1) bad=(-x a:b) ;;
+      2) bad=(a:b '') ;;
+      3) bad=('a b' c:d) ;;
+      4) bad=(a:b) ;;
+    esac
+    assert_exit 2 "wslc_tag with ${#bad[@]} words, the first [${bad[0]}]" -- wslc_tag "${bad[@]}"
+    assert_eq "1" "$(grep -c . <<< "$ERR")" "[$i] one line"
+    assert_contains "$ERR" "wslc_tag" "[$i] names the function"
+    assert_contains "$ERR" "reference" "[$i] and the noun"
+  done
+  assert_missing "$STUB/calls.log" "no call was made"
+  printf '1\n' > "$STUB/answers/tag_rc"
+  assert_exit 1 "the child's code is the function's code" -- wslc_tag a:b c:d
+}
+
+# AI2
+t_wslc_rmi_removes_one_exact_tag_and_nothing_that_could_mean_more() {
+  setup_case "$FUNCNAME"
+  printf 'comfyui-r9700 20261107T120000Z sha256:%064d\n' 1 > "$STUB/images"
+  assert_exit 0 "wslc_rmi of an exact tag" -- wslc_rmi comfyui-r9700:20261107T120000Z
+  argv_of wslc
+  assert_eq "rmi|comfyui-r9700:20261107T120000Z" "$(IFS='|'; echo "${ARGV[*]}")" "the argv is rmi <tag>"
+  rm -f "$STUB/calls.log" "$STUB/calls.argv"
+  local bad
+  for bad in comfyui-r9700 sha256:5662f4cbd417 5662f4cbd417 -f 'comfyui-r9700:*' ''; do
+    assert_exit 2 "wslc_rmi [$bad] is refused" -- wslc_rmi "$bad"
+    assert_eq "1" "$(grep -c . <<< "$ERR")" "[$bad] one line"
+    assert_contains "$ERR" "wslc_rmi: \"$bad\" is not an exact image tag (<repository>:<tag>; never an id, a pattern or an option)" "[$bad] the line"
+  done
+  assert_exit 2 "wslc_rmi with two words" -- wslc_rmi a:b c:d
+  assert_contains "$ERR" "wslc_rmi" "names the function"
+  assert_exit 2 "wslc_rmi with no word" -- wslc_rmi
+  assert_missing "$STUB/calls.log" "no call was made for any of them"
+}
+
+# AI3
+t_wslc_image_list_prints_repository_tag_and_id_one_image_per_line() {
+  setup_case "$FUNCNAME"
+  local fixture="$HERE/fixtures/comfy/image_list.txt" want="" repository tag id _rest
+  cp "$fixture" "$STUB/answers/image_list"
+  # the expected words are cut from the fixture's own rows (the header is the first line): the parse under test is not used to make them
+  while read -r repository tag id _rest; do want+="$repository $tag $id"$'\n'; done < <(tail -n +2 "$fixture")
+  assert_exit 0 "wslc_image_list" -- wslc_image_list
+  assert_eq "${want%$'\n'}" "$OUT" "exactly the three rows' first three columns, whole ids"
+  assert_eq "3" "$(grep -c . <<< "$OUT")" "three lines, no header"
+  assert_not_contains "$OUT" "$CR" "no CR"
+  assert_not_contains "$OUT" "hours" "no CREATED word"
+  assert_not_contains "$OUT" "GB" "no SIZE word"
+  assert_contains "$OUT" "comfyui-r9700 local sha256:5662f4cbd4173b5a2b276b1c58a47a1309f4e632e3dab2e5a84bdd0d02c0d1e1" "the first row's whole id"
+  argv_of wslc
+  assert_eq "image|list|--no-trunc" "$(IFS='|'; echo "${ARGV[*]}")" "the argv is image list --no-trunc"
+  printf '1\n' > "$STUB/fail-image-list"
+  assert_exit 1 "a failing list returns non-zero" -- wslc_image_list
+  assert_eq "" "$OUT" "and prints nothing on stdout"
 }
 
 run_all_tests

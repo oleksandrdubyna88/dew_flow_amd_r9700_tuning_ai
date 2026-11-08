@@ -9,21 +9,32 @@
 #                                 admission named by <admit>, the body, the release. <admit> is `body` (the body admits itself: `start` decides between a listed ComfyUI,
 #                                 a listed vLLM and --stop-vllm) or `card-free` (the entry refuses, before the body, while EITHER the operator's ComfyUI or the operator's
 #                                 server is listed: comfy_owners_check, lib/run_guarded.sh). 0 the body's code; 2 a refusal (config, list, owner); 4 the lock is held
-#   comfy_volume_ensure <name> <listing>   creates the volume unless it is a whole line of <listing>; stdout `comfy: start: created volume <name>`; 1 and _COMFY_ERR when it fails
+#   comfy_volume_ensure <name> <listing> [<mode>]   creates the volume unless it is a whole line of <listing>; stdout `comfy: <mode>: created volume <name>` (mode default start); 1 and _COMFY_ERR when it fails
 #   comfy_tails_prune <keep>      keeps the newest <keep> files <state dir>/comfy-start-<UTC stamp>-<pid>.tail.log, removes the older ones by exact name
 #   comfy_mode_start [--stop-vllm] [-- <main.py args>]   the lock, the volumes, the container, the readiness wait; a failed start reconciles against the container list.
 #                                 A signal ends the long calls at once (the vLLM stop and the run call go through _rg_run, whose tree is killed by the handler); the other waits
 #                                 delay it until the call in flight ends, each bounded by its own ceiling: the container listing tries, the volume list and create and the remove
 #                                 calls, and the readiness probe and its sleep
 #   comfy_mode_stop               stops the container when it is listed; no lock, no restore
+#   comfy_mode_build [--no-cache]   (E1.S3) the image from the repository: the card-free entry, the placement of comfyui/, a build to a STAMPED tag <repository of COMFY_IMAGE>:<UTC stamp>, the
+#                                 check of that tag by a throwaway container on the card, the promotion of COMFY_IMAGE only after the check, the retention of the newest four stamped tags
+#   comfy_mode_fetch <set>...     (E1.S3) the pinned model sets of comfyui/models.conf into the models volume: its own lock (<state dir>/comfy-fetch.lock, never the GPU lock), no card
+#   comfy_assets                  the three files of comfyui/ the placement (moe_place) copies into $WORK_DIR/r9700/comfyui/, hash-checked
+#   comfy_win_dir                 the Windows spelling of that folder: <WORK_DIR_WIN without a trailing \>\r9700\comfyui
+#   comfy_models_conf             ${R9700_COMFY_MODELS_CONF:-<repository>/comfyui/models.conf} (a test knob, the shape of series_arms_conf)
+#   comfy_models_load <file>      parses models.conf: 0 and the arrays _COMFY_M_SET/_DIR/_URL/_SHA in file order; 2 with `r9700: comfy: <file>:<line>: <problem>` for every bad line
+#   comfy_sets                    the set names of the loaded file, file order, each once
+#   comfy_build_stamp             the UTC stamp of a build (R9700_TEST_COMFY_STAMP, a test knob, replaces the clock); 2 when it is not a stamp
+#   comfy_images_prune <repository> <stamped tag>   the retention: after a passed build, the stamped tags beyond the newest four are removed by their exact names
 #   comfy_mode_status             prints what can be known; no lock
 #
-# Exit codes of the modes: 0 done; 1 a stop, a volume, the remove or the run call failed (nothing of ComfyUI is left running), or a state could not be read; 2 a refused
+# Exit codes of the modes (build and fetch: bin/r9700 holds the whole table): 0 done; 1 a stop, a volume, the remove or the run call failed (nothing of ComfyUI is left running), or a state could not be read; 2 a refused
 # argument, mode or config, a start beside the operator's listed server without --stop-vllm, a container list that failed three times; 4 another run holds the lock; 5 ComfyUI
 # did not become ready (its log tail is saved, it is stopped, the operator's server is restored when this invocation stopped it), or the container list could not be read after
 # the launch (nothing is stopped; the line names `comfy stop` and `init`), or the restore beside a listed ComfyUI.
 #
-# Growth: the tail files of failed starts (comfy_tails_prune is their owner: at most ten stay); the folder <state dir>/restore-comfy-<stamp>-<pid> of a start with --stop-vllm
+# Growth: the volume COMFY_MODELS_VOLUME and the store (the operator removes them), the placed copies of comfyui/ (rewritten when the repository's file changes), the stamped images of COMFY_IMAGE's
+# repository (comfy_images_prune keeps the newest four), the fetch lock file (one line); the tail files of failed starts (comfy_tails_prune is their owner: at most ten stay); the folder <state dir>/restore-comfy-<stamp>-<pid> of a start with --stop-vllm
 # is the restore's (restore_dirs_prune, called by `init`, owns it).
 
 _comfy_say() { local mode="$1"; shift; printf 'comfy: %s: %s\n' "$mode" "$*"; }
@@ -61,9 +72,9 @@ comfy_locked() {
   return "$rc"
 }
 
-# comfy_volume_ensure <name> <listing>: a volume the engine lists is left alone (creating one that exists is an error of the engine, so the caller lists first)
+# comfy_volume_ensure <name> <listing> [<mode>]: a volume the engine lists is left alone (creating one that exists is an error of the engine, so the caller lists first)
 comfy_volume_ensure() {
-  local name="$1" listing="$2" out rc
+  local name="$1" listing="$2" mode="${3:-start}" out rc
   grep -Fxq -- "$name" <<< "$listing" && return 0
   out="$(wslc_volume_create "$name" 2>&1)"
   rc=$?
@@ -71,7 +82,7 @@ comfy_volume_ensure() {
     _COMFY_ERR="volume create $name failed (code $rc): ${out##*$'\n'}"
     return 1
   fi
-  _comfy_say start "created volume $name"
+  _comfy_say "$mode" "created volume $name"
 }
 
 # comfy_tails_prune <keep>: the one retention owner of the tail files of failed starts (the shape of restore_dirs_prune, lib/restore.sh, over files): regular files whose name
@@ -388,4 +399,337 @@ comfy_mode_status() {
     fi
   done
   return "$status"
+}
+
+# ---------- the image and the model sets (E1.S3) ----------
+_COMFY_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_COMFY_REPO="$(dirname "$_COMFY_LIB")"
+_COMFY_STAMP_RE='^[0-9]{8}T[0-9]{6}Z$' # a build stamp, YYYYMMDDTHHMMSSZ, UTC: its text order is its time order, so the retention sorts the TAG (the engine's CREATED is relative words)
+_COMFY_IMAGES_KEEP=4                   # the current image plus three to roll back to: the rollback depth of development-workflow, and the retention IS that trail
+_COMFY_CHECK_MAX_S=600                 # the ceiling of the check container
+_COMFY_CONTAINER_DIR=/work/r9700/comfyui # where the placed folder is seen inside the fetch container: WORK_DIR_WIN is mounted at /work
+
+# The program of the check container: stdlib and torch, no variable in it. Exactly four lines (an exception adds an `error` line): `torch <version>`, `hip <torch.version.hip>`,
+# `device <name or none>`, `matmul ok|nan` (a 1024x1024 fp16 x @ x on the device, its float sum finite). It exits 1 when hip is None, no device is there or the sum is not finite.
+_COMFY_CHECK_PY='import sys
+import torch
+
+hip = torch.version.hip
+device, matmul, error = "none", "nan", None
+try:
+    if torch.cuda.is_available():
+        device = torch.cuda.get_device_name(0) or "none"
+        x = torch.randn(1024, 1024, device="cuda", dtype=torch.float16)
+        total = float((x @ x).float().sum())
+        matmul = "ok" if total - total == 0 else "nan"
+except Exception as exc:
+    error = type(exc).__name__
+print("torch " + torch.__version__)
+print("hip " + str(hip))
+print("device " + device)
+print("matmul " + matmul)
+if error:
+    print("error " + error)
+sys.exit(0 if hip is not None and device != "none" and matmul == "ok" else 1)'
+
+comfy_assets() {
+  printf '%s\n' \
+    "comfyui/Containerfile comfyui/Containerfile required" \
+    "comfyui/entrypoint.sh comfyui/entrypoint.sh required" \
+    "comfyui/fetch_model.sh comfyui/fetch_model.sh required"
+}
+
+comfy_win_dir() { printf '%s\\r9700\\comfyui\n' "${R9700_WORK_DIR_WIN%\\}"; }
+
+comfy_models_conf() { printf '%s\n' "${R9700_COMFY_MODELS_CONF:-$_COMFY_REPO/comfyui/models.conf}"; }
+
+# The ONE rule of a model url and of the file name made from it, shared with comfyui/fetch_model.sh (which repeats these two lines: it runs inside the image and cannot source this file; tests/test_comfy_fetch_model.sh
+# FM10 and tests/test_comfy.sh MC2 feed both the same hostile shapes). A url is https, with no quote, backslash, backtick, bracket, brace or blank (curl would expand [] and {} as a glob, and a quote or a blank
+# splits a word somewhere); the file name is the last part of the url path before any ? or #, made by ${path##*/} (so a trailing / gives an empty name), and is letters, digits, . _ - starting with a
+# letter or digit: never `.`, `..` or a leading `-`, so the store and models paths below a folder can never leave it.
+_COMFY_URL_RE='^https://[^][{}"\`[:space:]]+$'
+_COMFY_FILE_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+
+_comfy_conf_err() { printf 'r9700: comfy: %s:%s: %s\n' "$1" "$2" "$3" >&2; }
+
+# comfy_models_load <file>: every problem of every line, with its place, in one pass; 2 when there is one. On 0 the arrays are the lines in file order. Called in the caller's own shell.
+comfy_models_load() {
+  local file="${1:-}" line n=0 bad=0 set dir url sha name key
+  local -a words=()
+  local -A first=()
+  _COMFY_M_SET=() _COMFY_M_DIR=() _COMFY_M_URL=() _COMFY_M_SHA=()
+  if [ ! -r "$file" ]; then
+    printf 'r9700: comfy: %s: cannot be read\n' "$file" >&2
+    return 2
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+    read -r -a words <<< "$line"
+    if [ "${#words[@]}" -ne 4 ]; then
+      _comfy_conf_err "$file" "$n" "a line has four words (set, folder, url, sha256), this one has ${#words[@]}"
+      bad=1
+      continue
+    fi
+    set="${words[0]}" dir="${words[1]}" url="${words[2]}" sha="${words[3]}"
+    name="${url%%[?#]*}"
+    name="${name##*/}"
+    [[ $set =~ ^[a-z0-9]+$ ]] || { _comfy_conf_err "$file" "$n" "the set \"$set\" is not lower-case letters and digits"; bad=1; }
+    [[ $dir =~ ^[a-z_]+$ ]] || { _comfy_conf_err "$file" "$n" "the folder \"$dir\" is not lower-case letters and _"; bad=1; }
+    [[ $url =~ $_COMFY_URL_RE ]] || { _comfy_conf_err "$file" "$n" "the url is not an https:// address without a quote, backslash, backtick, bracket, brace or blank"; bad=1; }
+    [[ $name =~ $_COMFY_FILE_RE ]] || { _comfy_conf_err "$file" "$n" "the file name \"$name\" (the last part of the url path) is not letters, digits, . _ - starting with a letter or digit"; bad=1; }
+    [[ $sha =~ ^[0-9a-f]{64}$ ]] || { _comfy_conf_err "$file" "$n" "the sha256 is not 64 lower-case hex characters"; bad=1; }
+    key="$dir/$name"
+    if [ -n "${first[$key]+set}" ]; then
+      _comfy_conf_err "$file" "$n" "$key is there twice (first at line ${first[$key]})"
+      bad=1
+    else
+      first[$key]="$n"
+    fi
+    _COMFY_M_SET+=("$set") _COMFY_M_DIR+=("$dir") _COMFY_M_URL+=("$url") _COMFY_M_SHA+=("$sha")
+  done < "$file"
+  [ "$bad" -eq 0 ] || return 2
+  if [ "${#_COMFY_M_SET[@]}" -eq 0 ]; then
+    printf 'r9700: comfy: %s: holds no set\n' "$file" >&2
+    return 2
+  fi
+}
+
+# comfy_sets: the set names of the file comfy_models_load read, in file order, each once
+comfy_sets() {
+  [ "${#_COMFY_M_SET[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${_COMFY_M_SET[@]}" | awk '!seen[$0]++'
+}
+
+comfy_build_stamp() {
+  local stamp="${R9700_TEST_COMFY_STAMP:-$(date -u +%Y%m%dT%H%M%SZ 9>&-)}"
+  if ! [[ $stamp =~ $_COMFY_STAMP_RE ]]; then
+    _comfy_err build "R9700_TEST_COMFY_STAMP \"$stamp\" is not a build stamp (YYYYMMDDTHHMMSSZ)"
+    return 2
+  fi
+  printf '%s\n' "$stamp"
+}
+
+# _comfy_row_id <listing> <repository> <tag>: the id of the row `<repository> <tag> <id>` of an image listing; nothing and 1 when there is none
+_comfy_row_id() { awk -v r="$2" -v t="$3" '$1 == r && $2 == t { print $3; f = 1; exit } END { exit !f }' <<< "$1"; }
+
+# ---------- build ----------
+comfy_mode_build() {
+  local arg
+  for arg in "$@"; do
+    if [ "$arg" != --no-cache ]; then
+      _comfy_err build "unknown argument \"$arg\"; legal: --no-cache"
+      return 2
+    fi
+  done
+  comfy_locked build card-free comfy_build_body "$@"
+}
+
+# comfy_build_reject <line>: the one failure path of the build. The rejected STAMPED tag goes, by its exact name, and nothing else: a tag that is not a row of the list was never made
+# (a failed build normally tags nothing); a row on the id COMFY_IMAGE names is kept (a cached rebuild of the same image); a list that cannot be read decides nothing. Prints the one stderr line; 1.
+comfy_build_reject() {
+  local line="$1" out rc
+  if ! _rg_listing_tries wslc_image_list; then
+    line="$line; whether $_COMFY_B_STAMPED was tagged is not known (the image list failed): remove it by hand if the list shows it"
+  elif _comfy_row_id "$_RG_LISTING" "$_COMFY_B_REPO" "${_COMFY_B_STAMPED##*:}" > /dev/null; then
+    if [ -n "$_COMFY_B_CUR_ID" ] && [ "$(_comfy_row_id "$_RG_LISTING" "$_COMFY_B_REPO" "${_COMFY_B_STAMPED##*:}")" = "$_COMFY_B_CUR_ID" ]; then
+      line="$line; $_COMFY_B_STAMPED is the image $R9700_COMFY_IMAGE already names; kept"
+    else
+      out="$(wslc_rmi "$_COMFY_B_STAMPED" 2>&1)"
+      rc=$?
+      [ "$rc" -eq 0 ] || line="$line; $_COMFY_B_STAMPED could not be removed (code $rc): remove it by hand"
+    fi
+  fi
+  _comfy_err build "$line"
+  return 1
+}
+
+# _comfy_check_why <output> <rc>: what is wrong with the check container's answer; nothing (and 0) when the image is usable. The ARTEFACT is judged: a zero exit code alone is not enough.
+_comfy_check_why() {
+  local out="$1" rc="$2" word
+  for word in "hip:hip None" "device:device none"; do
+    if ! grep -q "^${word%%:*} " <<< "$out"; then printf 'the check printed no %s line (its last line: %s)\n' "${word%%:*}" "$(tail -n 1 <<< "$out")"; return 1; fi
+    if grep -qx "${word#*:}" <<< "$out"; then printf '%s\n' "${word#*:}"; return 1; fi
+  done
+  if ! grep -qx 'matmul ok' <<< "$out"; then printf '%s\n' "$(grep -m1 '^matmul ' <<< "$out" || echo 'the check printed no matmul ok line')"; return 1; fi
+  case $rc in
+    0) return 0 ;;
+    124 | 137) printf 'the check was ended by its ceiling of %s s\n' "$_COMFY_CHECK_MAX_S" ;;
+    *) printf 'the check exited with code %s: %s\n' "$rc" "$(tail -n 1 <<< "$out")" ;;
+  esac
+  return 1
+}
+
+# comfy_build_body: the build under the entry's lock, after the admission (the entry has refused a listed ComfyUI or server already). See the header for the order of the steps.
+comfy_build_body() {
+  local tag stamp why out rc listing win device no_cache=no
+  local -a extra=()
+  for tag in "$@"; do [ "$tag" != --no-cache ] || no_cache=yes; done
+  _COMFY_B_REPO="${R9700_COMFY_IMAGE%:*}" _COMFY_B_CUR_ID="" _COMFY_B_STAMPED=""
+  tag="${R9700_COMFY_IMAGE##*:}"
+  if [[ $tag =~ $_COMFY_STAMP_RE ]]; then
+    _comfy_err build "COMFY_IMAGE's tag \"$tag\" has the shape of a build stamp; give it another tag"
+    return 2
+  fi
+  stamp="$(comfy_build_stamp)" || return 2
+  _COMFY_B_STAMPED="$_COMFY_B_REPO:$stamp"
+  local _MOE_PLACED_BY=comfy # local: it names the verb in a placement refusal and must not leak
+  moe_place comfy_assets || return 2
+  if ! _rg_listing_tries wslc_image_list; then
+    _comfy_err build "the image list failed 3 times ($_RG_LIST_ERR); nothing was built"
+    return 1
+  fi
+  listing="$_RG_LISTING"
+  if _comfy_row_id "$listing" "$_COMFY_B_REPO" "$stamp" > /dev/null; then
+    _comfy_err build "the tag $_COMFY_B_STAMPED exists already; nothing was built"
+    return 1
+  fi
+  _COMFY_B_CUR_ID="$(_comfy_row_id "$listing" "$_COMFY_B_REPO" "$tag")"
+  win="$(comfy_win_dir)"
+  [ "$no_cache" = no ] || extra=(--no-cache)
+  # the STAMPED tag, never COMFY_IMAGE: a fixed tag moved by every build left three untagged 27.3 GB images on the operator's PC (observed 2026-11-07). BASE and COMFYUI_REF were validated
+  # when the config was loaded (an image reference, a git tag word): neither can hold a space or start with -
+  wslc_build "$R9700_COMFY_BUILD_MAX_S" -t "$_COMFY_B_STAMPED" -f "$win\\Containerfile" --build-arg "BASE=$R9700_COMFY_BASE_IMAGE" --build-arg "COMFYUI_REF=$R9700_COMFY_REF" "${extra[@]}" "$win"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    case $rc in
+      124 | 137) comfy_build_reject "the build failed (timeout after $R9700_COMFY_BUILD_MAX_S s: the ceiling ended it)" ;;
+      *) comfy_build_reject "the build failed (code $rc)" ;;
+    esac
+    return 1
+  fi
+  out="$(wslc_run_once "$_COMFY_CHECK_MAX_S" --name "$(container_name comfy-check)" --gpus all --entrypoint python3 "$_COMFY_B_STAMPED" -c "$_COMFY_CHECK_PY" 2>&1)"
+  rc=$?
+  if why="$(_comfy_check_why "$out" "$rc")"; then :; else
+    comfy_build_reject "the built image $_COMFY_B_STAMPED is not usable on the card: $why; $R9700_COMFY_IMAGE was not moved"
+    return 1
+  fi
+  # the promotion, only now; a failure keeps the passed tag: a good image, one hand command from being current
+  device="$(grep -m1 '^device ' <<< "$out" | cut -d' ' -f2-)"
+  out="$(wslc_tag "$_COMFY_B_STAMPED" "$R9700_COMFY_IMAGE" 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _comfy_err build "$_COMFY_B_STAMPED passed its check but $R9700_COMFY_IMAGE was not moved (code $rc): ${out##*$'\n'}; tag it by hand (README, ComfyUI)"
+    return 1
+  fi
+  _comfy_say build "device $device"
+  _comfy_say build "$R9700_COMFY_IMAGE now names $_COMFY_B_STAMPED"
+  comfy_images_prune "$_COMFY_B_REPO" "$_COMFY_B_STAMPED"
+  return 0
+}
+
+# comfy_images_prune <repository> <new stamped tag>: the retention, never before the promotion and never on a view it cannot trust (retention must never empty the shelf). The candidates are
+# the rows of THIS repository whose tag is a build stamp (another repository, an untagged row and a tag of another shape are not ours), newest first by the tag; the newest four stay; an older
+# one on the id COMFY_IMAGE names stays (a cached rebuild has the id of an older build; whether the engine's rmi of a shared id only untags is not observed, so it is never asked); the others
+# go one exact tag per call. Returns 0 whatever it reports: the new image passed and is current, and the next build's retention catches up.
+comfy_images_prune() {
+  local repo="$1" new="$2" new_id cur_id tag id out rc
+  local -a old=()
+  if ! _rg_listing_tries wslc_image_list; then
+    _comfy_err build "warning: the image list failed 3 times ($_RG_LIST_ERR); no old image was removed"
+    return 0
+  fi
+  if ! _comfy_row_id "$_RG_LISTING" "$repo" "${new##*:}" > /dev/null; then
+    _comfy_err build "warning: the image list does not show $new; no old image was removed"
+    return 0
+  fi
+  # the guard that spares the image COMFY_IMAGE names needs that row: a view without it, or with it on another image than the promoted one, is not a view to remove on
+  new_id="$(_comfy_row_id "$_RG_LISTING" "$repo" "${new##*:}")"
+  cur_id="$(_comfy_row_id "$_RG_LISTING" "$repo" "${R9700_COMFY_IMAGE##*:}")"
+  if [ -z "$cur_id" ] || [ "$cur_id" != "$new_id" ]; then
+    _comfy_err build "warning: the image list does not show $R9700_COMFY_IMAGE on $new; no old image was removed"
+    return 0
+  fi
+  mapfile -t old < <(awk -v r="$repo" '$1 == r { print $2 }' <<< "$_RG_LISTING" | grep -E "$_COMFY_STAMP_RE" | LC_ALL=C sort -r | tail -n "+$((_COMFY_IMAGES_KEEP + 1))")
+  for tag in "${old[@]}"; do
+    [ "$tag" != "${new##*:}" ] || continue # never the tag just promoted, whatever the sort says
+    id="$(_comfy_row_id "$_RG_LISTING" "$repo" "$tag")"
+    if [ -n "$cur_id" ] && [ "$id" = "$cur_id" ]; then
+      _comfy_say build "kept $repo:$tag: it is the image $R9700_COMFY_IMAGE names"
+      continue
+    fi
+    out="$(wslc_rmi "$repo:$tag" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _comfy_say build "removed $repo:$tag"
+    else
+      _comfy_err build "warning: $repo:$tag could not be removed (code $rc): ${out##*$'\n'}"
+    fi
+  done
+  return 0
+}
+
+# ---------- fetch ----------
+# comfy_fetch_triples <set>...: sets _COMFY_TRIPLES to the `<folder> <url> <sha256>` words of the sets in the order given, each file once, file order inside a set
+comfy_fetch_triples() {
+  local set i
+  local -A done_set=()
+  _COMFY_TRIPLES=()
+  for set in "$@"; do
+    [ -z "${done_set[$set]+set}" ] || continue
+    done_set[$set]=1
+    for i in "${!_COMFY_M_SET[@]}"; do
+      [ "${_COMFY_M_SET[$i]}" = "$set" ] && _COMFY_TRIPLES+=("${_COMFY_M_DIR[$i]}" "${_COMFY_M_URL[$i]}" "${_COMFY_M_SHA[$i]}")
+    done
+  done
+}
+
+# comfy_mode_fetch <set>...: the order of decision 4 without the restore: the grammar and the sets (before the lock: a refused argument never waits on a running fetch), the lock of its own,
+# the config, the container list, the placement, the volume, the container. 0 done; 1 a file did not arrive, a call failed or the ceiling ended it; 2 a refusal; 4 the lock is held, or a
+# fetch container is still listed (a fetch whose host process was killed leaves its container running with the lock released: a second container would resume the same .part beside it).
+comfy_mode_fetch() {
+  local set known="" listing name vols out rc
+  local -a run_args=()
+  comfy_models_load "$(comfy_models_conf)" || return 2
+  if [ "$#" -eq 0 ]; then
+    _comfy_err fetch "usage: bin/r9700 comfy fetch <set>...; legal sets: $(comfy_sets | tr '\n' ' ' | sed 's/ $//')"
+    return 2
+  fi
+  for set in "$@"; do
+    if ! comfy_sets | grep -Fxq -- "$set"; then
+      _comfy_err fetch "unknown set \"$set\"; legal: $(comfy_sets | tr '\n' ' ' | sed 's/ $//')"
+      return 2
+    fi
+  done
+  comfy_fetch_triples "$@"
+  lock_take comfy-fetch comfy-fetch.lock || return $?
+  config_load_machine "${R9700_MACHINE_ENV:-./machine.env}" || { lock_release; return 2; }
+  name="$(comfy_fetch_name)"
+  if ! _rg_listing_tries; then
+    _comfy_err fetch "the container list failed 3 times ($_RG_LIST_ERR)"
+    lock_release
+    return 2
+  fi
+  listing="$_RG_LISTING"
+  if grep -Fxq -- "$name" <<< "$listing"; then
+    _comfy_err fetch "a fetch container is still running: $name; wait for it or stop it"
+    lock_release
+    return 4
+  fi
+  local _MOE_PLACED_BY=comfy # local: it names the verb in a placement refusal
+  moe_place comfy_assets || { lock_release; return 2; }
+  vols="$(wslc_volume_list 2>&1)"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _comfy_err fetch "the volume list failed (code $rc)${vols:+: ${vols##*$'\n'}}"
+    lock_release
+    return 1
+  fi
+  if ! comfy_volume_ensure "$R9700_COMFY_MODELS_VOLUME" "$vols" fetch; then
+    _comfy_err fetch "$_COMFY_ERR"
+    lock_release
+    return 1
+  fi
+  run_args=(--name "$name" -v "$R9700_COMFY_MODELS_VOLUME:/models")
+  [ -z "$R9700_COMFY_STORE_WIN" ] || run_args+=(-v "$R9700_COMFY_STORE_WIN:/store")
+  run_args+=(-v "$R9700_WORK_DIR_WIN:/work:ro" --entrypoint bash "$R9700_COMFY_IMAGE" "$_COMFY_CONTAINER_DIR/fetch_model.sh" "${_COMFY_TRIPLES[@]}")
+  wslc_run_once "$R9700_COMFY_FETCH_MAX_S" "${run_args[@]}"
+  rc=$?
+  lock_release
+  case $rc in
+    0) return 0 ;;
+    3) _comfy_err fetch "a source publishes another sha256 than comfyui/models.conf pins (the container's lines are above); nothing of that file was downloaded"; return 2 ;;
+    124 | 137) _comfy_err fetch "the ceiling of $R9700_COMFY_FETCH_MAX_S s ended the fetch container $name; run the same fetch again, it resumes"; return 1 ;;
+    *) _comfy_err fetch "the fetch container $name ended with code $rc (its lines are above); run the same fetch again, it resumes"; return 1 ;;
+  esac
 }

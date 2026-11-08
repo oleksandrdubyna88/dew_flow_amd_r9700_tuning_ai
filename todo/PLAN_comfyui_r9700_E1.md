@@ -1232,7 +1232,7 @@ planted stamped tags" are records `comfyui-r9700:2026110<k>T100000Z` for k = 1..
   stamped tags plus `rocm/pytorch:<tag>` and an untagged `<none> <none>` record (another repository and the engine's leftovers,
   never ours to remove): exit 0; exactly one `rmi`, its argv exactly `rmi comfyui-r9700:20261101T100000Z`, after the `tag`
   call; stdout `comfy: build: removed comfyui-r9700:20261101T100000Z`; afterwards four stamped tags (k = 2..4 and the new one),
-  `rocm/pytorch` and the untagged record untouched. Six planted (k = 1..6, `comfyui-r9700:local` on k = 6): two `rmi` calls,
+  `rocm/pytorch` and the untagged record untouched. Five planted (k = 1..5, `comfyui-r9700:local` on k = 5): two `rmi` calls,
   k = 1 and k = 2, each one exact tag. Every `rmi` argv of the file's scenarios is two words, `rmi` and one
   `comfyui-r9700:<stamp>` — never an id, never a pattern, never `-f` (the test reads every `rmi` line of `calls.argv`). A
   record `comfyui-r9700:old-build` (not stamp-shaped) is never removed. RED first (the retention).
@@ -1244,8 +1244,8 @@ planted stamped tags" are records `comfyui-r9700:2026110<k>T100000Z` for k = 1..
   None`): exit 1, no `rmi` at all, the line says the rejected tag `is the image comfyui-r9700:local already names; kept`.
 - BU14 *The retention runs only on a view it can trust.* A passed build with `fail-image-list "1 3"` (the list before the
   build answers, the three after the promotion fail): exit 0 (the image passed and is promoted), one stderr line `r9700: comfy:
-  build: warning: the image list failed 3 times (<the stub's line>); no old image was removed`, no `rmi`. `answers/image_list`
-  (a scripted listing, SI3) that lacks the new stamped tag after the promotion: exit 0, one warning line `the image list does
+  build: warning: the image list failed 3 times (code <n>: the list call is --quiet, so the engine's text is not kept); no old image was removed`, no `rmi`. `answers/image_list`
+  (a scripted listing, SI3: five older stamps and `local`) that lacks the new stamped tag after the promotion, or lacks the `COMFY_IMAGE` row: exit 0, one warning line `the image list does
   not show comfyui-r9700:20261107T120000Z; no old image was removed`, no `rmi`. An `rmi` that fails (`answers/rmi_rc 1`): exit
   0, one warning line naming the tag and the code, the other removals still made.
 - BU15 *The stamp is checked before anything is built.* `COMFY_IMAGE=comfyui-r9700:20261101T100000Z` (a stamp-shaped tag:

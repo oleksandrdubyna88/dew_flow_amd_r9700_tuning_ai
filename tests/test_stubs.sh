@@ -589,4 +589,142 @@ t_the_hang_list_file_makes_the_nth_list_call_hang() {
   kill_recorded_pids "$CASE"
 }
 
+# ---- E1.S3: the stub's images and the fetch container (SI1-SI5) -----------------------------------------------------------
+
+# images_text: the stub's image records, one `<repository> <tag> <id>` per line (empty when none)
+images_text() { cat "$STUB/images" 2> /dev/null; }
+
+# SI1
+t_a_build_records_its_tag_only_when_it_succeeds() {
+  setup_case "$FUNCNAME"
+  local id1 id2 id
+  assert_exit 0 "a build with a tag" -- wslc build -t r:t1 -f F C
+  read -r _ _ id1 <<< "$(images_text)"
+  assert_eq "1" "$(images_text | wc -l | tr -d ' ')" "one record"
+  assert_eq "r t1" "$(images_text | cut -d' ' -f1-2)" "the record is <repository> <tag>"
+  if [[ $id1 =~ ^sha256:[0-9a-f]{64}$ ]]; then assert_eq ok ok "its id is sha256: and 64 hex characters"; else assert_eq "sha256:<64 hex>" "$id1" "its id is sha256: and 64 hex characters"; fi
+  assert_exit 0 "a second build with the same tag" -- wslc build -t r:t1 -f F C
+  assert_eq "1" "$(images_text | wc -l | tr -d ' ')" "still one record (the old image is left untagged by the engine, the stub keeps no row for it)"
+  read -r _ _ id2 <<< "$(images_text)"
+  assert_eq "no" "$([ "$id1" = "$id2" ] && echo yes || echo no)" "the record moved to a new id, distinct per build"
+  id="sha256:$(printf '%064d' 7)"
+  printf '%s\n' "$id" > "$STUB/answers/build_id"
+  assert_exit 0 "answers/build_id present" -- wslc build -t r:t2 -f F C
+  assert_contains "$(images_text)" "r t2 $id" "the record takes the scripted id"
+  printf '1\n' > "$STUB/answers/build_rc"
+  assert_exit 1 "a failing build" -- wslc build -t r:t3 -f F C
+  assert_not_contains "$(images_text)" "r t3" "records no tag"
+  printf '1\n' > "$STUB/answers/build_tags_on_failure"
+  assert_exit 1 "a failing build that tagged before it failed" -- wslc build -t r:t3 -f F C
+  assert_contains "$(images_text)" "r t3 " "records the tag"
+  assert_exit 1 "a build without -t" -- wslc build C
+  assert_eq "3" "$(images_text | wc -l | tr -d ' ')" "and makes no record"
+}
+
+# SI2
+t_tag_points_a_second_name_at_an_existing_image() {
+  setup_case "$FUNCNAME"
+  local id
+  printf 'r t1 sha256:%064d\n' 5 > "$STUB/images"
+  id="sha256:$(printf '%064d' 5)"
+  assert_exit 0 "wslc tag r:t1 r:local" -- wslc tag r:t1 r:local
+  assert_eq "" "$OUT" "prints nothing"
+  assert_contains "$(images_text)" "r local $id" "r:local is on the id of r:t1"
+  assert_contains "$(images_text)" "r t1 $id" "and r:t1 stays"
+  assert_exit 1 "a missing source" -- wslc tag r:none r:other
+  assert_contains "$OUT$ERR" "stub: tag: no such image: r:none" "says which"
+  printf '1\n' > "$STUB/answers/tag_rc"
+  assert_exit 1 "answers/tag_rc 1" -- wslc tag r:t1 r:new
+  assert_eq "stub: tag failed (scripted)" "$ERR" "one line"
+  assert_not_contains "$(images_text)" "r new" "no record changed"
+}
+
+# SI3
+t_image_list_prints_the_observed_table() {
+  setup_case "$FUNCNAME"
+  local id="sha256:$(printf '%064d' 3)"
+  printf 'r t1 %s\nr local %s\n' "$id" "$id" > "$STUB/images"
+  assert_exit 0 "image list --no-trunc" -- wslc image list --no-trunc
+  assert_eq "REPOSITORY      TAG      IMAGE ID      CREATED       SIZE$CR" "$(sed -n 1p <<< "$OUT")" "the header"
+  assert_eq "r   t1   $id   6 hours ago   27.3GB$CR" "$(sed -n 2p <<< "$OUT")" "a row with the whole id"
+  assert_eq "3" "$(grep -c "$CR" <<< "$OUT")" "CRLF ends"
+  assert_exit 0 "image list" -- wslc image list
+  assert_eq "r   t1   000000000000   6 hours ago   27.3GB$CR" "$(sed -n 2p <<< "$OUT")" "without --no-trunc the id is its first 12 hex characters"
+  printf 'one\ntwo\n' > "$STUB/answers/image_list"
+  assert_exit 0 "answers/image_list present" -- wslc image list --no-trunc
+  assert_eq "one$CR|two$CR" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "that file is printed instead, CRLF added"
+  rm "$STUB/answers/image_list"
+  printf '1 2\n' > "$STUB/fail-image-list"
+  assert_exit 0 "fail-image-list '1 2': the first call answers" -- wslc image list
+  assert_exit 1 "the second fails" -- wslc image list
+  assert_eq "1" "$(grep -c '^stub:' <<< "$ERR")" "with one stub: line"
+  assert_exit 1 "the third fails" -- wslc image list
+  assert_exit 0 "the fourth answers" -- wslc image list
+  printf '1\n' > "$STUB/fail-image-list"
+  assert_exit 1 "a single number is a count with no skip" -- wslc image list
+  assert_exit 2 "an unknown image subcommand" -- wslc image frob
+  assert_eq "stub: wslc: unknown image subcommand" "$(sed -n 1p <<< "$ERR")" "one line"
+}
+
+# SI4
+t_rmi_removes_exactly_the_named_record() {
+  setup_case "$FUNCNAME"
+  local id="sha256:$(printf '%064d' 9)"
+  printf 'r t1 %s\nr local %s\n' "$id" "$id" > "$STUB/images"
+  assert_exit 0 "wslc rmi r:t1" -- wslc rmi r:t1
+  assert_eq "Untagged: r:t1$CR" "$OUT" "prints Untagged with a CRLF end"
+  assert_eq "r local $id" "$(images_text)" "only r:t1 went, r:local stays"
+  assert_exit 1 "a missing reference" -- wslc rmi r:t1
+  assert_contains "$OUT$ERR" "stub: rmi: no such image: r:t1" "says which"
+  printf '1\n' > "$STUB/answers/rmi_rc"
+  assert_exit 1 "answers/rmi_rc 1" -- wslc rmi r:local
+  assert_contains "$ERR" "stub: rmi failed (scripted)" "its line"
+  assert_eq "r local $id" "$(images_text)" "nothing removed"
+  rm "$STUB/answers/rmi_rc"
+  assert_exit 2 "two references" -- wslc rmi r:a r:b
+  assert_contains "$ERR" "stub: rmi: one exact reference only" "so a list fails loudly"
+  assert_exit 2 "an option" -- wslc rmi -f
+  assert_contains "$ERR" "stub: rmi: one exact reference only" "so does -f"
+  assert_exit 2 "no word" -- wslc rmi
+  assert_eq "r local $id" "$(images_text)" "and still nothing removed"
+}
+
+# SI5
+t_the_fetch_container_is_a_listed_container_for_as_long_as_it_runs() {
+  setup_case "$FUNCNAME"
+  local pid i
+  printf '3\n' > "$STUB/answers/comfy_fetch_seconds"
+  ( wslc run --rm --name f --entrypoint bash img /work/r9700/comfyui/fetch_model.sh a b c > "$CASE/fetch.out" 2> "$CASE/fetch.err"; echo "$?" > "$CASE/fetch.rc" ) &
+  pid=$!
+  guard_pid "$pid" "fetch-$pid"
+  for i in $(seq 1 20); do [ -f "$STUB/containers/f.pid" ] && break; sleep 0.05; done
+  assert_exit 0 "wslc list from another process shows f" -- wslc list
+  assert_contains "$OUT" "f$CR" "f is listed"
+  assert_exit 1 "a second run named f while the first lives" -- wslc run --rm --name f --entrypoint bash img /work/r9700/comfyui/fetch_model.sh a b c
+  assert_contains "$OUT$ERR" "stub: container name in use: f" "is refused with the engine's reason"
+  wait "$pid"
+  assert_eq "0" "$(cat "$CASE/fetch.rc")" "the code is answers/comfy_fetch_rc (default 0)"
+  assert_eq "stub fetch$CR" "$(cat "$CASE/fetch.out")" "the output is the default one line, CRLF"
+  assert_missing "$STUB/containers/f.pid" "the record is gone when the run ends"
+  assert_exit 0 "wslc list afterwards" -- wslc list
+  assert_not_contains "$OUT" "f$CR" "f is no longer listed"
+  printf 'line a\nline b\n' > "$STUB/answers/comfy_fetch.log"
+  printf '3\n' > "$STUB/answers/comfy_fetch_rc"
+  printf '0\n' > "$STUB/answers/comfy_fetch_seconds"
+  assert_exit 3 "answers/comfy_fetch_rc 3" -- wslc run --rm --name f --entrypoint bash img /work/r9700/comfyui/fetch_model.sh a b c
+  assert_eq "line a$CR|line b$CR" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "and answers/comfy_fetch.log is printed"
+  # a KILL of the process that started the first leaves f listed until its own sleep ends
+  printf '0\n' > "$STUB/answers/comfy_fetch_rc"
+  printf '3\n' > "$STUB/answers/comfy_fetch_seconds"
+  ( timeout 60 wslc run --rm --name f --entrypoint bash img /work/r9700/comfyui/fetch_model.sh a b c > /dev/null 2>&1; : ) &
+  pid=$! # the starter (the verb), above the adapter's `timeout`: killing it does not kill the stub below it
+  guard_pid "$pid" "starter-$pid"
+  for i in $(seq 1 20); do [ -f "$STUB/containers/f.pid" ] && break; sleep 0.05; done
+  kill -KILL "$pid"
+  gone "$pid"
+  assert_exit 0 "after a KILL of the starter, wslc list" -- wslc list
+  assert_contains "$OUT" "f$CR" "f is still listed (the engine's container does not die with its client)"
+  kill_recorded_pids "$CASE"
+}
+
 run_all_tests
