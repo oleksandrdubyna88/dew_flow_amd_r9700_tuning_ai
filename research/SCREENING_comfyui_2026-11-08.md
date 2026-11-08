@@ -273,3 +273,52 @@ restarted before EVERY clip. Prediction (§ 16): every clip ~1000 s. Observed: 1
 1005.2 s — as predicted (the old rule gave ~1790 s for every second clip). By eye on frames of every shot: one adult face,
 braids and costume throughout; the ears small and mostly hidden by the hair; natural running and climbing. Both narrations
 mixed in (the last frame held ~2 s while the narrator finishes).
+
+## 18. The voiced films had no sound — the mixer fixed and made to check its output (2026-11-08)
+
+The operator found every voiced film silent and not seekable. Observed (ffprobe): the audio stream was 0.008 s long with a
+start time of ~1.9e14 s and a mean of −91 dB, while the source WAVs were fine (6.7 s of speech each). The one-step mix
+(film + six WAVs, `adelay` + `amix` in one ffmpeg call) lost the audio timestamps; the broken start time also broke seeking.
+The check had looked only at the script's own printout, never at the written file.
+
+Fix (voiceover.py): step 1 renders the narration alone (every line reset to t=0 with `asetpts=PTS-STARTPTS`, one channel,
+delayed with `adelay=…:all=1`, mixed, loudness-normalised to −16 LUFS, padded to the film's length) into a WAV; step 2 muxes
+the film and that WAV with `-movflags +faststart`. Both files are checked: an audio stream shorter than the film by more
+than 0.5 s, starting away from 0, or with a mean below −50 dB refuses the film. Re-made: eight voiced films, audio 32.4–33.0
+s, start 0.000, mean −21.2 / −21.6 dB.
+
+Also: the operator rated the Arcane 14B film (§ 16) as good ("came out really well").
+
+## 19. Episode 2 (2026-11-08): keyframes, narration, and a model-swap slowdown
+
+The operator's story for episode 2: she settles in the cave and rests; a nuclear winter comes (black clouds, a dead
+forest, mutated animals); darker; at the end she leaves, finds an old military 4x4 ("a Hummer"), starts it and races into
+the sunset; the narration in the episode-1 storyteller style. Eight shots of ~5 s: Qwen-Image 2512 keyframes of set B's
+character (cold desaturated colours for the winter shots 3–7), restyled with the Arcane LoRA (1.0, denoise 0.55), then
+Wan 2.2 A14B + lightx2v with the gaze words, the server restarted before every clip (§ 16–17). The truck is described
+as "boxy military off-road truck like a classic Humvee, without any logo" so no brand mark is drawn.
+
+Observed while making the keyframes:
+- Alternating the two image models per shot (Qwen-Image 20 GB, then Z-Image for the restyle) made each image take 37–210 s
+  instead of ~7 s on a server just restarted after the host's reboot, and one restyle failed with "RuntimeError: Fault
+  failed: 2" in the text encoder. Rendering all Qwen keyframes first and all restyles after (each model loaded once) on a
+  restarted server: 6–33 s per image and no fault.
+- Shot 8 came out with the truck driving TOWARD the camera; eight re-rolls: "view from behind … driving away … into the
+  sunset" gives the rear view, but two seeds added people on the roof and one a car-brand-like emblem; adding "nobody on the
+  roof or around the vehicle, the driver hidden inside, a plain tailgate with no emblem" gave a clean rear view (seed 358).
+- The mutated wolves read as ordinary wolves (only slightly gaunt); accepted for this episode.
+
+Narration (eight lines, the same two cloned storyteller voices): Qwen3-TTS one batch 82.6 s for 42.5 s of audio (RTF 1.94);
+VoxCPM2 10 steps 113.2 s for 44.0 s (RTF 2.57; the GPU had just been freed by ComfyUI). The mixer now counts the lines.
+
+Episode 2 rendered (2026-11-08 19:28–21:51): eight 14B clips of 1002.2–1014.7 s each (the restart rule held for all
+eight), joined into a 40.5 s film; the narrations mixed and checked (Qwen 43.4 s, VoxCPM 44.4 s; audio from 0.000 s,
+−21.1 / −21.5 dB). By eye on frames of every clip: the Arcane look and the character hold; the clouds, the ash, the dead
+forest, the wolves closing in, the departure, the truck and the drive into the sunset all as written. One fault: in shot 2
+she is meant to sleep (the narration says so) but her eyes open mid-clip; re-rendered with "eyes closed the whole time"
+as a v2 film beside the first.
+Shot 2 again ("eyes CLOSED the whole time, deep peaceful sleep", same keyframe and seed, 1003.4 s): the eyes stay closed
+through frame 63 and open again from frame 66 of 81 — the 14B model returns toward the keyframe's open-eyed face at the end
+(the Arcane keyframe has open eyes). Fix without another render: frames 0–63 kept and frame 63 held for the last 17 frames
+(the clip keeps its 81 frames, so the narration timing holds). The v2 film and its two voiced versions are checked as
+before (audio from 0.000 s, −21.1 / −21.5 dB). A sleeping shot should start from a keyframe with closed eyes.
