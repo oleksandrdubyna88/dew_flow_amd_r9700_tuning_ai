@@ -155,3 +155,17 @@ Observed: all eight read as painted animation (painted backgrounds, drawn faces,
 and pose closest to set B and the small ears; at 0.70 the ears grow into long elf ears again (against the operator's
 remark), the painting is stronger. Strength 1.0 paints a little more than 0.7. Proposed: strength 1.0, denoise 0.55; the
 operator's choice is asked. The LoRA's licence is research and non-commercial use only.
+
+## 11. Two original characters on set B's image model (2026-11-08)
+
+The operator asked for elves looking like two actresses of a TV series; a likeness of real people was declined, and two
+ORIGINAL characters inspired by the series' costume world were written instead (a princess and a rover, each with her own
+face). Prediction: Qwen-Image 2512 holds each face across seeds as it held set B's character; the word "elf" lengthens the
+ears beyond the operator's rule (§ 7).
+
+Run: Qwen-Image 2512 fp8 + Lightning 4-step, 1280x704, cfg 1, two views (portrait, running) x four seeds per character:
+6.0–7.1 s per image warm (52.1 s for the first, with the loads).
+
+Observed: each character keeps one face, hair and costume across all eight images; the costumes follow their descriptions
+(embroidered tunic and cloak; vest, scarf, gloves and knife). The ears came out as clear elf ears, longer than "only the tip
+pointed" — as predicted; the fix (drop the word "elf", describe the ears only) is offered to the operator.
