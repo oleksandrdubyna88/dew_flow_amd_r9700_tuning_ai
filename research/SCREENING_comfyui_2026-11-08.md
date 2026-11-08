@@ -264,3 +264,12 @@ Observed pattern: every clip right after a restart took ~1000 s, every second cl
 more). A restart costs ~30 s, so for the 14B workflow on this card **a restart before every clip** is faster (~1030 s per
 clip against ~1400 s on average) and also avoids the "out of memory" of § 6. Lyriel's film is rendered with that rule (its
 times verify the prediction: every clip ~1000 s).
+
+## 17. Lyriel's film with the restart rule (2026-11-08)
+
+Lyriel (the original princess of § 11 with small ears and a stated adult age) in the same six-shot story: keyframes by
+Qwen-Image 2512 (7 s each warm, 47.5 s the first), clips by Wan 2.2 A14B + lightx2v 4-step with the gaze words, the server
+restarted before EVERY clip. Prediction (§ 16): every clip ~1000 s. Observed: 1001.4 / 1005.4 / 1004.6 / 1008.5 / 1007.6 /
+1005.2 s — as predicted (the old rule gave ~1790 s for every second clip). By eye on frames of every shot: one adult face,
+braids and costume throughout; the ears small and mostly hidden by the hair; natural running and climbing. Both narrations
+mixed in (the last frame held ~2 s while the narrator finishes).
