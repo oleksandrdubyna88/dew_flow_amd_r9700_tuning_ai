@@ -525,7 +525,7 @@ t_the_comfyui_readiness_probe_is_answered_from_the_comfy_ready_file() {
   wslc run -d --rm --name a img > /dev/null
   printf 'ok\nfail\n' > "$STUB/answers/comfy_ready"
   assert_exit 0 "call 1 is ok" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8188/system_stats")'
-  assert_eq "device cuda:0 AMD Radeon AI PRO R9700 : native$CR|ready$CR" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "the device line and ready, CRLF ends"
+  assert_eq "device cuda:0 AMD Radeon AI PRO R9700 : native$CR|vram_free 34000000000$CR|vram_total 34359738368$CR|ready$CR" "$(tr '\n' '|' <<< "$OUT" | sed 's/|$//')" "the device line, the two memory numbers and ready, CRLF ends (E2.S2 widened it: SC6)"
   assert_exit 1 "call 2 is fail" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8188/system_stats")'
   assert_eq "system_stats: URLError$CR" "$OUT" "the failing step"
   assert_exit 1 "call 3 repeats the last line" -- wslc exec a python3 -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8188/system_stats")'

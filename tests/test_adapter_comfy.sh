@@ -72,6 +72,9 @@ def fake(req, timeout=None):
     if mode == "badjson": return Reply(200, b"nope")
     if mode == "nokey": return Reply(200, b"{}")
     if mode == "nodevice": return Reply(200, b"{\"devices\": []}")
+    if mode == "vram": return Reply(200, json.dumps({"devices": [{"name": "cuda:0 X : native", "vram_total": 34359738368, "vram_free": 34000000000}]}).encode())
+    if mode == "vramstr": return Reply(200, json.dumps({"devices": [{"name": "cuda:0 X : native", "vram_total": 34359738368, "vram_free": "lots"}]}).encode())
+    if mode == "vramhalf": return Reply(200, json.dumps({"devices": [{"name": "cuda:0 X : native", "vram_total": 34359738368}]}).encode())
     return Reply(200, json.dumps({"devices": [{"name": "cuda:0 X : native"}]}).encode())
 urllib.request.urlopen = fake
 try:
@@ -85,7 +88,8 @@ finally:
 t_the_comfyui_probe_program_names_the_device_or_the_failing_step() {
   setup_case "$FUNCNAME"
   assert_exit 0 "a 200 with a device" -- comfy_probe_run ok
-  assert_eq "device cuda:0 X : native|ready" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "the device line, then ready"
+  assert_eq "device cuda:0 X : native" "$(sed -n 1p <<< "$OUT")" "the first line is the device line (E2.S2 widened the lines between it and ready: AP1)"
+  assert_eq "ready" "$(tail -n 1 <<< "$OUT")" "the last line is ready"
   assert_contains "$ERR" '["GET", "http://127.0.0.1:8188/system_stats", 5, true]' "the request: GET /system_stats, 5 s, no body"
   assert_exit 1 "an HTTPError 500" -- comfy_probe_run http500
   assert_eq "system_stats: HTTP 500" "$OUT" "the status is named"
@@ -106,7 +110,8 @@ t_comfy_probe_runs_the_program_through_exec_and_keeps_the_name_check() {
   printf 'ok\n' > "$STUB/answers/comfy_ready"
   wslc_run comfyui img > /dev/null
   assert_exit 0 "comfy_probe comfyui" -- comfy_probe comfyui
-  assert_eq "device cuda:0 AMD Radeon AI PRO R9700 : native|ready" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "the stub's device line, then ready"
+  assert_eq "device cuda:0 AMD Radeon AI PRO R9700 : native" "$(sed -n 1p <<< "$OUT")" "the stub's device line first"
+  assert_eq "ready" "$(tail -n 1 <<< "$OUT")" "and ready last"
   assert_not_contains "$OUT" "$CR" "no CR"
   argv_of wslc
   assert_eq "exec|comfyui|python3|-c" "$(IFS='|'; echo "${ARGV[*]:0:4}")" "it runs the program through exec <name> python3 -c"
@@ -114,6 +119,24 @@ t_comfy_probe_runs_the_program_through_exec_and_keeps_the_name_check() {
   assert_exit 2 "an option for a name" -- comfy_probe -x
   assert_contains "$ERR" "comfy_probe" "names the function"
   kill_recorded_pids "$CASE"
+}
+
+# AP1 (E2.S2): the probe also returns the card's memory
+t_the_widened_probe_prints_the_device_the_two_memory_numbers_and_ready() {
+  setup_case "$FUNCNAME"
+  assert_exit 0 "a 200 with a device and both numbers" -- comfy_probe_run vram
+  assert_eq "device cuda:0 X : native|vram_free 34000000000|vram_total 34359738368|ready" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "device, vram_free, vram_total, ready"
+  assert_exit 0 "a 200 with a device and no vram keys" -- comfy_probe_run ok
+  assert_eq "device cuda:0 X : native|vram: not in the answer|ready" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "ComfyUI is ready; the card reading is a separate fact, never a failure"
+  assert_exit 0 "a 200 with only vram_total" -- comfy_probe_run vramhalf
+  assert_eq "device cuda:0 X : native|vram: not in the answer|ready" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "one key is not two: the same line"
+  assert_exit 0 "a non-integer vram_free" -- comfy_probe_run vramstr
+  assert_eq "device cuda:0 X : native|vram: not in the answer|ready" "$(echo "$OUT" | tr '\n' '|' | sed 's/|$//')" "never a number made of a word"
+  assert_not_contains "$OUT" "vram_free 0" "the absence of a reading is never zero"
+  assert_exit 1 "an HTTPError 500 is unchanged" -- comfy_probe_run http500
+  assert_eq "system_stats: HTTP 500" "$OUT" "the failing step is still named"
+  assert_exit 1 "no device is unchanged" -- comfy_probe_run nodevice
+  assert_eq "system_stats: IndexError" "$OUT" "the exception class"
 }
 
 # AI1

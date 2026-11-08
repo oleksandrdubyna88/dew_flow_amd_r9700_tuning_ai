@@ -20,8 +20,9 @@
 #   wslc_tag <source> <target>              tag <source> <target>: a second name for an image; prints the child's output                         60 s
 #   wslc_rmi <repository>:<tag>             rmi <exact tag>: removes ONE tag, never an id, a pattern or an option; prints the child's output       60 s
 #   wslc_image_list                         `image list --no-trunc`: `<repository> <tag> <id>` per image, one per line, no header                60 s
-#   comfy_probe <name>                      the readiness check of the operator's ComfyUI through wslc_exec 20: prints
-#                                           `device <name>` and `ready`, or `system_stats: HTTP <status>` / `system_stats: <exception class>` and returns 1   20 s
+#   comfy_probe <name>                      the readiness check of a ComfyUI container through wslc_exec 20: prints `device <name>`, then `vram_free <n>` and `vram_total <n>`
+#                                           (or the one line `vram: not in the answer`), then `ready`; or `system_stats: HTTP <status>` / `system_stats: <exception class>`
+#                                           and returns 1   20 s
 #   win_ram_mb                              the Windows "Available MBytes" integer; nothing and 1 when it is not an integer    30 s
 #   win_disk_newest                         the newest disk/stornvme System-log record id; nothing and 1 when not an integer   60 s
 #   restore_start                           the operator's start script through the restore shell; prints the last 5 lines    120 s
@@ -82,8 +83,10 @@ print("completion")'
 adapter_probe_program() { printf '%s\n' "$_ADAPTER_PROBE_PY"; }
 
 # The readiness probe of the operator's ComfyUI: ONE Python program, run inside its container. GET /system_stats on 127.0.0.1:8188 answers 200 within 5 s with a
-# JSON that names a device (devices[0].name: the shape is taken from ComfyUI's source, not observed here). It prints `device <name>` and `ready`, or at the first
-# failure `system_stats: HTTP <status>` / `system_stats: <exception class>`, and exits 1.
+# JSON that names a device (devices[0].name: the shape is taken from ComfyUI's source, not observed here). It prints `device <name>`, then the card's two memory numbers
+# (devices[0].vram_free and vram_total, whole numbers: `vram_free <n>`, `vram_total <n>`; E2.S2) or, when either is not a whole number, the one line `vram: not in the
+# answer` (ComfyUI is ready; the card reading is a separate fact and never an absent number made into 0), then `ready`; or at the first failure `system_stats: HTTP <status>`
+# / `system_stats: <exception class>`, and exits 1.
 _COMFY_PROBE_PY='import json, sys, urllib.error, urllib.request
 URL = "http://127.0.0.1:8188/system_stats"
 try:
@@ -99,11 +102,18 @@ if status != 200:
     print("system_stats: HTTP " + str(status))
     sys.exit(1)
 try:
-    name = json.loads(text)["devices"][0]["name"]
+    card = json.loads(text)["devices"][0]
+    name = card["name"]
 except Exception as error:
     print("system_stats: " + type(error).__name__)
     sys.exit(1)
 print("device " + name)
+numbers = [card.get(key) for key in ("vram_free", "vram_total")]
+if all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in numbers):
+    print("vram_free " + str(numbers[0]))
+    print("vram_total " + str(numbers[1]))
+else:
+    print("vram: not in the answer")
 print("ready")'
 
 # comfy_probe_program: prints the ComfyUI readiness program (the tests run it against a fake urlopen)

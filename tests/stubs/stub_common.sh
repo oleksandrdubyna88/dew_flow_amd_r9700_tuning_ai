@@ -39,6 +39,11 @@
 #   answers/remove_rc   a non-zero code: `wslc remove` fails with it and removes nothing
 #   run-fail-<name>   a count: that many detached runs of <name> start the container and then fail (the client's half lost)
 #   run-delay-<name>  seconds (read, not removed): a detached run of <name> starts the container, then sleeps that long before it answers
+#   (E2.S2, the ComfyUI bench: tests/stubs/stub_bench.sh) answers/comfy_bench_mode[.<arm>].<run>, comfy_bench_lines, comfy_bench_json, comfy_bench_log.<run>, comfy_bench_nodes.<run>, comfy_bench_cache,
+#                  comfy_evidence.<arm>, comfy_drift (else computed from the two folders of `drift --out --ref`), comfy_cache, comfy_clear_rc, comfy_cache_report, comfy_report_rc, comfy_tunableop and
+#                  comfy_tunableop_name (the report prints `--- <name>`, default tunableop_results0.csv, then the lines), comfy_clean_stop, comfy_vram, comfy_models_listing (lines `<folder>/<file> <size>` and
+#                  `missing-dir <folder>`); logs.d/<name> (what the bench runs of a container added to its log, removed when a container of that name starts); on-start-<name> (a script run once a
+#                  detached container is listed); cache/ (the stub's bench cache content)
 #   counters/<x>   the call counters
 
 STUB_HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
