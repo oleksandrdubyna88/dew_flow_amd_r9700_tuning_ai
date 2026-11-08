@@ -1,12 +1,13 @@
 # PLAN — ComfyUI on the R9700 in a wslc container, as verbs of this toolkit, with a measured tuning series
 
-> Status: **plan only, nothing implemented yet, 2026-11-07.** Scope: a new `comfyui/` folder (the image recipe and the
+> Status: **stopped for re-review, 2026-11-08** (the second change after approval, entry 1.2). E1 is merged (PR #18,
+> 6be7a67); E2 has its stories document only; E3 not started. No E2 or E3 code until epoch 2 is approved. Scope: a new `comfyui/` folder (the image recipe and the
 > programs that run inside it), a `comfy` verb of `bin/r9700`, new optional fields of `machine.env`, three new adapter calls,
 > their tests and documents, and the GPU acceptance runs that measure ComfyUI arms on the R9700.
 
 ## Plan changes
 
-> Epoch 1 · approved 2026-11-07 · by reviewers · state: open
+> Epoch 1 · approved 2026-11-07 · by reviewers · state: stopped
 
   (The approving round's seven findings, all accepted, are folded into the approved text; they are not entries.)
 
@@ -14,6 +15,10 @@
   (not the GPU lock), so a fetch still runs beside a series; E1 plan round, codex.
   (Same round, not counted, each only satisfying the plan as written: build passes the owner check before its GPU check
   container, which the one-owner rule already required; image retention fills the growth section planning-docs requires.)
+- 1.2 · 2026-11-08 · agent · contract — `bench` cannot be refused before the lock: the toolkit's order is lock, restore,
+  config (bin/r9700:7-9) and COMFY_CONTAINER comes from the config; the refusal moves to supervise's owner check (E1),
+  so a held lock with ComfyUI listed gives exit 4, not 2; E2 stories open point OP2, consultant 4d95f354.
+  (This second change stopped the plan.)
 
 ## Goal
 
