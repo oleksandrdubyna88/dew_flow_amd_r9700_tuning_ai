@@ -440,4 +440,25 @@ t_a_promotion_that_fails_leaves_the_passed_image_to_tag_by_hand() {
   assert_eq "$planted"$'\n'"$REPO_NAME $STAMP $(awk -v t="$STAMP" '$2 == t { print $3 }' "$STUB/images")" "$(images_text)" "the records are the planted ones plus the passed stamped tag"
 }
 
+# BU17
+t_a_promotion_whose_call_fails_after_the_engine_moved_the_tag_is_decided_from_the_image_list() {
+  bu_setup "$FUNCNAME-moved"
+  plant 5
+  printf '124\n' > "$STUB/answers/tag_after_rc"
+  assert_exit 0 "the tag is moved and the call returns 124" -- comfy build
+  local built="$OUT"
+  assert_contains "$built" "comfy: build: $CUR now names $STAMPED" "the success line is printed: the list shows the move"
+  assert_eq "" "$ERR" "and no failure line"
+  assert_eq "$(awk -v t="$STAMP" '$2 == t { print $3 }' "$STUB/images")" "$(awk '$2 == "local" { print $3 }' "$STUB/images")" "local is on the stamped image"
+  assert_eq "$REPO_NAME:20261101T100000Z|$REPO_NAME:20261102T100000Z" "$(rmi_words | LC_ALL=C sort | tr '\n' '|' | sed 's/|$//')" "the retention ran: the two oldest of the five planted stamps are removed (six with the new one)"
+  bu_setup "$FUNCNAME-unknown"
+  plant 5
+  printf '124\n' > "$STUB/answers/tag_after_rc"
+  printf '1 3\n' > "$STUB/fail-image-list"
+  assert_exit 1 "the call fails and the list after it cannot be read" -- comfy build
+  assert_eq "1" "$(line_count "$ERR")" "one stderr line"
+  assert_contains "$ERR" "$STAMPED passed its check but $CUR was not moved (code 124): stub: tag cut after the move (scripted); whether $CUR was moved is not known (the image list failed): check it with the image list" "the line says it is not known"
+  assert_eq "0" "$(calls_of_verb rmi)" "no rmi"
+}
+
 run_all_tests

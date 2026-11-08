@@ -5,7 +5,7 @@
 
 Binds 127.0.0.1 on port 0 and writes the port to the port file. HEAD and GET serve the files of the folder. A file `<name>.etag` beside a file makes the server send
 `X-Linked-Etag: "<its content>"` for it. `/r/<name>` answers 302 to `/<name>` with the same header, the way the real source does. `Range: bytes=<n>-` answers 206 with
-Content-Range. A missing file is 404. Every request is one log line: `<METHOD> <path> <range or ->`.
+Content-Range. A file `<name>.norange` beside a file makes the server ignore Range for it and answer 200 with the whole body (a source that does not resume). A missing file is 404. Every request is one log line: `<METHOD> <path> <range or ->`.
 """
 import os
 import sys
@@ -59,7 +59,7 @@ class Handler(BaseHTTPRequestHandler):
         size = os.path.getsize(path)
         start, status = 0, 200
         wanted = self.headers.get("Range")
-        if wanted and wanted.startswith("bytes=") and wanted.endswith("-"):
+        if wanted and wanted.startswith("bytes=") and wanted.endswith("-") and not os.path.isfile(path + ".norange"):
             start, status = int(wanted[6:-1]), 206
         if start >= size and status == 206:
             self.send_response(416)

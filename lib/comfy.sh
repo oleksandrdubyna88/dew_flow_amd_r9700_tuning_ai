@@ -450,6 +450,9 @@ comfy_models_conf() { printf '%s\n' "${R9700_COMFY_MODELS_CONF:-$_COMFY_REPO/com
 _COMFY_URL_RE='^https://[^][{}"\`[:space:]]+$'
 _COMFY_FILE_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
+# _comfy_url_file_name <url>: the file name of a url: the last part of its path before any ? or #. A trailing / gives nothing. comfyui/fetch_model.sh holds the same derivation (url_file_name); MC4 runs both.
+_comfy_url_file_name() { local path="${1%%[?#]*}"; printf '%s\n' "${path##*/}"; }
+
 _comfy_conf_err() { printf 'r9700: comfy: %s:%s: %s\n' "$1" "$2" "$3" >&2; }
 
 # comfy_models_load <file>: every problem of every line, with its place, in one pass; 2 when there is one. On 0 the arrays are the lines in file order. Called in the caller's own shell.
@@ -472,8 +475,7 @@ comfy_models_load() {
       continue
     fi
     set="${words[0]}" dir="${words[1]}" url="${words[2]}" sha="${words[3]}"
-    name="${url%%[?#]*}"
-    name="${name##*/}"
+    name="$(_comfy_url_file_name "$url")"
     [[ $set =~ ^[a-z0-9]+$ ]] || { _comfy_conf_err "$file" "$n" "the set \"$set\" is not lower-case letters and digits"; bad=1; }
     [[ $dir =~ ^[a-z_]+$ ]] || { _comfy_conf_err "$file" "$n" "the folder \"$dir\" is not lower-case letters and _"; bad=1; }
     [[ $url =~ $_COMFY_URL_RE ]] || { _comfy_conf_err "$file" "$n" "the url is not an https:// address without a quote, backslash, backtick, bracket, brace or blank"; bad=1; }
@@ -562,7 +564,7 @@ _comfy_check_why() {
 
 # comfy_build_body: the build under the entry's lock, after the admission (the entry has refused a listed ComfyUI or server already). See the header for the order of the steps.
 comfy_build_body() {
-  local tag stamp why out rc listing win device no_cache=no
+  local tag stamp why out rc listing win device line new_id cur_id no_cache=no
   local -a extra=()
   for tag in "$@"; do [ "$tag" != --no-cache ] || no_cache=yes; done
   _COMFY_B_REPO="${R9700_COMFY_IMAGE%:*}" _COMFY_B_CUR_ID="" _COMFY_B_STAMPED=""
@@ -609,8 +611,18 @@ comfy_build_body() {
   out="$(wslc_tag "$_COMFY_B_STAMPED" "$R9700_COMFY_IMAGE" 2>&1)"
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    _comfy_err build "$_COMFY_B_STAMPED passed its check but $R9700_COMFY_IMAGE was not moved (code $rc): ${out##*$'\n'}; tag it by hand (README, ComfyUI)"
-    return 1
+    # the code of the call does not say whether the engine moved the tag (a ceiling, 124 or 137, can hit after the move): the image list decides
+    line="$_COMFY_B_STAMPED passed its check but $R9700_COMFY_IMAGE was not moved (code $rc): ${out##*$'\n'}"
+    if ! _rg_listing_tries wslc_image_list; then
+      _comfy_err build "$line; whether $R9700_COMFY_IMAGE was moved is not known (the image list failed): check it with the image list"
+      return 1
+    fi
+    new_id="$(_comfy_row_id "$_RG_LISTING" "$_COMFY_B_REPO" "$stamp")"
+    cur_id="$(_comfy_row_id "$_RG_LISTING" "$_COMFY_B_REPO" "$tag")"
+    if [ -z "$cur_id" ] || [ "$cur_id" != "$new_id" ]; then
+      _comfy_err build "$line; tag it by hand (README, ComfyUI)"
+      return 1
+    fi
   fi
   _comfy_say build "device $device"
   _comfy_say build "$R9700_COMFY_IMAGE now names $_COMFY_B_STAMPED"

@@ -10,6 +10,8 @@ REPO="$(dirname "$HERE")"
 source "$HERE/lib/assert.sh"
 # shellcheck source=tests/lib/stubcase.sh
 source "$HERE/lib/stubcase.sh"
+# shellcheck source=tests/lib/hostile.sh
+source "$HERE/lib/hostile.sh"
 
 FETCH="$REPO/comfyui/fetch_model.sh"
 SERVER="$HERE/fixtures/comfy/file_server.py"
@@ -203,14 +205,16 @@ t_bad_arguments_are_refused_before_any_request() {
   done
   assert_exit 2 "no argument at all" -- fm_run "$STORE_DIR"
   local hostile
-  for hostile in "$URL/.." "$URL/dir/" "$URL/-x.bin" "$URL/a[1].bin" "$URL/a{1,2}.bin" "$URL/a\"b.bin" "$URL/a?x=[1]"; do
-    assert_exit 2 "a hostile file name or url [$hostile]" -- fm_run "$STORE_DIR" vae "$hostile" "$HASH"
+  # the shapes MC2 feeds comfy_models_load (tests/lib/hostile.sh); the scheme is http here: the container may fetch from the local server of the tests
+  for hostile in "${HOSTILE_URL_TAILS[@]}"; do
+    assert_exit 2 "a hostile file name or url [$hostile]" -- fm_run "$STORE_DIR" vae "$URL/$hostile" "$HASH"
     assert_eq "1" "$(grep -c . <<< "$ERR")" "[$hostile] one line"
   done
+  assert_exit 0 "the scan is alive: the shared list is not empty" -- test "${#HOSTILE_URL_TAILS[@]}" -ge 11
   assert_eq "$(sed -n 's/^_COMFY_FILE_RE=//p' "$REPO/lib/comfy.sh")" "$(sed -n 's/^FILE_RE=//p' "$FETCH")" "the file-name rule is the same line in lib/comfy.sh and in the script"
   assert_eq "$(sed -n 's/^_COMFY_URL_RE=.https:\/\///p' "$REPO/lib/comfy.sh")" "$(sed -n 's/^URL_RE=.https?:\/\///p' "$FETCH")" "the url rule differs only in http (the local test server)"
   assert_contains "$(sed -n 's/^FILE_RE=//p' "$FETCH")" "A-Za-z0-9" "the scan is alive: the rule was read"
-  assert_eq "2" "$(grep -vE '^[[:space:]]*#' "$FETCH" | grep -c 'curl -')" "the scan is alive: the script has two curl calls"
+  assert_eq "3" "$(grep -vE '^[[:space:]]*#' "$FETCH" | grep -c 'curl -')" "the scan is alive: the script has three curl calls (the HEAD, the resumed download, the download from zero)"
   assert_eq "0" "$(grep -vE '^[[:space:]]*#' "$FETCH" | grep 'curl -' | grep -vc 'curl -g ')" "and both switch globbing off first (curl -g), so a [ or { in a url is never expanded"
   assert_eq "" "$(cat "$SLOG")" "the server log is empty: no request was made"
   assert_eq "" "$(files_below "$STORE_DIR")$(files_below "$MODELS_DIR")" "and nothing was written"
@@ -250,6 +254,25 @@ t_two_files_in_one_call_the_seconds_refusal_leaves_the_first_done() {
   assert_exit 0 "the first is in the store" -- test -f "$STORE_DIR/vae/a.bin"
   assert_exit 0 "and in the models folder" -- test -f "$MODELS_DIR/vae/a.bin"
   assert_eq "" "$(files_below "$STORE_DIR" | grep b.bin)$(files_below "$MODELS_DIR" | grep b.bin)" "the second is nowhere"
+}
+
+# FM13
+t_a_source_that_ignores_range_is_downloaded_again_from_zero() {
+  fm_setup "$FUNCNAME"
+  local size half
+  fm_file x.bin "0123456789abcdef0123456789abcdef"
+  : > "$WWW/x.bin.norange"
+  size="$(wc -c < "$WWW/x.bin")"
+  half=$((size / 2))
+  mkdir -p "$STORE_DIR/vae"
+  head -c "$half" "$WWW/x.bin" > "$STORE_DIR/vae/x.bin.part"
+  assert_exit 0 "a half .part and a source that answers 200 to a range" -- fm_run "$STORE_DIR" vae "$URL/x.bin" "$HASH"
+  assert_eq "1" "$(grep -c 'does not resume (curl 33)' <<< "$OUT")" "one line says the source does not resume"
+  assert_contains "$OUT" "the .part was removed, downloading from zero" "and what was done"
+  assert_eq "$(cat "$WWW/x.bin")" "$(cat "$STORE_DIR/vae/x.bin")" "the file is whole in the store"
+  assert_eq "$(cat "$WWW/x.bin")" "$(cat "$MODELS_DIR/vae/x.bin")" "and in the models folder"
+  assert_eq "" "$(find "$STORE_DIR" "$MODELS_DIR" -name '*.part')" "no .part is left"
+  assert_eq "GET /x.bin bytes=$half-|GET /x.bin -" "$(grep '^GET ' "$SLOG" | tr '\n' '|' | sed 's/|$//')" "the log shows one GET with the range, then one without"
 }
 
 run_all_tests

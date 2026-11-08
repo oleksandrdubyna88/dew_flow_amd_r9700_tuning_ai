@@ -15,6 +15,8 @@ source "$HERE/lib/stubcase.sh"
 source "$HERE/lib/lifecycle.sh"
 # shellcheck source=tests/lib/comfycase.sh
 source "$HERE/lib/comfycase.sh"
+# shellcheck source=tests/lib/hostile.sh
+source "$HERE/lib/hostile.sh"
 
 WORKER="$STUBS/worker.sh"
 
@@ -666,11 +668,12 @@ t_a_malformed_line_is_refused_with_its_place() {
   assert_eq "3" "$(grep -c "^r9700: comfy: $MC_FILE:" <<< "$ERR")" "all are reported in one pass, one line each"
   local pin hostile
   pin="$(printf 'a%.0s' $(seq 1 64))"
-  for hostile in "https://h.example/r/-x.bin" "https://h.example/r/.." "https://h.example/r/." "https://h.example/r/dir/" "https://h.example/r/a[1].bin" "https://h.example/r/a{1,2}.bin" 'https://h.example/r/a"b.bin' 'https://h.example/r/a\b.bin' 'https://h.example/r/a`b.bin' "https://h.example/r/a.bin?x=[1]" "https://h.example/r/a b.bin"; do
-    mc_conf hostile "zimage vae $hostile $pin"
+  for hostile in "${HOSTILE_URL_TAILS[@]}"; do
+    mc_conf hostile "zimage vae https://h.example/$hostile $pin"
     assert_exit 2 "a hostile file name or url [$hostile]" -- comfy_models_load "$MC_FILE"
     assert_contains "$ERR" "r9700: comfy: $MC_FILE:1: " "[$hostile] names the place"
   done
+  assert_exit 0 "the scan is alive: the shared list is not empty" -- test "${#HOSTILE_URL_TAILS[@]}" -ge 11
   mc_conf good "zimage vae https://h.example/r/a-b_c.1.bin?download=true $pin"
   assert_exit 0 "a plain name with a query is accepted (the scan is alive: the same shapes are not all refused)" -- comfy_models_load "$MC_FILE"
 }
@@ -686,6 +689,23 @@ t_the_legal_sets_are_the_files() {
   mc_conf custom "b vae https://h.example/r/x.bin $(printf 'a%.0s' $(seq 1 64))" "a vae https://h.example/r/y.bin $(printf 'a%.0s' $(seq 1 64))" "b vae https://h.example/r/z.bin $(printf 'a%.0s' $(seq 1 64))"
   comfy_models_load "$MC_FILE"
   assert_eq "b a" "$(comfy_sets | tr '\n' ' ' | sed 's/ $//')" "a copy named by R9700_COMFY_MODELS_CONF: file order, once each"
+}
+
+# MC4
+t_the_hosts_and_the_scripts_derivations_of_a_file_name_agree() {
+  comfy_setup "$FUNCNAME"
+  local pair url want host script fn
+  # the script runs inside the image and cannot source lib/comfy.sh, so it holds its own derivation; the test takes it from the script's text and runs both over the same urls
+  fn="$(sed -n '/^url_file_name() /p' "$REPO/comfyui/fetch_model.sh")"
+  assert_contains "$fn" "url_file_name()" "the scan is alive: the script's derivation was read"
+  eval "script_$fn"
+  for pair in "${NAME_DERIVATION_URLS[@]}"; do
+    url="${pair%%|*}" want="${pair#*|}"
+    host="$(_comfy_url_file_name "$url")"
+    script="$(script_url_file_name "$url")"
+    assert_eq "$want" "$host" "[$url] the host's derivation"
+    assert_eq "$host" "$script" "[$url] the script's derivation equals the host's"
+  done
 }
 
 run_all_tests

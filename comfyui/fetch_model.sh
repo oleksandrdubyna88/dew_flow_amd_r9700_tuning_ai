@@ -5,7 +5,7 @@
 #   /models = the volume ComfyUI reads (COMFY_MODELS_VOLUME)
 #   /store  = the master copy of the models, a Windows folder mounted only when COMFY_STORE_WIN is set; without that folder the file goes straight to /models
 # Per file, in order: the pre-flight HEAD (the published X-Linked-ETag, a cross-check only), then the store first, then the copy into /models. A file right in a place is not copied
-# again; a right file in /models fills a store that lacks it; a partial download (.part) is resumed; a .part that is already whole is moved into place. A copy is made to <name>.part,
+# again; a right file in /models fills a store that lacks it; a partial download (.part) is resumed (a source that ignores Range, curl 33, has the .part removed and the file downloaded once from zero); a .part that is already whole is moved into place. A copy is made to <name>.part,
 # checked, and moved by one rename.
 # The PIN is the authority. The published hash is never the acceptance: a source that publishes ANOTHER hash is refused before any download, a source that publishes none is
 # accepted when the download's own hash equals the pin, and bytes that do not match the pin are removed (a kept wrong .part would be resumed from its end by the next fetch).
@@ -36,6 +36,14 @@ download() {
   else
     echo "fetch: downloading   $4"
     curl -g -sSfL --connect-timeout 30 -C - -o "$2.part" "$1" || rc=$?
+    if [ "$rc" -eq 33 ]; then
+      # CURLE_RANGE_ERROR: the source ignored Range and answered 200 with the whole body, so the .part cannot be continued. It is removed and the file is downloaded from zero, once, without -C.
+      # Every other failure keeps exit 5: the .part stays and the next fetch resumes it.
+      echo "fetch: the source does not resume (curl 33); the .part was removed, downloading from zero   $4"
+      rm -f "$2.part"
+      rc=0
+      curl -g -sSfL --connect-timeout 30 -o "$2.part" "$1" || rc=$?
+    fi
     if [ "$rc" -ne 0 ]; then
       echo "fetch: the download of $4 failed (curl code $rc); the .part stays and the next fetch resumes it" >&2
       exit 5
@@ -51,7 +59,7 @@ download() {
 
 # The ONE rule of a url and of the file name made from it, the same two lines as lib/comfy.sh (_COMFY_URL_RE, _COMFY_FILE_RE; this script runs inside the image and cannot source that file). A url is http or
 # https (http only for the local server of the tests; models.conf allows https alone), with no quote, backslash, backtick, bracket, brace or blank; the file name is the last part of the url path before any ?
-# or #, made by ${path##*/} (a trailing / gives an empty name), and is letters, digits, . _ - starting with a letter or digit: never `.`, `..` or a leading `-`. Both curl calls also pass -g (no globbing).
+# or #, made by ${path##*/} (a trailing / gives an empty name), and is letters, digits, . _ - starting with a letter or digit: never `.`, `..` or a leading `-`. Every curl call also passes -g (no globbing).
 URL_RE='^https?://[^][{}"\`[:space:]]+$'
 FILE_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 url_file_name() { local path="${1%%[?#]*}"; printf '%s\n' "${path##*/}"; }

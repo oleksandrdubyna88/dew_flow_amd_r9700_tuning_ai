@@ -26,6 +26,7 @@
 #   images           (E1.S3) the stub's images: one record `<repository> <tag> <id>` per tagged image (a test plants records by writing it; `build -t`, `tag` and `rmi` change it)
 #   answers/build_id, answers/build_tags_on_failure   the id a successful build records (default made from the call counter); 1: a failing build still records its tag
 #   answers/tag_rc, answers/rmi_rc   a non-zero code: `wslc tag` / `wslc rmi` fails with it and changes nothing
+#   answers/tag_after_rc   a non-zero code: `wslc tag` moves the tag and then fails with it (a call cut after the engine did the work)
 #   answers/image_list, fail-image-list   `wslc image list`: the file printed instead of the table (CRLF ends added); a count (or "<skip> <count>") of failing calls
 #   answers/comfy_check, answers/comfy_check_rc   the throwaway check container of `comfy build` (`--entrypoint python3 ... -c <program naming torch.version.hip>`): its output (default four R9700
 #                  lines, CRLF ends added) and its exit code (default 0)

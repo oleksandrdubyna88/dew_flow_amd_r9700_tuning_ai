@@ -404,6 +404,7 @@ build_image() {
 # ---- the images (E1.S3) -------------------------------------------------------------------------------------------------------------------------
 # The file $R9700_STUB_DIR/images holds one record `<repository> <tag> <id>` per tagged image (id: `sha256:` and 64 hex); a test plants records by writing it.
 #   answers/tag_rc, answers/rmi_rc   a non-zero code: `tag` / `rmi` fails with it (one `stub:` line) and changes nothing
+#   answers/tag_after_rc             a non-zero code: `tag` MOVES the tag and then fails with it (one `stub:` line)
 #   answers/image_list               printed by `image list` instead of the table (CRLF ends added)
 #   fail-image-list                  the counting shape of fail-list: "<count>" or "<skip> <count>"; the failing calls print one `stub:` line and exit 1
 
@@ -434,6 +435,9 @@ tag_image() {
   if [ "$#" -ne 2 ]; then echo "stub: tag: two references only" >&2; return 2; fi
   if ! id="$(image_id "${1%:*}" "${1##*:}")"; then echo "stub: tag: no such image: $1" >&2; return 1; fi
   image_set "${2%:*}" "${2##*:}" "$id"
+  # answers/tag_after_rc: the engine moved the tag and the call still returns this code (a ceiling that hits after the move: 124)
+  rc="$(moe_answer tag_after_rc 0)"
+  if [ "$rc" != 0 ]; then echo "stub: tag cut after the move (scripted)" >&2; return "$rc"; fi
 }
 
 # remove_image <reference>: removes exactly that record (the engine's `rmi` of a tag)

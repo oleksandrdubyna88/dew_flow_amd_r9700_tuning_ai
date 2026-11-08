@@ -1706,3 +1706,14 @@ The hand-made folder is not used for any of the three; the operator decides whet
   nothing has been stopped yet, so nothing is owed. Bounded, and older than E1 (E1 adds up to ~3×60 s + 20 s to the window).
   The fix — a handler set right after `lock_take` that kills `_RG_BG` and exits 128+n, with the pre-trap calls going through
   `_rg_run` — belongs to its own change; S2 states the window in `supervise`'s header.
+- **One file for the model-name and URL rule** (code review of E1, 2026-11-08, finding 11). `lib/comfy.sh` and
+  `comfyui/fetch_model.sh` each hold the rule; E1 keeps them equal by one shared hostile-shape list and a test that derives
+  names through both. A shared `comfyui/url_rule.sh` sourced by both would remove the second copy, but it is a fourth placed
+  asset — a plan change — so it waits for its own change.
+- **A stalled download ends early** (finding 6, optional): `--speed-time 300 --speed-limit 1024` on the download, so a stalled
+  transfer stops and resumes cheaply instead of waiting for `COMFY_FETCH_MAX_S`.
+- **The exit-3 line of `fetch_model.sh`** says "publishes sha256 <x>" even when the header is not 64 hex characters (finding 4,
+  wording only).
+- **Record the passed stamps** (the S3 review): a build cut by its ceiling can leave an unchecked image under a stamp tag; a
+  state file written at promotion would let the retention and the rollback text name only passed stamps.
+- **The repository of `COMFY_IMAGE` belongs to `comfy build`** (finding 2, optional): one README sentence.
