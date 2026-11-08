@@ -12,6 +12,7 @@
 #   comfy_owner_line [<name>] / comfy_server_line [<name>] / comfy_restore_line   the exact lines of the owner check, the card-free admission and the restore
 #   lock_free               0 when the lock file can be taken now
 #   alive <container>       0 while the stub container's record is a live process
+#   wslc_calls              how many `wslc` calls the call log holds (0 when there is no log)
 #   calls_of_verb <verb>    how many `wslc <verb> ...` calls the call log holds (the first word after wslc; 0 when nothing was called)
 #   argv_of_verb <verb> [<n>]  ARGV: the argument array of the n-th (default: last) `wslc <verb> ...` call, from calls.argv
 
@@ -81,6 +82,9 @@ comfy_restore_line() { printf "r9700: restore: vllm not started: the operator's 
 lock_free() { flock -n "$R9700_STATE_DIR/lock" true; }
 
 alive() { [ -f "$STUB/containers/$1.pid" ] && kill -0 "$(pid_of "$1")" 2> /dev/null; }
+
+# wslc_calls: how many `wslc` calls the call log holds (the other stubs, powershell and pwsh, are the guards' and the restore's: a held step's guards append to the same log while a test looks)
+wslc_calls() { awk '$3 == "wslc" { n++ } END { print n + 0 }' "$STUB/calls.log" 2> /dev/null; }
 
 calls_of_verb() {
   [ -f "$STUB/calls.log" ] || { echo 0; return 0; }

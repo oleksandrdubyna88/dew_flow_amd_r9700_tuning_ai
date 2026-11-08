@@ -7,7 +7,7 @@
 #                          the verb names by default (<RESULTS_DIR>/comfy-zimage), and BV_CALLS0, the number of `wslc` calls the setup left
 #   bv <args...>           `bin/r9700 comfy bench <args...>` as a user runs it (the config variables of this test shell are not handed on)
 #   bv_bg <args...>        the same in the background (SUP; output in $CASE/sup.out and $CASE/sup.err); bv_end [<s>] waits for it (SRC, SOUT, SERR)
-#   bv_untouched           0 when nothing happened: no lock file was made and no `wslc` call was logged since bv_setup (wslc_calls counts them)
+#   bv_untouched           0 when nothing happened: no lock file was made and no `wslc` call was logged since bv_setup (wslc_calls of tests/lib/comfycase.sh counts them)
 #   bv_refuse <name> <text> <args...>   the verb is refused: exit 2, exactly one stderr line that contains <text>, and nothing happened
 #   bv_no_runs             0 when no run folder was made under RESULTS_DIR/runs
 #   bv_stops <name>        how many `wslc stop <name>` calls the call log holds
@@ -17,9 +17,6 @@
 
 # shellcheck source=tests/lib/benchcase.sh
 source "$HERE/lib/benchcase.sh"
-
-# wslc_calls: how many `wslc` calls the call log holds (the other stubs, powershell and pwsh, are the guards' and the restore's)
-wslc_calls() { awk '$3 == "wslc" { n++ } END { print n + 0 }' "$STUB/calls.log" 2> /dev/null; }
 
 bv_setup() {
   bench_world "$1"

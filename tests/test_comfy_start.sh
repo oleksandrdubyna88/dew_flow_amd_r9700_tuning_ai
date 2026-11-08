@@ -108,10 +108,10 @@ t_a_start_is_refused_under_a_held_lock() {
   step_bg --model "$MODEL_35B" t -- "$WORKER" child
   wait_for "$STUB/child.pid" 100
   local step_pid="$SUP" calls
-  calls="$(wc -l < "$STUB/calls.log" | tr -d ' ')"
+  calls="$(wslc_calls)"
   assert_exit 4 "comfy start under a held lock" -- comfy start
   assert_contains "$ERR" "pid $step_pid, step, since" "the holder line"
-  assert_eq "$calls" "$(wc -l < "$STUB/calls.log" | tr -d ' ')" "no call was made by the start"
+  assert_eq "$calls" "$(wslc_calls)" "no engine call was made by the start (the held step's guards log pwsh calls, not engine calls)"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one line"
   kill -TERM "$step_pid"
   SUP="$step_pid"
