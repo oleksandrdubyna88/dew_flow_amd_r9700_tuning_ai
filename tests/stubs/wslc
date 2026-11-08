@@ -8,6 +8,8 @@ stub_log wslc "$@"
 stub_mode_if_asked
 
 CRLF=$'\r'
+# shellcheck source=tests/stubs/stub_bench.sh
+source "$STUB_HERE/stub_bench.sh"
 
 # ---- the MoE foreground runs (E2.S2 decision 9) -----------------------------------------------------------------------------------------------
 # moe_kind <argv...>: sets MOE_KIND to `bench` (a benchmark_moe.py run: `--tune` is a chunk, else a kernel A/B container), `linear` (a linear_bench.py
@@ -201,6 +203,13 @@ run_container() {
     fetch_foreground "$name"
     return $?
   fi
+  # the throwaway containers of a ComfyUI arm-round (E2.S2): the cache clear, the cache report, the model listing
+  if [ "$detached" = no ] && comfy_clear_is "$@"; then comfy_clear_answer; return $?; fi
+  if [ "$detached" = no ] && comfy_report_is "$@"; then comfy_report_answer; return $?; fi
+  if [ "$detached" = no ] && comfy_listing_is "$@"; then
+    comfy_listing_answer "${COMFY_REST[@]}"
+    return $?
+  fi
   if [ "$detached" = no ]; then
     [ -f "$R9700_STUB_DIR/hang-foreground-run" ] && stub_hang # a throwaway container that never answers (the caller's ceiling ends it)
     [ -f "$R9700_STUB_DIR/answers/find" ] && sed "s/\$/$CRLF/" "$R9700_STUB_DIR/answers/find"
@@ -222,6 +231,9 @@ run_container() {
     exit 1
   fi
   stub_container_start "$name"
+  rm -f "$R9700_STUB_DIR/logs.d/$name" # a new container of a name starts a new log (E2.S2: what the bench runs of the earlier one added is not its)
+  # on-start-<name> (E2.S2): a script of the test, run once the detached container is listed (the moment a bench container starts)
+  [ -f "$R9700_STUB_DIR/on-start-$name" ] && bash "$R9700_STUB_DIR/on-start-$name"
   # The engine's half is done here (the container is real and listed); the client's half is what these two files script (E1.S2: the call can time out, fail or be cut
   # after the container exists). run-delay-<name>: seconds, READ and not removed, slept before the three lines; run-fail-<name>: a count, then the client fails.
   if [ -f "$R9700_STUB_DIR/run-delay-$name" ]; then sleep "$(cat "$R9700_STUB_DIR/run-delay-$name")"; fi
@@ -338,6 +350,10 @@ exec_in() {
     done
     [ -n "${R9700_STUB_DELAY_S:-}" ] && sleep "$R9700_STUB_DELAY_S"
     bench_lines "$c" "$seed" "$len" "$outlen"
+  elif comfy_bench_is "$@"; then
+    comfy_bench_call "$name" "$@" # E2.S2: the exec of comfyui/bench.py, answered from scripted files
+  elif comfy_clean_stop_is "$@"; then
+    comfy_clean_stop "$name"
   elif [ "${1:-}" = python3 ] && [[ ${2:-} == */prefixtest.py ]]; then
     prefix_call "$name" "$@"
   elif [ "${1:-}" = python3 ] && [[ ${2:-} == */harness.py ]]; then
@@ -347,7 +363,7 @@ exec_in() {
     word="$(stub_answer comfy_ready)" || exit 99 # the file is missing: the test scripted nothing (stub_answer exits in its own subshell only)
     [ "$word" = hang ] && stub_hang
     if [ "$word" = ok ]; then
-      printf 'device cuda:0 AMD Radeon AI PRO R9700 : native%s\nready%s\n' "$CRLF" "$CRLF"
+      comfy_ready_ok
     else
       printf 'system_stats: URLError%s\n' "$CRLF"
       return 1
@@ -591,7 +607,9 @@ case "${1:-}" in
       exit 1
     fi
     ;;
-  logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/on-logs-${2:-}" ] && bash "$R9700_STUB_DIR/on-logs-${2:-}"; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"; exit 0 ;;
+  logs) stub_require_running "${2:-}" || exit 1; [ -f "$R9700_STUB_DIR/on-logs-${2:-}" ] && bash "$R9700_STUB_DIR/on-logs-${2:-}"; [ -f "$R9700_STUB_DIR/answers/logs" ] && cat "$R9700_STUB_DIR/answers/logs"
+    [ -f "$R9700_STUB_DIR/logs.d/${2:-}" ] && cat "$R9700_STUB_DIR/logs.d/${2:-}" # E2.S2: what the bench runs of this container added to its log
+    exit 0 ;;
   exec) stub_require_running "${2:-}" || exit 1; shift; exec_in "$@" ;;
   *) echo "stub: wslc: unknown subcommand \"${1:-}\"" >&2; exit 2 ;;
 esac

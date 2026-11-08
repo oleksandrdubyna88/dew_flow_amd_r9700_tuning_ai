@@ -80,7 +80,7 @@ t_several_sets_each_file_once() {
   mapfile -t want < <(triples zimage wan5b)
   got=("${ARGV[@]:12}")
   assert_eq "$(printf '%s|' "${want[@]}")" "$(printf '%s|' "${got[@]}")" "the triples are zimage's, then wan5b's"
-  assert_eq "18" "${#got[@]}" "six triples: none twice"
+  assert_eq "21" "${#got[@]}" "seven triples (three of zimage, four of wan5b since E2.S2 added the LoRA): none twice"
 }
 
 # FE4

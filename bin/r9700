@@ -2,7 +2,8 @@
 # bin/r9700 — the one entry point of the R9700 tuning toolkit: `r9700 <verb> [arguments]`. The verbs: commands, init, step (E1.S2), series and
 # verdict (E1.S3: the arm-round records of a series and the ship test read back from them), moe-tune (E2.S3: chunk, merge, activate, ab), linear-bench and
 # prefixtest (E3.S1: the linear-kernel micro-benchmark and the prefix-cache check, one step each), run (E3.S2: a plan file of steps under ONE supervisor), comfy (E1.S2 and E1.S3 of the
-# ComfyUI plan: start, stop, status of the operator's ComfyUI on the same card, one owner of the card at a time; build the image from comfyui/ and fetch its model sets).
+# ComfyUI plan: start, stop, status of the operator's ComfyUI on the same card, one owner of the card at a time; build the image from comfyui/ and fetch its model sets; E2 of the ComfyUI plan: bench,
+# measure ComfyUI arms as one supervised step, and `verdict` over the folder it makes).
 #
 # Order of every invocation that can change the machine (decision 4): parse the arguments -> take the lock -> restore from the recovery
 # marker when one exists -> load and validate the config -> work. A verb that only reads (verdict) takes the lock only when a marker
@@ -20,10 +21,11 @@
 #     names the record of another experiment, a placed file that differs from its source; comfy: a refused argument or mode, a machine config refused (the two name rules of
 #     COMFY_CONTAINER among them), a start beside the operator's listed server without --stop-vllm, a container list that failed three times; comfy build: the operator's
 #     ComfyUI or the operator's server is listed (nothing was placed or built), or COMFY_IMAGE's tag has the shape of a build stamp; comfy fetch: an unknown set, a malformed
-#     comfyui/models.conf, a source that publishes another sha256 than the pinned one, or a container list that failed three times; every verb under the supervisor: the operator's
+#     comfyui/models.conf, a source that publishes another sha256 than the pinned one, or a container list that failed three times; comfy bench: an unknown workflow or arm, an arm
+#     without an evidence row, a bench whose identity changed (fingerprint differs: ...), a command without the arm base, a model file missing from the models volume (the line names comfy fetch), or the image COMFY_IMAGE does not exist; every verb under the supervisor: the operator's
 #     ComfyUI is listed (the line names bin/r9700 comfy stop)
-#   4 another run holds the lock (comfy start and comfy build hold it through their work); comfy fetch: another fetch holds <state dir>/comfy-fetch.lock, or a fetch container is
-#     still running
+#   4 another run holds the lock (comfy start and comfy build hold it through their work; a bench holds it through its run, and with ComfyUI listed a held lock is still 4); comfy fetch:
+#     another fetch holds <state dir>/comfy-fetch.lock, or a fetch container is still running
 #   5 the restore did not become ready, or was not started beside the operator's ComfyUI (the marker stays); comfy start: ComfyUI did not become ready (its log tail is saved, it is
 #     stopped, the operator's server is restored when this invocation stopped it), or the container list could not be read after the launch (nothing stopped; the line names
 #     comfy stop and init; the marker stays when the operator's server is owed)
@@ -40,7 +42,7 @@ set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb comfy; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb comfy comfy_bench comfy_bench_verb; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
@@ -167,15 +169,16 @@ verb_init() {
   [ "$rc" -eq 0 ] || exit 10
 }
 
-# verdict <outdir> [--base <arm>] [--no-quality] [--json <file>]: the ship test over the final records of a series (lib/series.sh). It takes the
-# lock only when a marker exists, to restore first, and releases it before it reads; its arguments are checked after that restore.
+# verdict <outdir> [--base <arm>] [--no-quality] [--json <file>]: the ship test over the final records of a series (lib/series.sh), or, when the folder's fingerprint.json is of kind `comfy`, the
+# comfy ship test over the records of a ComfyUI bench (lib/comfy_bench_verb.sh; it has no quality gate, so --no-quality is refused there). It takes the lock only when a marker exists, to restore
+# first, and releases it before it reads; its arguments are checked after that restore.
 verb_verdict() {
   if [ -f "$(marker_path)" ]; then
     lock_take verdict || exit $?
     restore_first
     lock_release
   fi
-  series_verdict "$@"
+  if verdict_is_comfy "$@"; then comfy_bench_verdict "$@"; else series_verdict "$@"; fi
   exit $?
 }
 
@@ -583,9 +586,10 @@ verb_run() {
 }
 
 # ---------- comfy (E1.S2 of the ComfyUI plan) ----------
-# verb_comfy <mode> [arguments]: the modes are the functions comfy_mode_<mode> of lib/comfy.sh (the list is derived from them, never typed): start [--stop-vllm] [-- <main.py args>]
+# verb_comfy <mode> [arguments]: the modes are the functions comfy_mode_<mode> of lib/comfy.sh and lib/comfy_bench_verb.sh (the list is derived from them, never typed): start [--stop-vllm] [-- <main.py args>]
 # holds the lock through its readiness wait; build [--no-cache] holds it through the build and its check; fetch <set>... holds a lock of its own (comfy-fetch.lock); stop and status
-# take none. The mode and its arguments (and the sets of a fetch) are checked before any lock.
+# take none; bench <workflow> <arm>... [--rounds N] [--out <name>] [--dry-run] (E2 of the ComfyUI plan) runs under the supervisor: one lock, one stop and one restore of the operator's server
+# for all its arm-rounds. The mode and its arguments (and the sets of a fetch, and the workflow and arms of a bench) are checked before any lock.
 verb_comfy() {
   local mode="${1:-}"
   if [ -z "$mode" ]; then

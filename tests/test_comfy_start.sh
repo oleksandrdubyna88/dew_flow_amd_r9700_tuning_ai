@@ -30,15 +30,15 @@ logs_250() { seq 1 250 | sed 's/^/log line /' > "$STUB/answers/logs"; }
 # tail_files: the tail files of failed starts below the state directory
 tail_files() { ls "$R9700_STATE_DIR"/comfy-start-*.tail.log 2> /dev/null; }
 
-# the legal modes: the functions of lib/comfy.sh, read from the file
-file_modes() { grep -oE '^comfy_mode_[a-z]+\(\)' "$REPO/lib/comfy.sh" | sed -e 's/^comfy_mode_//' -e 's/()$//' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }
+# the legal modes: the functions of lib/comfy.sh and of lib/comfy_bench_verb.sh (the mode `bench`, E2.S3), read from the files
+file_modes() { grep -hoE '^comfy_mode_[a-z]+\(\)' "$REPO/lib/comfy.sh" "$REPO/lib/comfy_bench_verb.sh" | sed -e 's/^comfy_mode_//' -e 's/()$//' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }
 
 # CS1
 t_the_grammar_is_refused_before_the_lock_and_the_modes_are_derived() {
   comfy_setup "$FUNCNAME"
   local modes args
   modes="$(comfy_modes | tr '\n' ' ' | sed 's/ $//')"
-  assert_eq "$(file_modes)" "$modes" "the legal modes are the comfy_mode_* functions of lib/comfy.sh"
+  assert_eq "$(file_modes)" "$modes" "the legal modes are the comfy_mode_* functions of lib/comfy.sh and lib/comfy_bench_verb.sh"
   assert_contains " $modes " " start " "and hold start"
   assert_exit 2 "no mode" -- comfy
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one line"
@@ -108,10 +108,10 @@ t_a_start_is_refused_under_a_held_lock() {
   step_bg --model "$MODEL_35B" t -- "$WORKER" child
   wait_for "$STUB/child.pid" 100
   local step_pid="$SUP" calls
-  calls="$(wc -l < "$STUB/calls.log" | tr -d ' ')"
+  calls="$(wslc_calls)"
   assert_exit 4 "comfy start under a held lock" -- comfy start
   assert_contains "$ERR" "pid $step_pid, step, since" "the holder line"
-  assert_eq "$calls" "$(wc -l < "$STUB/calls.log" | tr -d ' ')" "no call was made by the start"
+  assert_eq "$calls" "$(wslc_calls)" "no engine call was made by the start (the held step's guards log pwsh calls, not engine calls)"
   assert_eq 1 "$(printf '%s\n' "$ERR" | wc -l | tr -d ' ')" "one line"
   kill -TERM "$step_pid"
   SUP="$step_pid"

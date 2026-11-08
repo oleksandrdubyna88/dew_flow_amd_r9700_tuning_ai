@@ -4,7 +4,9 @@
   fingerprint.py build <inputs dir> --out <file> [--probe-from <stored>]
                                                      assemble the components from the files lib/series.sh wrote, hash them, write the document
                                                      (--probe-from: the listing and generation config hashes come from <stored>)
-  fingerprint.py compare [--merge] <stored> <new>    one line per differing leaf; a new arm and a larger round count are extensions (exit 0)
+  fingerprint.py build-comfy <inputs dir> --out <file>
+                                                     the same for a ComfyUI experiment (`bin/r9700 comfy bench`, E2.S2): kind `comfy`, the workflow constants, the image, the
+                                                     pinned model hashes; compare, --merge and show read it unchanged
   fingerprint.py show <file> <path>                  one leaf: a string or a number bare, a list on one line, a dict as its keys
   fingerprint.py check-quality <prompts> <gsm8k>     the round-1 files of a record: 20 results, GSM8K summary n 200
 
@@ -15,6 +17,9 @@ json.dumps(components, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 Inputs directory: config.env (R9700_<KEY>=<value> lines, the config_resolved output), arms/<arm>.args|.env|.mounts (one word per line),
 patches (<path> <64 hex>), listing (the model's file names and sizes), genconfig (<path> <64 hex>), tools (<key> <64 hex>), series
 (base=, rounds=, prefill_lens=).
+
+Inputs directory of build-comfy: comfy.env (KIND=comfy, WORKFLOW=, IMAGE_REF=, IMAGE_ID=, COMFY_REF=, BASE=, ROUNDS=, CONTAINER_PREFIX=), arms/<arm>.args|.env|.mounts, constants.json
+(the workflow's constants as comfyui/bench.py prints them, whole), models (<folder>/<file> <64 hex>: the PINNED sha256 of every file the workflow loads), tools (<key> <64 hex>).
 
 Exit codes: 0 ok (compare: the same, or only new arms), 1 compare found a difference or check-quality a problem, 2 an input or a
 file that cannot be used (one line starting `fingerprint:`). Python >= 3.10, standard library only.
@@ -45,6 +50,7 @@ MODEL_KEYS = {
     "TUNED_CONFIG_DIR": ("tuned_config_dir", str), "MOUNTS": ("mounts", str),
 }
 OTHER_KEYS = ("IMAGE", "CONTAINER_PREFIX", "GSM8K_DATA")
+COMFY_ENV_KEYS = ("KIND", "WORKFLOW", "IMAGE_REF", "IMAGE_ID", "COMFY_REF", "BASE", "ROUNDS", "CONTAINER_PREFIX")  # comfy.env: every one is required
 
 
 class InputError(Exception):
@@ -124,6 +130,46 @@ def read_arms(folder):
     for name in names:
         arms[name] = {kind: [w for w in read_text(folder, f"arms/{name}.{kind}").split()] for kind in ("args", "env", "mounts")}
     return arms
+
+
+def read_comfy_env(folder):
+    values = {}
+    for n, line in numbered(read_text(folder, "comfy.env")):
+        match = re.fullmatch(r"([A-Z_]+)=(.*)", line)
+        if not match or match[1] not in COMFY_ENV_KEYS:
+            fail(f"comfy.env:{n}", f'expected "<KEY>=<value>" with a key of {" ".join(COMFY_ENV_KEYS)}')
+        values[match[1]] = match[2]
+    for key in COMFY_ENV_KEYS:
+        if key not in values:
+            fail("comfy.env", f"{key}= is missing")
+        if not values[key]:
+            fail("comfy.env", f"{key}= is empty")
+    if values["KIND"] != "comfy":
+        fail("comfy.env", f'KIND= is "{values["KIND"]}", expected "comfy"')
+    if not re.fullmatch(r"[0-9]+", values["ROUNDS"]):
+        fail("comfy.env", f'expected "ROUNDS=<number>", got "{values["ROUNDS"]}"')
+    return values
+
+
+def build_comfy_components(folder):
+    """The components of a ComfyUI experiment: what lib/comfy_bench.sh wrote into the inputs folder, whole (no JSON is built in bash but constants.json, which bench.py prints)."""
+    env, arms = read_comfy_env(folder), read_arms(folder)
+    if env["BASE"] not in arms:
+        fail("comfy.env", f'base "{env["BASE"]}" is not one of the arms ({" ".join(arms)})')
+    try:
+        constants = json.loads(read_text(folder, "constants.json"))
+    except json.JSONDecodeError as error:
+        fail("constants.json", f"cannot be read as JSON ({error})")
+    if not isinstance(constants, dict):
+        fail("constants.json", "is not a JSON object")
+    models = hex_pairs(folder, "models", "<folder>/<file> <64 hex>")
+    if not models:
+        fail("models", "holds no file: a workflow loads at least one model")
+    return {
+        "kind": env["KIND"], "workflow": env["WORKFLOW"], "image": {"ref": env["IMAGE_REF"], "id": env["IMAGE_ID"]}, "comfy_ref": env["COMFY_REF"], "arms": arms,
+        "base": env["BASE"], "rounds": int(env["ROUNDS"]), "constants": constants, "models": models, "tools": hex_pairs(folder, "tools", "<key> <64 hex>"),
+        "machine": {"container_prefix": env["CONTAINER_PREFIX"]},
+    }
 
 
 def build_components(folder, probe=None):
@@ -271,6 +317,13 @@ def cmd_build(args):
     return 0
 
 
+def cmd_build_comfy(args):
+    document = document_of(build_comfy_components(Path(args.inputs)))
+    write_atomic(args.out, document)
+    print(document["sha256"])
+    return 0
+
+
 def descend(node, parts, path):
     """The value at a dotted path; a key may hold dots (a patch path), so the longest matching key is tried first."""
     if not parts:
@@ -332,6 +385,10 @@ def build_parser():
     build.add_argument("--out", required=True)
     build.add_argument("--probe-from", help="a stored document: the model listing and the generation config are taken from it, not from the inputs")
     build.set_defaults(fn=cmd_build)
+    comfy = sub.add_parser("build-comfy", help="assemble, hash and write the fingerprint document of a ComfyUI experiment")
+    comfy.add_argument("inputs")
+    comfy.add_argument("--out", required=True)
+    comfy.set_defaults(fn=cmd_build_comfy)
     compare = sub.add_parser("compare", help="name every differing leaf of two documents")
     compare.add_argument("--merge", action="store_true", help="write the stored document with the new arms added")
     compare.add_argument("stored")

@@ -419,7 +419,81 @@ def test_a_good_document_is_still_read(tmp_path, built):
 
 def test_every_command_has_a_covered_row_in_the_flow_catalogue():
     rows = catalogue_rows("lib/fingerprint.py", load_module().build_parser())
-    assert sorted(rows) == ["build", "check-quality", "compare", "show"]
+    assert sorted(rows) == ["build", "build-comfy", "check-quality", "compare", "show"]  # E2.S2 added build-comfy
     for command, found in rows.items():
         assert found, f"lib/fingerprint.py {command} has no row in research/module_tests.md"
         assert all("covered" in row for row in found), command
+
+
+# ---- E2.S2, BF1: the identity of a ComfyUI experiment (`build-comfy`) --------------------------------------------
+
+COMFY_ENV = {"KIND": "comfy", "WORKFLOW": "zimage", "IMAGE_REF": "comfyui-r9700:local", "IMAGE_ID": "sha256:stub", "COMFY_REF": "v0.44.0", "BASE": "base", "ROUNDS": "2",
+             "CONTAINER_PREFIX": "r9700tune-"}
+COMFY_CONSTANTS = {"workflow": "zimage", "seeds": {"cold": 4242, "measured": [1, 2, 3]}, "ceilings": {"run_max_s": 300, "cold_max_s": 1800}, "inputs": {"steps": 8}, "metrics": ["total_s"]}
+COMFY_MODELS = {"diffusion_models/z_image_turbo_bf16.safetensors": HEX_A, "text_encoders/qwen_3_4b.safetensors": HEX_B, "vae/ae.safetensors": HEX_C}
+COMFY_TOOLS = {"bench_py": HEX_A, "arms_conf": HEX_B, "evidence_conf": HEX_C, "comfy_bench_sh": HEX_A, "fingerprint_py": HEX_B, "verdict_py": HEX_C}
+
+
+def write_comfy_inputs(folder, env=None, arms=None, constants=None, models=None, tools=None, drop=()):
+    """An inputs directory as lib/comfy_bench.sh writes it: comfy.env, arms/, constants.json, models, tools."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "arms").mkdir(exist_ok=True)
+    values = {key: value for key, value in {**COMFY_ENV, **(env or {})}.items() if key not in drop}
+    (folder / "comfy.env").write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+    arms = {"base": ("", "", ""), "fp16acc": ("--fast fp16_accumulation", "", "")} if arms is None else arms
+    for name, (args, env_words, mounts) in arms.items():
+        for suffix, text in (("args", args), ("env", env_words), ("mounts", mounts)):
+            (folder / "arms" / f"{name}.{suffix}").write_text("".join(f"{word}\n" for word in text.split()))
+    (folder / "constants.json").write_text(json.dumps(COMFY_CONSTANTS if constants is None else constants))
+    (folder / "models").write_text("".join(f"{path} {digest}\n" for path, digest in (COMFY_MODELS if models is None else models).items()))
+    (folder / "tools").write_text("".join(f"{key} {digest}\n" for key, digest in (COMFY_TOOLS if tools is None else tools).items()))
+    return folder
+
+
+def test_bf1_build_comfy_writes_a_version_1_document_with_every_component_that_show_and_compare_read(tmp_path):
+    folder = write_comfy_inputs(tmp_path / "in")
+    out = tmp_path / "fp.json"
+    code, stdout, stderr = run(["build-comfy", folder, "--out", out])
+    assert code == 0, stderr
+    document = json.loads(out.read_text())
+    assert document["version"] == 1 and document["sha256"] == canonical_sha(document["components"]) == stdout.strip()
+    components = document["components"]
+    assert components == {
+        "kind": "comfy", "workflow": "zimage", "image": {"ref": "comfyui-r9700:local", "id": "sha256:stub"}, "comfy_ref": "v0.44.0",
+        "arms": {"base": {"args": [], "env": [], "mounts": []}, "fp16acc": {"args": ["--fast", "fp16_accumulation"], "env": [], "mounts": []}},
+        "base": "base", "rounds": 2, "constants": COMFY_CONSTANTS, "models": COMFY_MODELS, "tools": COMFY_TOOLS, "machine": {"container_prefix": "r9700tune-"}}
+    shown = {path: run(["show", out, path]) for path in ("kind", "workflow", "base", "rounds", "arms", "image.ref", "image.id", "comfy_ref", "constants.seeds.cold", "constants.ceilings.cold_max_s")}
+    assert {path: (code, " ".join(text.split())) for path, (code, text, _) in shown.items()} == {
+        "kind": (0, "comfy"), "workflow": (0, "zimage"), "base": (0, "base"), "rounds": (0, "2"), "arms": (0, "base fp16acc"), "image.ref": (0, "comfyui-r9700:local"),
+        "image.id": (0, "sha256:stub"), "comfy_ref": (0, "v0.44.0"), "constants.seeds.cold": (0, "4242"), "constants.ceilings.cold_max_s": (0, "1800")}
+    assert run(["show", out, "models"])[1].split() == list(COMFY_MODELS) and run(["show", out, "tools"])[1].split() == list(COMFY_TOOLS)
+    assert run(["compare", out, out])[:2] == (0, "")
+
+
+def test_bf1_a_comfy_env_without_its_image_id_is_refused_naming_the_key(tmp_path):
+    code, stdout, stderr = run(["build-comfy", write_comfy_inputs(tmp_path / "in", drop=("IMAGE_ID",)), "--out", tmp_path / "fp.json"])
+    assert (code, stdout, stderr.strip()) == (2, "", "fingerprint: comfy.env: IMAGE_ID= is missing")
+    assert not (tmp_path / "fp.json").exists()
+
+
+def test_bf1_a_base_that_is_not_an_arm_and_a_kind_that_is_not_comfy_are_refused(tmp_path):
+    code, _, stderr = run(["build-comfy", write_comfy_inputs(tmp_path / "a", env={"BASE": "nope"}), "--out", tmp_path / "a.json"])
+    assert code == 2 and 'base "nope" is not one of the arms (base fp16acc)' in stderr
+    code, _, stderr = run(["build-comfy", write_comfy_inputs(tmp_path / "b", env={"KIND": "series"}), "--out", tmp_path / "b.json"])
+    assert code == 2 and "comfy.env: KIND= is" in stderr
+    code, _, stderr = run(["build-comfy", write_comfy_inputs(tmp_path / "c", env={"ROUNDS": "two"}), "--out", tmp_path / "c.json"])
+    assert code == 2 and "ROUNDS=" in stderr
+
+
+def test_bf2_a_change_of_a_comfy_component_is_named_by_compare_and_a_new_arm_or_more_rounds_is_an_extension(tmp_path):
+    first = tmp_path / "first.json"
+    assert run(["build-comfy", write_comfy_inputs(tmp_path / "in"), "--out", first])[0] == 0
+    changed = tmp_path / "changed.json"
+    run(["build-comfy", write_comfy_inputs(tmp_path / "in2", arms={"base": ("", "", ""), "fp16acc": ("--fast fp16_accumulation --x", "", "")}), "--out", changed])
+    code, stdout, _ = run(["compare", first, changed])
+    assert code == 1 and stdout.strip() == 'fingerprint differs: arms.fp16acc.args: ["--fast","fp16_accumulation"] -> ["--fast","fp16_accumulation","--x"]'
+    more = tmp_path / "more.json"
+    run(["build-comfy", write_comfy_inputs(tmp_path / "in3", env={"ROUNDS": "3"}, arms={"base": ("", "", ""), "fp16acc": ("--fast fp16_accumulation", "", ""), "miopen": ("", "", "")}), "--out", more])
+    code, stdout, _ = run(["compare", "--merge", first, more])
+    assert code == 0 and stdout.splitlines() == ["fingerprint: arm miopen added", "fingerprint: rounds extended 2 -> 3"]
+    assert run(["show", first, "arms"])[1].split() == ["base", "fp16acc", "miopen"] and run(["show", first, "rounds"])[1].strip() == "3"
