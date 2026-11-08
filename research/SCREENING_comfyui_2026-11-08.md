@@ -187,3 +187,12 @@ Setup: each model in its own venv on its own `wslc` volume (`--system-site-packa
 Observed: both run on the card as predicted, 2–3.5x slower than real time warm. Qwen3-TTS speaks at a slower narration pace
 (the Russian lines 7.0 s against VoxCPM2's 5.4 and 4.3 s; VoxCPM2's ru2 may be rushed or cut — to be heard). The quality is
 the operator's call by ear; no real person's voice was used (no cloning).
+
+F5-TTS with a Russian fine-tune (`Misha24-10/F5-TTS_RUSSIAN`, checkpoint `F5TTS_v1_Base_v4_winter/model_212000.safetensors`,
+1.3 GB, cc-by-nc-4.0 — non-commercial; f5-tts 1.1.22; vocoder `charactr/vocos-mel-24khz`): F5 has no built-in voice, so the
+reference clip was the SYNTHETIC narrator of Qwen3-TTS's ru2 line with its text (no real person's voice). First run failed:
+`torchaudio.load` goes through `torchcodec`, whose pip build needs NVIDIA's `libnvrtc`; reading the clip with `soundfile`
+instead fixed it. Load 4.3 s; ru1 21.2 s / 8.4 s (RTF 2.51, warm-up), ru2 1.7 s / 6.8 s (0.26), en1 1.7 s / 5.7 s (0.30),
+en2 1.7 s / 5.5 s (0.30) — faster than real time once warm, the fastest of the three. The English lines are short (5.5–5.7 s
+against Qwen3-TTS's 10.6–10.8 s): F5 takes the pace from the Russian reference, so English may sound rushed. By ear: the
+operator's call.
