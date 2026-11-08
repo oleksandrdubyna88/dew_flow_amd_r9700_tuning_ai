@@ -217,9 +217,18 @@ status rc=0
 The operator opened ComfyUI's own Z-Image Turbo template in the Windows browser at 1024x1024 and ran it: the image was
 correct (the operator looked at it); `Prompt executed in 23.53 seconds` (the first run, with the model load).
 
+Then, after the operator's test:
+
+```
+$ bin/r9700 comfy stop
+comfy: stop: stopped comfyui
+stop rc=0
+comfy: status: comfyui: not running
+comfy: status: vllm: not running
+```
+
 #### What this record does not settle
 
 - The verb hides the check's four lines and the raw `tag` output; the parse of `wslc image list` is checked by the run, the
   output of `tag` and `rmi` is still only the stub's text.
 - The image's time is one cold run, not a measurement (E2's bench measures).
-- `comfy stop` after run 3 is recorded below when the operator ends the session.
