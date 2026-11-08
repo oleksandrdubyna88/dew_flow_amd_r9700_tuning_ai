@@ -310,3 +310,10 @@ Observed while making the keyframes:
 
 Narration (eight lines, the same two cloned storyteller voices): Qwen3-TTS one batch 82.6 s for 42.5 s of audio (RTF 1.94);
 VoxCPM2 10 steps 113.2 s for 44.0 s (RTF 2.57; the GPU had just been freed by ComfyUI). The mixer now counts the lines.
+
+Episode 2 rendered (2026-11-08 19:28–21:51): eight 14B clips of 1002.2–1014.7 s each (the restart rule held for all
+eight), joined into a 40.5 s film; the narrations mixed and checked (Qwen 43.4 s, VoxCPM 44.4 s; audio from 0.000 s,
+−21.1 / −21.5 dB). By eye on frames of every clip: the Arcane look and the character hold; the clouds, the ash, the dead
+forest, the wolves closing in, the departure, the truck and the drive into the sunset all as written. One fault: in shot 2
+she is meant to sleep (the narration says so) but her eyes open mid-clip; re-rendered with "eyes closed the whole time"
+as a v2 film beside the first.
