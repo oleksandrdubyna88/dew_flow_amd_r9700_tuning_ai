@@ -9,7 +9,7 @@ The toolkit has ten verbs in five groups. A series of server-flag arms with a sh
 | Module | Files | Purpose |
 |---|---|---|
 | Config | `lib/config.sh`, `machine.env.example`, `models/*.env`, `config/arms.conf` | one untracked `machine.env`, one `models/<name>.env` per model, one arm table; a bash loader validates every field before anything runs and never executes the files. Field list: `research/module_config.md` |
-| Verdict | `lib/verdict.py` | the ship test over bench lines: complete arm-round blocks only, the base's spread over all its values, exact decimals, GSM8K within 2 x the larger stderr; `check-block` validates one arm-round record |
+| Verdict | `lib/verdict.py` | the ship test over bench lines: complete arm-round blocks only, the base's spread over all its values, exact decimals, GSM8K within 2 x the larger stderr; `check-block` validates one arm-round record. A second mode for ComfyUI: `comfy` applies the same spread rule to one workflow's timing lines (`<arm>-<round> <workflow> r=<n> <metric>: <value>`), one metric decides and a direction says which way is better, a median inside the base spread is NOT DECIDED, never FAIL; `comfy-check-block` validates one such arm-round record |
 | Quality harness | `lib/harness.py` | 20 greedy prompts with logprobs, GSM8K scoring, and the two comparisons, against a running vLLM server; results are written atomically |
 | Adapter | `lib/adapter.sh`, `lib/serve.sh`, `lib/bench.sh`, `lib/run_guarded.sh` (`t_scale` only so far) | the seam: every call to `wslc` and to Windows PowerShell is a function of `lib/adapter.sh`, under a ceiling that kills the child; `serve_start` and `bench_run` build the measured commands on it. Added by E1.S2 part (a) |
 | Ownership and recovery | `bin/r9700` (`commands`, `init`, `verdict` as a restore-first shell), `lib/run_guarded.sh` (lock, session stop, worker start), `lib/worker_gate.sh`, `lib/restore.sh` | one run at a time on the GPU; the operator's server is restored once, ready, even after a hard kill. Added by E1.S2 part (b) |
@@ -358,7 +358,7 @@ flowchart LR
   MOE --> MREC["moe-MODEL/chunks, merged, ab"]
   KER --> KREC["kernels-MODEL/linear, prefix"]
   FP["lib/fingerprint.py: fingerprint.json"] --> SER
-  REC --> VER["lib/verdict.py ship / check-block"]
+  REC --> VER["lib/verdict.py ship / check-block / comfy / comfy-check-block"]
   HAR["lib/harness.py"] --> QUAL["quality/gsm8k_ARM.json"]
   REC --> QUAL
   QUAL --> VER

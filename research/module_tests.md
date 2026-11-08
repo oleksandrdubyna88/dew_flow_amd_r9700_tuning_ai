@@ -11,6 +11,7 @@ The test harness of the R9700 vLLM tuning toolkit: the runner, the assertion fil
 | `tests/test_config_comfy.sh` | the name rules of `COMFY_CONTAINER` (E1.S2, split from the file above, which is at the file-size limit): NR1 (must not start with `CONTAINER_PREFIX`), NR2 (must differ from `PROD_CONTAINER`), NR3 (the fetch name `<name>-fetch` is checked by the same rules), NR4 (a legal pair loads; `comfy_fetch_name` is built from the one constant `_COMFY_FETCH_SUFFIX`), NR5 (the rules run over fields that passed their own check and report in one pass), NR6 (`config_load_machine` applies both) |
 | `tests/lib/configcase.sh` | the folders and files of the config tests, shared by the two files above: `case_root`, `variant`, `machine`, `model` |
 | `tests/test_verdict.py` | the ship test and the block check (`lib/verdict.py`) |
+| `tests/test_verdict_comfy.py` | the comfy mode of the ship test and its block check (`lib/verdict.py comfy`, `comfy-check-block`, E2.S1): VC1 (below the base spread passes, exact lines), VC2 (above fails), VC3 (inside is NOT DECIDED), VC4 (exactly one spread below is inside, by exact decimals; the float trap), VC5 (a missing, partial, superseded arm-round; a base without round 3), VC6 (the direction), VC7 (three places, half-even), VC8 (only the deciding metric decides), VC9 (bad input is exit 2, a metric outside `--metrics` is refused by name, the `--metrics` order is the order `bench.py` prints), VC10 (the block check), VC11 (the vLLM mode still gives the recorded verdict), VC12 (`--json`, atomic), VC13 (the two grammars do not mix); the arm `fp8wmm` |
 | `tests/test_harness.py` | the quality harness (`lib/harness.py`), against an HTTP stub |
 | `tests/test_assert.sh` | `tests/lib/assert.sh` itself: a test function that dies early, exits early or asserts nothing fails its file; the pid killer |
 | `tests/test_runner.sh` | `tests/run.mjs`: SIGINT, SIGTERM and SIGHUP end the run cleanly; a recorded pid is killed only while its start ticks match; the process cap (a file that forks without end FAILS within seconds and leaves nothing: *The process cap*) |
@@ -204,6 +205,8 @@ fails when a command is added without a `covered` row here; the verb rows are de
 |---|---|---|
 | `lib/verdict.py ship` — the ship test, the three recorded verdicts, rule 1 and rule 2, GSM8K, `--json`, incomplete and input errors | covered | `tests/test_verdict.py` |
 | `lib/verdict.py check-block` — one complete arm-round block | covered | `tests/test_verdict.py` |
+| `lib/verdict.py comfy` — the ship test of a ComfyUI workflow: one deciding metric, a direction, the base's spread, NOT DECIDED inside it, INCOMPLETE for a missing arm-round, `--json` | covered | `tests/test_verdict_comfy.py` (VC1-VC9, VC12, VC13) |
+| `lib/verdict.py comfy-check-block` — one complete comfy arm-round block | covered | `tests/test_verdict_comfy.py` (VC10, VC13) |
 | `lib/harness.py collect` — 20 greedy prompts | covered | `tests/test_harness.py` |
 | `lib/harness.py compare` — greedy results against a reference | covered | `tests/test_harness.py` |
 | `lib/harness.py gsm8k` — GSM8K scoring from a server | covered | `tests/test_harness.py` |
@@ -397,7 +400,8 @@ These short hashes are commits that were amended into the final one and will not
   shared with other repositories, where Windows is covered.
 - **The verdict is checked against recorded runs, not against a new measurement.** The three recorded verdicts (`fcombo`
   passes, `fb1` and `o7` fail) are reproduced from the stored lines; whether the rule itself is the right rule is a design
-  decision of the plan, not a test result.
+  decision of the plan, not a test result. The comfy grammar (`<arm>-<round> <workflow> r=<n> <metric>: <value>`) is the one E2.S1 fixed and
+  is checked against hand-written lines only; its first check against a real `bench.py` output is E2.S3's acceptance.
 - **The config loader checks shape, not meaning.** It cannot know that a Windows path names the same folder as its WSL
   twin, or that an image reference exists in a registry.
 - **The leftovers guard is red on the token row until the token is released** in the shared rules (the `## Tokens` table of the

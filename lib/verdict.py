@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""The ship test over bench lines, and the check of one arm-round block.
+"""The ship test over bench lines, and the check of one arm-round block. Two modes with two line grammars: vLLM (`ship`,
+`check-block`) and ComfyUI (`comfy`, `comfy-check-block`).
 
   verdict.py ship --base <arm> --arm <arm> [--arm ...] --bench <file> [--bench ...] --prefill-lens "<lens>"
                   [--rounds 3] (--gsm8k-dir <dir> | --no-quality) [--json <file>]
   verdict.py check-block --tag <tag> --prefill-lens "<lens>" <file>
+  verdict.py comfy --workflow <name> --metrics "<metrics>" --decide <metric> --direction (lower|higher) --base <arm>
+                   --arm <arm> [--arm ...] --bench <file> [--bench ...] [--rounds 3] [--json <file>]
+  verdict.py comfy-check-block --tag <tag> --workflow <name> --metrics "<metrics>" <file>
 
 The rule (written before the 2026-10-27 run): an arm passes on speed when its output-throughput median is higher than the
 base's by MORE than the base spread at c=1 or c=4 (rule 1), and at no concurrency is it lower by more than that
@@ -15,8 +19,20 @@ within 0.00001, because the limit is built from it; otherwise the file is refuse
 the arm INCOMPLETE (exit 1).
 Numbers are decimal.Decimal parsed from the text: binary floating point calls "exactly one spread above" higher.
 
+The comfy rule applies the same spread rule to one workflow's metrics, and ONE metric (`--decide`) decides: the arm's median
+over every run of every round is compared with the base's, and the direction says which way is better (seconds: lower). Beyond
+the base's spread in the better direction is PASS, beyond it in the worse direction is FAIL (`<metric> higher|lower than the base
+by more than its spread`), and inside the spread (`within, lower` or `within, not lower`) is NOT DECIDED, never FAIL.
+An arm with a missing complete arm-round is INCOMPLETE, never PASS or FAIL. The other metrics are printed as `(information)`
+and never decide.
+A comfy line is `<arm>-<round> <workflow> r=<n> <metric>: <value>`, n in COMFY_RUNS; a complete block is one line for every
+(run, metric) pair of `--metrics`, and a line of a metric that is not in `--metrics` is an input error. The words of `--metrics`
+are given in the order bench.py prints them: the first word starts a block (its `r=1` line), so another order cuts every block
+in two and nothing is complete. Numbers are Decimal, printed with three places.
+
 Exit codes. ship: 0 every arm decided (PASS or FAIL), 1 at least one INCOMPLETE, 2 input error.
-check-block: 0 complete, 1 incomplete, 2 input error. Python >= 3.10, standard library only.
+comfy: 0 every arm PASS, FAIL or NOT DECIDED, 1 at least one INCOMPLETE, 2 input error.
+check-block and comfy-check-block: 0 complete, 1 incomplete, 2 input error. Python >= 3.10, standard library only.
 """
 import argparse
 import json
@@ -33,8 +49,10 @@ DECODE_METRICS = (THROUGHPUT, "Mean TTFT (ms)", "Mean TPOT (ms)")
 PREFILL_METRICS = (THROUGHPUT, "Mean TTFT (ms)", "Median TTFT (ms)")
 CONCURRENCIES = ("1", "4")
 REPEATS = (1, 2, 3)
+COMFY_RUNS = (1, 2, 3)  # the measured runs of one ComfyUI arm-round: the parent plan's contract (three runs after the cold one)
 START_KEY = f"c=1 r=1 {THROUGHPUT}"
 CENT = Decimal("0.01")
+MILLI = Decimal("0.001")
 QUALITY_DIGITS = Decimal("0.0001")
 DEFAULT_MIN_N = 200
 STDERR_TOLERANCE = Decimal("0.00001")  # a stderr rounded to five places still passes; the recorded files carry full precision
@@ -44,6 +62,13 @@ BENCH_LINE = re.compile(
     r"(?:c=(?P<c>[14]) r=(?P<r>[1-9])|prefill(?P<len>[0-9]+) r=(?P<pr>[1-9])) "
     r"(?P<metric>Output token throughput \(tok/s\)|Mean TTFT \(ms\)|Mean TPOT \(ms\)|Median TTFT \(ms\)):"
     r"\s+(?P<value>[0-9]+(?:\.[0-9]+)?)\s*$")
+# The arm part is one named group: the arm-name grammar of lib/config.sh (_RE_ARM) changes here and in arm_name.
+COMFY_LINE = re.compile(
+    r"^(?P<arm>[a-z0-9]+)-(?P<round>[1-9][0-9]*) (?P<workflow>[a-z0-9]+) r=(?P<run>[1-9][0-9]*) "
+    r"(?P<metric>[a-z][a-z0-9_]*):\s+(?P<value>[0-9]+(?:\.[0-9]+)?)\s*$")
+METRICS_HELP = ("the metrics of a block, in the order bench.py prints them; the first word starts a block (its `r=1` line), "
+                "a line of any other metric is refused")
+METRIC_WORD = re.compile(r"[a-z][a-z0-9_]*")
 
 
 class InputError(Exception):
@@ -105,20 +130,55 @@ def parse_line(text, file, number):
     return Line(file, number, f"{match['arm']}-{match['round']}", f"{group} {match['metric']}", Decimal(match["value"]))
 
 
-def read_lines(path):
+def comfy_parser(workflow, metrics):
+    """A line parser for read_lines: tag `<arm>-<round>`, key `r=<n> <metric>`; a line of another workflow or of a metric
+    that is not in `metrics` is refused."""
+    def parse(text, file, number):
+        match = COMFY_LINE.match(text)
+        if not match or int(match["run"]) not in COMFY_RUNS:
+            raise InputError(f"{file}:{number}: not a bench line")
+        if match["workflow"] != workflow:
+            raise InputError(f'{file}:{number}: workflow "{match["workflow"]}" is not the expected "{workflow}"')
+        if match["metric"] not in metrics:
+            raise InputError(f'{file}:{number}: metric "{match["metric"]}" is not one of --metrics "{" ".join(metrics)}"')
+        tag, key = f"{match['arm']}-{match['round']}", f"r={match['run']} {match['metric']}"
+        return Line(file, number, tag, key, Decimal(match["value"]))
+    return parse
+
+
+def comfy_keys(metrics):
+    """The keys of a complete comfy block, in canonical order: every run, every metric."""
+    return [f"r={run} {metric}" for run in COMFY_RUNS for metric in metrics]
+
+
+def metrics_of(text):
+    words = text.split()
+    if not words:
+        raise InputError(f'--metrics "{text}" needs at least one metric')
+    wrong = next((word for word in words if not METRIC_WORD.fullmatch(word)), None)
+    if wrong is not None:
+        raise InputError(f'--metrics "{text}" has "{wrong}", which is not a metric name '
+                         "(lower-case letters, digits and _, starting with a letter)")
+    repeated = next((word for word in words if words.count(word) > 1), None)
+    if repeated is not None:
+        raise InputError(f'--metrics "{text}" repeats a metric: {repeated}')
+    return words
+
+
+def read_lines(path, parser=parse_line):
     path = Path(path)
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise InputError(f"{path}: cannot read ({getattr(error, 'strerror', None) or error})") from error
-    return [parse_line(raw, path.name, number) for number, raw in enumerate(text.splitlines(), 1) if raw.strip()]
+    return [parser(raw, path.name, number) for number, raw in enumerate(text.splitlines(), 1) if raw.strip()]
 
 
-def split_blocks(lines):
-    """A block starts at its `c=1 r=1 Output token throughput` line and runs to the next such line of the same tag."""
+def split_blocks(lines, start_key=START_KEY):
+    """A block starts at its start-key line (vLLM: `c=1 r=1 Output token throughput`) and runs to the next one of the same tag."""
     blocks, current = [], {}
     for line in lines:
-        if line.key == START_KEY or line.tag not in current:
+        if line.key == start_key or line.tag not in current:
             current[line.tag] = []
             blocks.append(current[line.tag])
         current[line.tag].append(line)
@@ -158,6 +218,18 @@ def plain(value):
 
 def signed(value):
     return f"{two_places(value):+f}"
+
+
+def three_places(value):
+    return value.quantize(MILLI, rounding=ROUND_HALF_EVEN)
+
+
+def plain3(value):
+    return f"{three_places(value):f}"
+
+
+def signed3(value):
+    return f"{three_places(value):+f}"
 
 
 def stat_of(arm_values, base_values):
@@ -270,6 +342,38 @@ def evaluate(arm, ctx):
     return {**result, "verdict": "PASS", "reason": None if ctx["gsm8k_dir"] is not None else "quality NOT checked"}
 
 
+# ---------- the comfy decision ----------
+def comfy_verdict(word, direction, metric):
+    """(verdict, reason) of the deciding word: beyond the spread in the better direction passes, in the worse one fails."""
+    better, worse = ("lower", "higher") if direction == "lower" else ("higher", "lower")
+    if word == better:
+        return "PASS", None
+    if word == worse:
+        return "FAIL", f"{metric} {worse} than the base by more than its spread"
+    return "NOT DECIDED", "inside the base spread"
+
+
+def comfy_series(usable, tags, metric):
+    return [usable[tag].values()[f"r={r} {metric}"] for tag in tags for r in COMFY_RUNS]
+
+
+def evaluate_comfy(arm, ctx):
+    """One arm's comfy result: the gaps first (as `evaluate`), then each metric's stat (the deciding first), then the verdict."""
+    base, usable, rounds, metrics, decide = ctx["base"], ctx["usable"], ctx["rounds"], ctx["metrics"], ctx["decide"]
+    gaps, base_gaps = missing_tags(usable, arm, rounds), missing_tags(usable, base, rounds)
+    result = {"arm": arm, "base": base, "workflow": ctx["workflow"], "rounds": rounds, "direction": ctx["direction"],
+              "decide": decide, "stats": None, "verdict": "INCOMPLETE", "reason": None, "have": rounds - len(gaps)}
+    if gaps or base_gaps:
+        incomplete = ([f"missing complete arm-rounds: {', '.join(gaps)}"] if gaps else []) \
+            + ([f"base {base} missing complete arm-rounds: {', '.join(base_gaps)}"] if base_gaps else [])
+        return {**result, "reason": "; ".join(incomplete)}
+    arm_tags, base_tags = [f"{arm}-{r}" for r in range(1, rounds + 1)], [f"{base}-{r}" for r in range(1, rounds + 1)]
+    stats = {metric: stat_of(comfy_series(usable, arm_tags, metric), comfy_series(usable, base_tags, metric))
+             for metric in [decide, *[m for m in metrics if m != decide]]}
+    verdict, reason = comfy_verdict(word_of(stats[decide]), ctx["direction"], decide)
+    return {**result, "stats": stats, "verdict": verdict, "reason": reason}
+
+
 # ---------- output ----------
 def stat_line(label, stat, tail):
     return (f"  {label}: median {plain(stat.median)} vs {plain(stat.base_median)}, delta {signed(stat.delta)}, "
@@ -309,6 +413,23 @@ def report_lines(result):
     return lines
 
 
+def comfy_stat_line(label, stat, tail):
+    return (f"  {label}: median {plain3(stat.median)} vs {plain3(stat.base_median)}, delta {signed3(stat.delta)}, "
+            f"base spread {plain3(stat.spread)} {tail}")
+
+
+def comfy_report_lines(result):
+    arm, base, rounds, decide, stats = result["arm"], result["base"], result["rounds"], result["decide"], result["stats"]
+    if stats is None:
+        lines = [f"arm {arm} vs {base}: {result['have']} of {rounds} rounds complete"]
+    else:
+        lines = [f"arm {arm} vs {base}: {rounds} round{'s' if rounds != 1 else ''}, {len(COMFY_RUNS) * rounds} values per metric"]
+        lines += [comfy_stat_line(metric, stat, f"-> {word_of(stat)}" if metric == decide else "(information)")
+                  for metric, stat in stats.items()]
+    detail = f" ({result['reason']})" if result["reason"] else ""
+    return [*lines, f"verdict {arm}: {result['verdict']}{detail}"]
+
+
 def stat_json(stat, word):
     return {"median": plain(stat.median), "base_median": plain(stat.base_median), "delta": plain(stat.delta),
             "spread": plain(stat.spread), "n": stat.n, "word": word}
@@ -324,6 +445,21 @@ def result_json(result):
             "gsm8k": None if quality is None else {
                 "accuracy": four(quality.accuracy), "base_accuracy": four(quality.base_accuracy),
                 "delta": signed_four(quality.delta), "limit": four(quality.limit), "pass": quality.passed},
+            "verdict": result["verdict"], "reason": result["reason"]}
+
+
+def comfy_stat_json(stat, word):
+    return {"median": plain3(stat.median), "base_median": plain3(stat.base_median), "delta": plain3(stat.delta),
+            "spread": plain3(stat.spread), "n": stat.n, "word": word}
+
+
+def comfy_result_json(result):
+    stats, decide = result["stats"], result["decide"]
+    return {"arm": result["arm"], "base": result["base"], "workflow": result["workflow"], "rounds": result["rounds"],
+            "direction": result["direction"],
+            "decide": None if stats is None else {"metric": decide, **comfy_stat_json(stats[decide], word_of(stats[decide]))},
+            "information": None if stats is None
+            else {m: comfy_stat_json(stat, "information") for m, stat in stats.items() if m != decide},
             "verdict": result["verdict"], "reason": result["reason"]}
 
 
@@ -374,17 +510,16 @@ def cmd_ship(args):
     return 1 if any(result["verdict"] == "INCOMPLETE" for result in results) else 0
 
 
-def cmd_check_block(args):
-    keys = expected_keys(lens_of(args.prefill_lens))
-    lines = read_lines(args.file)
+def check_block_lines(tag, keys, lines):
+    """The block check of both modes: print how one file's lines compare with the keys of a complete block; the exit code."""
     for line in lines:
-        if line.tag != args.tag:
-            raise InputError(f'{line.file}:{line.number}: tag "{line.tag}" is not the expected "{args.tag}"')
+        if line.tag != tag:
+            raise InputError(f'{line.file}:{line.number}: tag "{line.tag}" is not the expected "{tag}"')
     seen = [line.key for line in lines]
     duplicates = [key for key in dict.fromkeys(seen) if seen.count(key) > 1]
     missing = [key for key in keys if key not in seen]
     if not duplicates and not missing and len(seen) == len(keys):
-        print(f"{args.tag}: complete, {len(keys)} lines")
+        print(f"{tag}: complete, {len(keys)} lines")
         return 0
     suffix = f" (duplicate: {duplicates[0]})" if duplicates else ""
     print(f"expected {len(keys)} lines, found {len(seen)}{suffix}")
@@ -392,9 +527,42 @@ def cmd_check_block(args):
     return 1
 
 
+def cmd_check_block(args):
+    keys = expected_keys(lens_of(args.prefill_lens))
+    return check_block_lines(args.tag, keys, read_lines(args.file))
+
+
+def cmd_comfy(args):
+    metrics = metrics_of(args.metrics)
+    if args.decide not in metrics:
+        raise InputError(f'--decide "{args.decide}" is not one of --metrics "{args.metrics}"')
+    lines = [line for path in args.bench for line in read_lines(path, comfy_parser(args.workflow, metrics))]
+    usable, notes = pick_blocks(split_blocks(lines, f"r={COMFY_RUNS[0]} {metrics[0]}"), comfy_keys(metrics))
+    if not any(tag.rsplit("-", 1)[0] == args.base for tag in usable):
+        raise InputError(f'base arm "{args.base}" has no complete arm-round in the inputs')
+    ctx = {"base": args.base, "usable": usable, "rounds": args.rounds, "metrics": metrics, "decide": args.decide,
+           "direction": args.direction, "workflow": args.workflow}
+    results = [evaluate_comfy(arm, ctx) for arm in args.arm]
+    print("\n".join(notes + [line for result in results for line in comfy_report_lines(result)]))
+    if args.json:
+        write_json(args.json, [comfy_result_json(result) for result in results])
+    return 1 if any(result["verdict"] == "INCOMPLETE" for result in results) else 0
+
+
+def cmd_comfy_check_block(args):
+    metrics = metrics_of(args.metrics)
+    return check_block_lines(args.tag, comfy_keys(metrics), read_lines(args.file, comfy_parser(args.workflow, metrics)))
+
+
 def arm_name(text):
     if not re.fullmatch(r"[a-z0-9]+", text):
         raise argparse.ArgumentTypeError(f'"{text}" is not an arm name (lower-case letters and digits only)')
+    return text
+
+
+def workflow_name(text):
+    if not re.fullmatch(r"[a-z0-9]+", text):
+        raise argparse.ArgumentTypeError(f'"{text}" is not a workflow name (lower-case letters and digits only)')
     return text
 
 
@@ -419,6 +587,24 @@ def build_parser():
     check.add_argument("--prefill-lens", required=True)
     check.add_argument("file")
     check.set_defaults(fn=cmd_check_block)
+    comfy = sub.add_parser("comfy", help="the ship test of the comfy mode: one workflow's metrics, one deciding metric")
+    comfy.add_argument("--workflow", required=True, type=workflow_name)
+    comfy.add_argument("--metrics", required=True, help=METRICS_HELP)
+    comfy.add_argument("--decide", required=True)
+    comfy.add_argument("--direction", required=True, choices=("lower", "higher"),
+                       help="the better direction of the deciding metric")
+    comfy.add_argument("--base", required=True, type=arm_name)
+    comfy.add_argument("--arm", action="append", required=True, type=arm_name)
+    comfy.add_argument("--bench", action="append", required=True)
+    comfy.add_argument("--rounds", type=int, default=3)
+    comfy.add_argument("--json")
+    comfy.set_defaults(fn=cmd_comfy)
+    comfy_check = sub.add_parser("comfy-check-block", help="is this file exactly one complete comfy arm-round block")
+    comfy_check.add_argument("--tag", required=True)
+    comfy_check.add_argument("--workflow", required=True, type=workflow_name)
+    comfy_check.add_argument("--metrics", required=True, help=METRICS_HELP)
+    comfy_check.add_argument("file")
+    comfy_check.set_defaults(fn=cmd_comfy_check_block)
     return parser
 
 
