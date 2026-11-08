@@ -169,3 +169,21 @@ Run: Qwen-Image 2512 fp8 + Lightning 4-step, 1280x704, cfg 1, two views (portrai
 Observed: each character keeps one face, hair and costume across all eight images; the costumes follow their descriptions
 (embroidered tunic and cloak; vest, scarf, gloves and knife). The ears came out as clear elf ears, longer than "only the tip
 pointed" — as predicted; the fix (drop the word "elf", describe the ears only) is offered to the operator.
+
+## 12. Text-to-speech samples on the R9700 (2026-11-08)
+
+Prediction (written before the runs): both models run on gfx1201 in plain PyTorch (VoxCPM2 with `optimize=False`, Qwen3-TTS
+with `sdpa`), slower than real time; each needs its own venv (Qwen3-TTS pins `transformers` 4.57.3).
+
+Setup: each model in its own venv on its own `wslc` volume (`--system-site-packages` over the image, so torch stays
+2.13.0+rocm10.1.0), weights to the store first and then to the models volume, one throwaway container per run with
+`--gpus all` (ComfyUI's models unloaded first through its `/free`). The same four narration lines (two Russian, two English).
+
+| Model | Voice | Load | Per line (RTF = seconds per second of audio) | Audio |
+|---|---|---|---|---|
+| VoxCPM2 (`openbmb/VoxCPM2`, voxcpm 2.0.3, bf16, 4.7 GB) | the model's own (no reference) | 61.8 s | ru1 25.1 s / 5.4 s (RTF 4.61, warm-up), ru2 8.7 s / 4.3 s (2.02), en1 16.5 s / 7.7 s (2.15), en2 19.0 s / 8.6 s (2.20) | 48 kHz |
+| Qwen3-TTS 1.7B VoiceDesign (`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`, qwen-tts 0.1.1, bf16, 4.3 GB) | one narrator described in text | 9.3 s | ru1 44.8 s / 7.0 s (6.37, warm-up), ru2 23.4 s / 7.0 s (3.36), en1 36.0 s / 10.6 s (3.41), en2 36.0 s / 10.8 s (3.33) | model rate |
+
+Observed: both run on the card as predicted, 2–3.5x slower than real time warm. Qwen3-TTS speaks at a slower narration pace
+(the Russian lines 7.0 s against VoxCPM2's 5.4 and 4.3 s; VoxCPM2's ru2 may be rushed or cut — to be heard). The quality is
+the operator's call by ear; no real person's voice was used (no cloning).
