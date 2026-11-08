@@ -115,3 +115,7 @@ Not run yet. The operator's session runs the three runs after the merge and fill
 3. `bin/r9700 comfy start --stop-vllm`, then by hand in the Windows browser on `127.0.0.1:<COMFY_PORT>` ComfyUI's own Z-Image Turbo workflow at 1024x1024. Prediction: the start prints the R9700 device line, the log shows `Using pytorch attention`, the image is correct. While it runs, the one owner of the card on the real machine: `bin/r9700 step --model <a model file> probe -- true` exits 2 naming `bin/r9700 comfy stop`, and `bin/r9700 comfy status` afterwards still lists `COMFY_CONTAINER` (nothing was stopped). Then `bin/r9700 comfy stop`. To record: the lines, the image's time, the log line, and that the operator looked at the image.
 
 The output shapes of `wslc volume list`, `wslc volume create`, `wslc inspect` and `wslc image list` were observed by hand on 2026-11-07; the output of `tag` and `rmi` was not. The hand-made folder is not used for any of the three runs.
+
+### Run of 2026-11-08 at 6be7a67
+
+The operator agreed to the three runs on 2026-11-08 and is at the machine for run 3. The predictions above stand as written before this run; nothing below was known when they were written. The operator's hand-made ComfyUI container is stopped before run 1 (`build` refuses while it is listed). Run 2 sets `COMFY_STORE_WIN` in a copy of the machine file (the operator's own file is unchanged).
