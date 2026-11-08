@@ -217,3 +217,37 @@ line. The takes measured (Whisper large-v3-turbo transcript against the text; me
 Qwen3-TTS VoiceDesign 8.2/8.9/8.1 s, 130/92/78 Hz, CER 0/0/0; VoxCPM2 "(description)text" 5.6/7.0/5.4 s, 113/112/119 Hz,
 CER 0/0/0. Chosen: the Qwen take at 78 Hz (deepest) and the VoxCPM take of 7.0 s (slowest). The pip `torchcodec` is a
 CUDA build (needs NVIDIA's libnvrtc): it was removed from the TTS venvs, and audio is read with `soundfile`.
+
+## 14. The eyes fixed by the 14B video model (2026-11-08)
+
+On a freshly started server, the 14B variant of the eye test (Wan 2.2 A14B + lightx2v 4-step, the gaze words) rendered
+shot 2 in 997.3 s and, frame by frame on the face, holds one gaze direction and keeps the painted colours of the Arcane
+keyframe; the 5B FastWan variants (§ 13) turn the face, change colour and move the eyes between frames. Decision: the
+Arcane film is rendered with 14B, one shot per call and the server restarted before every second clip (the 14B pair runs
+out of memory after about three clips on one server, § 6).
+
+## 15. Narration tuned for long episodes (2026-11-08)
+
+Goal (the operator): 40-minute episodes, good and fast. Prediction (written before the run): fewer steps and batching
+speed each model up; a faster setting costs intelligibility.
+
+Run on an idle card, the narrator cloned from one designed reference (§ 13) for the six lines of the operator's story
+(31 s of speech); intelligibility measured by Whisper large-v3-turbo against the script (character error rate, CER).
+
+| Model, setting | Work s | Audio s | RTF | CER mean / max | 40 min of speech would take |
+|---|---|---|---|---|---|
+| F5-TTS RU, nfe 16 | 5.0 | 31.9 | 0.16 | 0.000 / 0.000 | ~6.5 min |
+| F5-TTS RU, nfe 32 | 10.5 | 31.9 | 0.33 | 0.000 / 0.000 | ~13 min |
+| VoxCPM2, 4 steps | 46.4 | 29.0 | 1.60 | 0.005 / 0.032 | ~64 min |
+| VoxCPM2, 6 steps | 51.9 | 31.5 | 1.65 | 0.005 / 0.032 | ~66 min |
+| VoxCPM2, 10 steps | 67.3 | 30.2 | 2.22 | 0.000 / 0.000 | ~89 min |
+| Qwen3-TTS Base clone, six lines in one batch | 67.1 | 31.1 | 2.16 | 0.000 / 0.000 | ~86 min |
+| Qwen3-TTS Base clone, one line per call | 130.0 | 29.0 | 4.48 | 0.000 / 0.000 | ~3 h |
+
+Observed: batching halves Qwen3-TTS's time at no cost; VoxCPM2's diffusion steps are a small share of its time (10→4 steps
+saves 28 %) and 4–6 steps start to drop a letter; F5-TTS is ~14x faster than the others and fully intelligible, but its
+Russian weights are non-commercial. CER measures intelligibility only; the voice's character is judged by ear.
+
+Mixing (voiceover.py): line k starts at its shot or 0.3 s after line k-1, a line is sped up at most 1.08x (a solemn voice
+sped up 30 % loses its character), and when the narration outlasts the film the last frame is held. The slow narrator's
+six lines start within ~1 s of their shots and end 1.4–2 s after the film.
