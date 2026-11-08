@@ -317,3 +317,8 @@ eight), joined into a 40.5 s film; the narrations mixed and checked (Qwen 43.4 s
 forest, the wolves closing in, the departure, the truck and the drive into the sunset all as written. One fault: in shot 2
 she is meant to sleep (the narration says so) but her eyes open mid-clip; re-rendered with "eyes closed the whole time"
 as a v2 film beside the first.
+Shot 2 again ("eyes CLOSED the whole time, deep peaceful sleep", same keyframe and seed, 1003.4 s): the eyes stay closed
+through frame 63 and open again from frame 66 of 81 — the 14B model returns toward the keyframe's open-eyed face at the end
+(the Arcane keyframe has open eyes). Fix without another render: frames 0–63 kept and frame 63 held for the last 17 frames
+(the clip keeps its 81 frames, so the narration timing holds). The v2 film and its two voiced versions are checked as
+before (audio from 0.000 s, −21.1 / −21.5 dB). A sleeping shot should start from a keyframe with closed eyes.
