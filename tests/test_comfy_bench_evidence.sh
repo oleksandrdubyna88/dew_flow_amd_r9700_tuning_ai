@@ -212,5 +212,35 @@ t_no_row_sets_a_forbidden_word_and_the_check_refuses_one_that_does() {
   assert_exit 0 "the two legal COMFY_BENCH_ words are legal" -- comfy_bench_check zimage 1 base fp16acc
 }
 
+# BA3 (review): every arm, base included, names the evidence that it took effect
+t_an_evidence_row_whose_activation_field_is_a_dash_is_refused() {
+  bench_setup "$FUNCNAME"
+  local ev="$CASE/arm_evidence.conf" arm
+  export R9700_COMFY_EVIDENCE_CONF="$ev"
+  for arm in base fp8wmm; do
+    sed "s#^$arm  *|[^|]*|#$arm | - |#" "$REPO/comfyui/arm_evidence.conf" > "$ev"
+    assert_contains "$(grep "^$arm " "$ev")" "$arm | - |" "the copy has a dash for the activation of $arm"
+    assert_exit 2 "an evidence table whose $arm has no activation evidence" -- comfy_bench_check zimage 1 base
+    assert_contains "$ERR" "arm_evidence.conf: $arm: the activation field is -: every arm, base included, names the evidence that it took effect" "is refused naming the arm"
+  done
+  unset R9700_COMFY_EVIDENCE_CONF
+  assert_exit 0 "the real table is accepted by the check" -- comfy_bench_check zimage 1 base
+}
+
+# the check of one evidence line against a record that lacks its file (review): its own one-line reason, never grep's noise, and never a pass
+t_a_log_file_the_record_lacks_fails_the_check_with_one_line_and_no_noise() {
+  bench_setup "$FUNCNAME"
+  local part="$CASE/part" kind
+  mkdir -p "$part/runs"
+  for kind in log nolog coldlog; do
+    assert_exit 1 "$kind against a record with no log file" -- _cb_check_one "$kind" "x" "$part"
+    assert_eq "" "$ERR" "$kind: nothing on stderr (no noise of grep)"
+    assert_match "$OUT" '^missing \((server\.log|runs/cold\.log) is not there\)$' "$kind: one line, the file named, a failure"
+  done
+  printf 'a line\n' > "$part/server.log"
+  assert_exit 0 "the scan is alive: a nolog that finds a file without the line passes" -- _cb_check_one nolog "x" "$part"
+  assert_exit 1 "and one that finds the line fails" -- _cb_check_one nolog "line" "$part"
+}
+
 
 run_all_tests

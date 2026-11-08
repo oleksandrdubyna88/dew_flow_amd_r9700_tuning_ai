@@ -103,6 +103,7 @@ comfy_bench_check() {
     [ -z "$(arm_mounts "$arm")" ] || { _cb_err "arm \"$arm\" has a mount: a bench container mounts only what the worker gives it"; bad=1; }
   done
   for arm in "${_CE_ORDER[@]}"; do
+    [ -n "${_CE_ACT[$arm]}" ] || { _cb_err "arm_evidence.conf: $arm: the activation field is -: every arm, base included, names the evidence that it took effect"; bad=1; }
     comfy_evidence_argv_alone "$arm" && { _cb_err "arm_evidence.conf: $arm: the activation evidence is the argv alone; a passed flag is never proof it acted"; bad=1; }
   done
   [ "$bad" -eq 0 ] || return 2
@@ -412,9 +413,9 @@ _cb_exchange() {
   fi
 }
 
-# _cb_card_free: the probe every t_scale 10 for at most 300 s until vram_free x 10 >= vram_total x 9; the last reading in _CB_VRAM_FREE/_TOTAL. 0 free; 1 and _CB_WHY
+# _cb_card_free <tag>: the probe every t_scale 10 for at most 300 s until vram_free x 10 >= vram_total x 9, one progress line every 30 s; the last reading in _CB_VRAM_FREE/_TOTAL. 0 free; 1 and _CB_WHY
 _cb_card_free() {
-  local waited=0 out rc free total
+  local tag="$1" waited=0 out rc free total
   while :; do
     out="$(comfy_probe "$_CB_NAME" 2>&1)"
     rc=$?
@@ -424,7 +425,11 @@ _cb_card_free() {
     if ! [[ $free =~ ^[0-9]+$ && $total =~ ^[1-9][0-9]*$ ]]; then _CB_WHY="CARD: vram not reported by /system_stats"; return 1; fi
     _CB_VRAM_FREE="$free" _CB_VRAM_TOTAL="$total"
     [ $((free * 10)) -ge $((total * 9)) ] && return 0
-    if [ "$waited" -ge "$_CB_CARD_WAIT_S" ]; then _CB_WHY="UNSTARTED: the card is not free (vram_free $free of $total after $waited s)"; return 1; fi
+    if [ "$waited" -ge "$_CB_CARD_WAIT_S" ]; then
+      _CB_WHY="UNSTARTED: the card is not free (vram_free $free of $total after $waited s); another container may hold it (the engine's container list shows which), or the operator's ComfyUI (bin/r9700 comfy stop)"
+      return 1
+    fi
+    if [ "$waited" -gt 0 ] && [ $((waited % 30)) -eq 0 ]; then echo "comfy: bench: $tag: waiting for the card: vram_free $free of $total (${waited}s)"; fi
     sleep "$(t_scale 10)" 9>&-
     waited=$((waited + 10))
   done
@@ -443,7 +448,7 @@ _cb_start() {
   rc=$?
   if [ "$rc" -ne 0 ]; then _cb_abort "$tag" "UNSTARTED: ${READY_LINE:-$_CB_NAME did not become ready (code $rc)}"; return $?; fi
   _cb_rec "VRAM_FREE_FIRST=$(sed -n 's/^vram_free //p' <<< "$READY_ANSWER" | head -n 1)" "VRAM_TOTAL_FIRST=$(sed -n 's/^vram_total //p' <<< "$READY_ANSWER" | head -n 1)"
-  if ! _cb_card_free; then _cb_abort "$tag" "$_CB_WHY"; return $?; fi
+  if ! _cb_card_free "$tag"; then _cb_abort "$tag" "$_CB_WHY"; return $?; fi
   _cb_rec "VRAM_FREE_BEFORE=$_CB_VRAM_FREE" "VRAM_TOTAL_BEFORE=$_CB_VRAM_TOTAL"
 }
 

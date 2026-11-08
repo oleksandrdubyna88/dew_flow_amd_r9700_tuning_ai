@@ -142,6 +142,7 @@ comfy_bench_call() {
     *) echo "stub: bench.py: unknown command \"$command\"" >&2; return 2 ;;
   esac
   arm="${tag%-*}"
+  printf 'run %s started%s\n' "$run" "$CRLF" >&2 # the program says when a run starts, on stderr; the real exec merges it into the lines the worker reads and ignores
   mkdir -p "${R9700_WORK_DIR:?}/${out#/work/}" 2> /dev/null
   stub_mkdir "$R9700_STUB_DIR/logs.d"
   # the server's log grows with the run: the evidence first (cold run only), then the scripted lines of this run

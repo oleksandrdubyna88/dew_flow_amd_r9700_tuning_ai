@@ -39,6 +39,7 @@ t_the_stub_answers_the_exec_of_bench_py_from_scripted_files() {
   rm -f "$STUB/answers/comfy_bench_lines"
   assert_exit 0 "the cold run" -- bench_exec "$c" -- run zimage --tag base-1 --run cold --out /work/r9700/comfyui/bench/o/base-1
   assert_eq "cold: total 40.000 s$CR" "$OUT" "prints the cold line and no verdict line"
+  assert_eq "run cold started$CR" "$ERR" "and says on stderr that the run started (stdout keeps the grammar)"
   assert_eq "True|0" "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print("|".join(map(str, [d["cold"], d["cache_after"]["inductor"]["files"]])))' "$out/run-cold.json")" "run-cold.json: cold, the inductor cache empty"
   for want in "error|EXECUTION_ERROR: node sampler (KSampler): boom|1" "constant|OUTPUT: the image is constant (every pixel 128)|1" "cached|CACHED: the sampler did not execute (cached: sampler)|1" \
               "refused|PROMPT: refused: x|1" "cold_timeout|COLD_TIMEOUT 1801.0|3" "run_timeout|RUN_TIMEOUT 601.0|3"; do

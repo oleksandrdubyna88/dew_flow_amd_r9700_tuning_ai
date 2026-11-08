@@ -133,7 +133,15 @@ _cb_tunable_state() {
 }
 
 _cb_check_one() {
-  local kind="$1" arg="$2" part="$3" stop="${4:-clean}" n k files state rows
+  local kind="$1" arg="$2" part="$3" stop="${4:-clean}" n k files state rows file
+  case $kind in
+    log | nolog | coldlog)
+      # a log the record lacks is a failed check with one line of our own (a nolog must not pass over a file that is not there), and grep never speaks
+      file=server.log
+      [ "$kind" != coldlog ] || file=runs/cold.log
+      [ -f "$part/$file" ] || { echo "missing ($file is not there)"; return 1; }
+      ;;
+  esac
   case $kind in
     log | nolog)
       n="$(grep -nE -m1 -- "$arg" "$part/server.log" 2> /dev/null | cut -d: -f1)"

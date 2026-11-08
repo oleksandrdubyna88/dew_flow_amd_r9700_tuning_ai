@@ -3,6 +3,7 @@
 Every test runs bench.py as a subprocess (`python -I`), the server of tests/fixtures/comfy/comfy_server.py as another one on a free port, and writes only below pytest's
 `tmp_path`. The server's pid is recorded in a `containers/` folder below it, where tests/run.mjs finds and kills what a test left. ffmpeg and ffprobe are prerequisites of
 the suite (research/module_tests.md, How it is run): a machine without them fails BP11 and BP12v with their names."""
+import ast
 import json
 import math
 import os
@@ -78,7 +79,7 @@ def server(tmp_path):
         proc.stderr.close()
 
 
-def prompt_script(gaps=(0, 0, 0, 0), history_delay=0.0, output=None, cached=None, before=(), **more):
+def prompt_script(gaps=(0, 0, 0, 0), history_delay=0.0, output=None, cached=None, before=(), progress=0, **more):
     """One prompt: execution_start, [execution_cached], executing pos, sampler, vae, save with the gaps AFTER each, then executing null."""
     messages = [{"type": "execution_start", "data": {}}]
     if cached is not None:
@@ -88,6 +89,7 @@ def prompt_script(gaps=(0, 0, 0, 0), history_delay=0.0, output=None, cached=None
         if cached is not None and node in cached:
             continue
         messages.append({"type": "executing", "data": {"node": node}, "after": gap})
+    messages += [{"type": "progress", "data": {}, "after": 0.2}] * progress  # a server that works: a message every 0.2 s (the run lasts progress x 0.2 s before it ends)
     messages.append({"type": "executing", "data": {"node": None}})
     script = {"messages": messages, "history_delay": history_delay,
               "output": output if output is not None else {"kind": "image", "width": 1024, "height": 1024, "fill": "noise"}}
@@ -246,6 +248,54 @@ def test_a_measured_run_whose_decode_did_not_execute_is_not_a_measurement(tmp_pa
     assert text.strip().splitlines()[-1] == "CACHED: the decode node did not execute (cached: vae)"
     assert " r=" not in text and not (out / "run-1.json").exists()
 
+# the shape of bench.py (coding-style: functions under 50 lines, no number typed inline where a named constant belongs). Read from the source, never typed: the scan lists its functions.
+def bench_functions():
+    tree = ast.parse(BENCH.read_text())
+    return [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def test_every_function_of_bench_py_is_under_fifty_lines():
+    functions = bench_functions()
+    assert len(functions) > 25 and "build_graph" in {f.name for f in functions}, "the scan is alive: it found the functions"
+    long = {f.name: f.end_lineno - f.lineno + 1 for f in functions if f.end_lineno - f.lineno + 1 > 49}
+    assert long == {}, f"functions of 50 lines or more: {long}"
+
+
+def test_no_timeout_of_bench_py_is_a_number_typed_inline():
+    tree = ast.parse(BENCH.read_text())
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    timeouts = [(n.lineno, k.arg) for n in calls for k in n.keywords if k.arg in ("timeout", "total", "ws_close") and isinstance(k.value, ast.Constant)]
+    assert len([n for n in calls if any(k.arg == "timeout" for k in n.keywords)]) >= 3, "the scan is alive: it finds the subprocess calls that take a timeout"
+    assert timeouts == [], f"timeouts typed inline (a named constant each): {timeouts}"
+
+
+def test_the_ffmpeg_pipes_of_the_drift_have_no_stdin_and_no_unread_stderr():
+    popen = [n for n in ast.walk(ast.parse(BENCH.read_text())) if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "Popen"]
+    assert popen, "the scan is alive: the drift opens its decoders with Popen"
+    for call in popen:
+        words = {k.arg for k in call.keywords}
+        assert {"stdin", "stdout", "stderr"} <= words, f"Popen at line {call.lineno} leaves a stream open to the parent: {sorted(words)}"
+
+
+# BP7b: a server that stops sending without closing the socket
+def test_a_server_that_goes_silent_fails_the_run_before_its_ceiling_with_a_clear_reason(tmp_path, server):
+    port, out = server({"prompts": [prompt_script(before=[{"type": "executing", "data": {"node": "pos"}, "after": 30}])]})
+    rc, text, err, seconds = bench("run", "zimage", "--tag", "base-1", "--run", "1", "--out", out, port=port, COMFY_BENCH_TEST_RUN_MAX_S="4")
+    assert rc == 1, text + err
+    assert re.fullmatch(r"HANG: no websocket message for 2 s \(half of the run ceiling\): the server holds the run and sends nothing", text.strip().splitlines()[-1]), text
+    assert "RUN_TIMEOUT" not in text and seconds < 4.0, f"the silence was named after {seconds:.1f} s, before the 4 s ceiling"
+    assert " r=" not in text
+
+
+# BP4b: progress goes to stderr, never into the grammar of stdout
+def test_a_run_says_when_it_starts_on_stderr_and_stdout_keeps_the_grammar(tmp_path, server):
+    port, out = server({"prompts": [prompt_script()]})
+    rc, text, err, _ = bench("run", "zimage", "--tag", "base-1", "--run", "cold", "--out", out, port=port)
+    assert rc == 0 and "run cold started" in err.splitlines() and "started" not in text, (text, err)
+    rc, text, err, _ = bench("run", "zimage", "--tag", "base-1", "--run", "2", "--out", out, port=port)
+    assert rc == 0 and "run 2 started" in err.splitlines(), err
+    assert all(re.fullmatch(r"base-1 zimage r=2 (total_s|sampler_s|vae_s): \d+\.\d{3}", line) for line in text.strip().splitlines()) and len(text.strip().splitlines()) == 3
+
 
 # BP7
 def test_an_execution_error_fails_the_run_at_once_and_the_historys_error_too(tmp_path, server):
@@ -266,7 +316,7 @@ def test_a_refused_prompt_fails_before_any_timing_and_a_run_past_its_ceiling_fai
     rc, text, err, seconds = bench("run", "zimage", "--tag", "base-1", "--run", "1", "--out", out, port=port)
     assert rc == 1 and text.strip() == "PROMPT: refused: x", text + err
     assert " r=" not in text and seconds < 5
-    port, out = server({"prompts": [prompt_script(gaps=(0, 0, 0, 3))]})
+    port, out = server({"prompts": [prompt_script(progress=15)]})
     rc, text, err, seconds = bench("run", "zimage", "--tag", "base-1", "--run", "1", "--out", out, port=port, COMFY_BENCH_TEST_RUN_MAX_S="1")
     assert rc == 3 and re.fullmatch(r"RUN_TIMEOUT 1\.\d", text.strip()), text + err
     assert 1.0 <= float(text.split()[1]) < 2.0 and seconds < 5, f"the ceiling ended the run after {seconds:.1f} s"
@@ -275,7 +325,7 @@ def test_a_refused_prompt_fails_before_any_timing_and_a_run_past_its_ceiling_fai
 
 # BP9
 def test_a_cold_run_past_its_ceiling_is_cold_timeout(tmp_path, server):
-    port, out = server({"prompts": [prompt_script(gaps=(0, 0, 0, 3))]})
+    port, out = server({"prompts": [prompt_script(progress=15)]})
     rc, text, err, seconds = bench("run", "zimage", "--tag", "base-1", "--run", "cold", "--out", out, port=port, COMFY_BENCH_TEST_COLD_MAX_S="1")
     assert rc == 3 and re.fullmatch(r"COLD_TIMEOUT 1\.\d", text.strip()), text + err
     assert 1.0 <= float(text.split()[1]) < 2.0 and seconds < 5

@@ -104,7 +104,9 @@ t_the_card_must_be_free_before_the_cold_run_and_the_reading_is_recorded() {
   rm -f "$STUB/answers/comfy_vram.n" "$STUB/counters/answer-comfy_vram"
   rm -f "$STUB/calls.log" "$STUB/calls.argv"
   assert_exit 7 "a card that never frees" -- cb zimage 1 base
-  assert_eq "UNSTARTED: the card is not free (vram_free 1000000000 of 34359738368 after 300 s)" "$(sed -n 1p "$(reject_of base-1)/reason")" "the reason names the readings and the wait"
+  assert_match "$(sed -n 1p "$(reject_of base-1)/reason")" '^UNSTARTED: the card is not free \(vram_free 1000000000 of 34359738368 after 300 s\); .*container list.*bin/r9700 comfy stop' "the reason names the readings, the wait and the remedy (another container, the operator's ComfyUI)"
+  assert_eq "9" "$(grep -c '^comfy: bench: base-1: waiting for the card: vram_free 1000000000 of 34359738368 (' <<< "$(wlog)")" "one progress line every 30 s of the wait (30 to 270)"
+  assert_contains "$(wlog)" "comfy: bench: base-1: waiting for the card: vram_free 1000000000 of 34359738368 (30s)" "the first, as the plan words it"
   assert_eq "0" "$(grep -c 'bench.py' "$STUB/calls.log")" "no bench.py exec"
   assert_eq "1" "$(stops | grep -c '^r9700tune-comfy-base-1$')" "the container was stopped"
   assert_exit 1 "and is not listed" -- listed r9700tune-comfy-base-1

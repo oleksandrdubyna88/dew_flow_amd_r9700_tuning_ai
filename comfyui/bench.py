@@ -45,6 +45,11 @@ WEIGHT_DTYPES = ("default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2")  # UNET
 NODES = {"sampler": "sampler", "vae": "vae", "save": "save"}  # the graph's node ids the metrics time and the output is read from
 CACHE_ROOT = "/cache"
 POLL_S = 0.5
+FFPROBE_TIMEOUT_S = 300  # one ffprobe -count_frames of a clip
+FFMPEG_TIMEOUT_S = 300   # the decode of one frame of a clip
+REQUEST_TIMEOUT_S = 60   # one HTTP request to the server (the run itself is under its own ceiling)
+WS_CLOSE_TIMEOUT_S = 10  # the close handshake of the websocket
+SILENCE_OF_CEILING = 0.5  # a server that sends no websocket message for this part of the run's ceiling is not working on the run: the run fails (HANG) before the ceiling
 
 WAN_LORA = "Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors"
 WORKFLOWS = {
@@ -109,23 +114,22 @@ def arm_words(environ):
     return dtype, compile_word == "1"
 
 
-def build_graph(workflow, seed, label="x", environ=None):
-    """The ComfyUI prompt of a workflow: every input from the table, the arm's two words applied, nothing else free."""
-    spec = spec_of(workflow)
-    dtype, compiled = arm_words(os.environ if environ is None else environ)
-    prefix = f"{workflow}_r{label}"
+def _loader_nodes(g, workflow, spec, dtype):
+    """The loaders: g gets the model, the text encoder and the VAE loaders; returns (the model node, the clip source, the vae source)."""
     m = spec["models"]
-    g = {}
     if workflow == "sd15":
         if dtype != "default":
             raise UsageError("COMFY_BENCH_WEIGHT_DTYPE does not apply to sd15 (its checkpoint loader has no weight_dtype)")
         g["unet"] = {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": m["checkpoints"]}}
-        model, clip, vae_source = "unet", ["unet", 1], ["unet", 2]
-    else:
-        g["unet"] = {"class_type": "UNETLoader", "inputs": {"unet_name": m["diffusion_models"], "weight_dtype": dtype}}
-        g["clip"] = {"class_type": "CLIPLoader", "inputs": {"clip_name": m["text_encoders"], "type": spec["clip_type"], "device": "default"}}
-        g["vaeload"] = {"class_type": "VAELoader", "inputs": {"vae_name": m["vae"]}}
-        model, clip, vae_source = "unet", ["clip", 0], ["vaeload", 0]
+        return "unet", ["unet", 1], ["unet", 2]
+    g["unet"] = {"class_type": "UNETLoader", "inputs": {"unet_name": m["diffusion_models"], "weight_dtype": dtype}}
+    g["clip"] = {"class_type": "CLIPLoader", "inputs": {"clip_name": m["text_encoders"], "type": spec["clip_type"], "device": "default"}}
+    g["vaeload"] = {"class_type": "VAELoader", "inputs": {"vae_name": m["vae"]}}
+    return "unet", ["clip", 0], ["vaeload", 0]
+
+
+def _model_chain(g, workflow, spec, model, compiled):
+    """The nodes between the loader and the sampler (the LoRA, the compile node, the shift node); returns the node the sampler takes its model from."""
     if workflow == "wan5b":
         g["lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["unet", 0], "lora_name": spec["lora"]["file"], "strength_model": spec["lora"]["strength_model"]}}
         model = "lora"
@@ -136,21 +140,26 @@ def build_graph(workflow, seed, label="x", environ=None):
         shift_class = "ModelSamplingAuraFlow" if workflow == "zimage" else "ModelSamplingSD3"
         g["shift"] = {"class_type": shift_class, "inputs": {"model": [model, 0], "shift": spec["shift"]}}
         model = "shift"
+    return model
+
+
+def _conditioning_nodes(g, workflow, spec, clip):
     g["pos"] = {"class_type": "CLIPTextEncode", "inputs": {"text": spec["prompt"], "clip": clip}}
     if workflow == "zimage":
         g["neg"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["pos", 0]}}
     else:
         g["neg"] = {"class_type": "CLIPTextEncode", "inputs": {"text": spec["negative"], "clip": clip}}
+
+
+def _latent_node(g, workflow, spec, vae_source):
+    size = {"width": spec["width"], "height": spec["height"], "batch_size": 1}
     if workflow == "wan5b":
-        g["latent"] = {"class_type": "Wan22ImageToVideoLatent",
-                       "inputs": {"vae": vae_source, "width": spec["width"], "height": spec["height"], "length": spec["length"], "batch_size": 1}}
-    elif workflow == "zimage":
-        g["latent"] = {"class_type": "EmptySD3LatentImage", "inputs": {"width": spec["width"], "height": spec["height"], "batch_size": 1}}
+        g["latent"] = {"class_type": "Wan22ImageToVideoLatent", "inputs": {"vae": vae_source, "width": spec["width"], "height": spec["height"], "length": spec["length"], "batch_size": 1}}
     else:
-        g["latent"] = {"class_type": "EmptyLatentImage", "inputs": {"width": spec["width"], "height": spec["height"], "batch_size": 1}}
-    g["sampler"] = {"class_type": "KSampler", "inputs": {
-        "model": [model, 0], "positive": ["pos", 0], "negative": ["neg", 0], "latent_image": ["latent", 0], "seed": seed, "steps": spec["steps"], "cfg": spec["cfg"],
-        "sampler_name": spec["sampler"], "scheduler": spec["scheduler"], "denoise": 1.0}}
+        g["latent"] = {"class_type": "EmptySD3LatentImage" if workflow == "zimage" else "EmptyLatentImage", "inputs": size}
+
+
+def _decode_and_save(g, workflow, spec, vae_source, prefix):
     if workflow == "wan5b":
         g["vae"] = {"class_type": "VAEDecodeTiled", "inputs": {"samples": ["sampler", 0], "vae": vae_source, **spec["tile"]}}
         g["video"] = {"class_type": "CreateVideo", "inputs": {"images": ["vae", 0], "fps": spec["fps"]}}
@@ -158,6 +167,21 @@ def build_graph(workflow, seed, label="x", environ=None):
     else:
         g["vae"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sampler", 0], "vae": vae_source}}
         g["save"] = {"class_type": "SaveImage", "inputs": {"images": ["vae", 0], "filename_prefix": prefix}}
+
+
+def build_graph(workflow, seed, label="x", environ=None):
+    """The ComfyUI prompt of a workflow: every input from the table, the arm's two words applied, nothing else free."""
+    spec = spec_of(workflow)
+    dtype, compiled = arm_words(os.environ if environ is None else environ)
+    g = {}
+    model, clip, vae_source = _loader_nodes(g, workflow, spec, dtype)
+    model = _model_chain(g, workflow, spec, model, compiled)
+    _conditioning_nodes(g, workflow, spec, clip)
+    _latent_node(g, workflow, spec, vae_source)
+    g["sampler"] = {"class_type": "KSampler", "inputs": {
+        "model": [model, 0], "positive": ["pos", 0], "negative": ["neg", 0], "latent_image": ["latent", 0], "seed": seed, "steps": spec["steps"], "cfg": spec["cfg"],
+        "sampler_name": spec["sampler"], "scheduler": spec["scheduler"], "denoise": 1.0}}
+    _decode_and_save(g, workflow, spec, vae_source, f"{workflow}_r{label}")
     return g
 
 
@@ -174,7 +198,7 @@ def _video_info(path):
     """(width, height, frames) by `ffprobe -count_frames`; the program is the image's own (the Containerfile installs ffmpeg)."""
     command = ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=width,height,nb_read_frames", "-of", "csv=p=0", str(path)]
     try:
-        answer = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        answer = subprocess.run(command, capture_output=True, text=True, timeout=FFPROBE_TIMEOUT_S)
     except FileNotFoundError:
         raise RunError("OUTPUT: ffprobe is not installed (the check of a video needs it)")
     fields = answer.stdout.strip().split(",")
@@ -187,7 +211,7 @@ def _video_frame(path, index, width, height):
     """The raw rgb24 bytes of frame <index> (None when it cannot be decoded)."""
     command = ["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"select=eq(n\\,{index})", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     try:
-        answer = subprocess.run(command, capture_output=True, timeout=300)
+        answer = subprocess.run(command, capture_output=True, timeout=FFMPEG_TIMEOUT_S)
     except FileNotFoundError:
         raise RunError("OUTPUT: ffmpeg is not installed (the check of a video needs it)")
     return answer.stdout if answer.returncode == 0 and len(answer.stdout) == width * height * 3 else None
@@ -242,36 +266,45 @@ def _pair_stats(a, b):
     return float(numpy.abs(d).sum()), float((d.astype(numpy.float64) ** 2).sum()), d.size
 
 
-def _frames(path, width, height):
+def _frames(path):
+    """One ffmpeg decoder of a clip: raw rgb24 frames on its stdout; it reads nothing and says nothing (no stdin to inherit, no stderr pipe to fill and block on)."""
     command = ["ffmpeg", "-v", "error", "-i", str(path), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
-    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+def _next_pair_stats(left, right, size):
+    """(sum of absolute differences, sum of squared differences, count) of the next frame of two decoders; None at the end. No frame outlives the call."""
+    import numpy
+    x, y = left.stdout.read(size), right.stdout.read(size)
+    if len(x) != size or len(y) != size:
+        if len(x) != len(y):
+            raise RunError("the frame counts differ")
+        return None
+    return _pair_stats(numpy.frombuffer(x, numpy.uint8), numpy.frombuffer(y, numpy.uint8))
+
+
+def _image_drift(path, ref):
+    import numpy
+    from PIL import Image
+    with Image.open(path) as one, Image.open(ref) as two:
+        a, b = numpy.asarray(one.convert("RGB")), numpy.asarray(two.convert("RGB"))
+    if a.shape != b.shape:
+        raise RunError(f"the size differs ({a.shape[1]}x{a.shape[0]} against {b.shape[1]}x{b.shape[0]})")
+    total, squares, count = _pair_stats(a, b)
+    return total / count, squares / count
 
 
 def _drift_numbers(path, ref, workflow):
     """(mad, mse) of an output against its reference: an image directly, a video frame by frame (the mean over the frames of each frame's mad and mse)."""
-    import numpy
     if str(path).lower().endswith(IMAGE_EXTENSIONS):
-        from PIL import Image
-        with Image.open(path) as one, Image.open(ref) as two:
-            a, b = numpy.asarray(one.convert("RGB")), numpy.asarray(two.convert("RGB"))
-        if a.shape != b.shape:
-            raise RunError(f"the size differs ({a.shape[1]}x{a.shape[0]} against {b.shape[1]}x{b.shape[0]})")
-        total, squares, count = _pair_stats(a, b)
-        return total / count, squares / count
+        return _image_drift(path, ref)
     width, height, _ = _video_info(path)
-    size = width * height * 3
     mads, mses = [], []
-    left, right = _frames(path, width, height), _frames(ref, width, height)
+    left, right = _frames(path), _frames(ref)
     try:
-        while True:
-            x, y = left.stdout.read(size), right.stdout.read(size)
-            if len(x) != size or len(y) != size:
-                if len(x) != len(y):
-                    raise RunError("the frame counts differ")
-                break
-            total, squares, count = _pair_stats(numpy.frombuffer(x, numpy.uint8), numpy.frombuffer(y, numpy.uint8))
-            mads.append(total / count)
-            mses.append(squares / count)
+        while (stats := _next_pair_stats(left, right, width * height * 3)) is not None:
+            mads.append(stats[0] / stats[2])
+            mses.append(stats[1] / stats[2])
     finally:
         for proc in (left, right):
             proc.kill()
@@ -354,71 +387,108 @@ def _cache_after():
     return found
 
 
-async def _drive(workflow, tag, run, out, clock):
+async def _post_prompt(session, graph, client):
+    """POST /prompt: the prompt id; a prompt the server refuses is RunError('PROMPT: refused: <error>') before any timing."""
+    async with session.post(f"{api()}/prompt", json={"prompt": graph, "client_id": client}) as response:
+        try:
+            body = await response.json()
+        except Exception:
+            body = {}
+    if not isinstance(body, dict) or "prompt_id" not in body:
+        error = body.get("error") if isinstance(body, dict) else None
+        raise RunError(f"PROMPT: refused: {error.get('message') if isinstance(error, dict) else error or f'HTTP {response.status}'}")
+    return body["prompt_id"]
+
+
+class Events:
+    """What the websocket said about one prompt: the time of every executed node, their order and the nodes the cache reused."""
+
+    def __init__(self, started):
+        self.times, self.order, self.cached, self.current, self.since = {}, [], [], None, started
+
+    def take(self, packet, prompt_id):
+        """One message. True when the run is over (`executing` with node null); an execution_error raises."""
+        data = packet.get("data") or {}
+        if data.get("prompt_id") not in (None, prompt_id):
+            return False
+        if packet.get("type") == "execution_error":
+            raise RunError(_error_text(data))
+        if packet.get("type") == "execution_cached":
+            self.cached.extend(data.get("nodes") or [])
+        elif packet.get("type") == "executing":
+            now = time.monotonic()
+            if self.current is not None:
+                self.times[self.current] = self.times.get(self.current, 0.0) + now - self.since
+            if data.get("node") is None:
+                return True
+            self.current, self.since = data["node"], now
+            self.order.append(self.current)
+        return False
+
+
+async def _watch(socket, prompt_id, started, silence, kind):
+    """The messages of the run until it ends; a socket that goes quiet for `silence` seconds is a server that is not working on the run (HANG)."""
     import aiohttp
-    cold = run == "cold"
-    seed = SEEDS["cold"] if cold else SEEDS["measured"][int(run) - 1]
+    events = Events(started)
+    while True:
+        try:
+            message = await socket.receive(timeout=silence)
+        except asyncio.TimeoutError:
+            raise RunError(f"HANG: no websocket message for {silence:.0f} s (half of the {kind} ceiling): the server holds the run and sends nothing")
+        if message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+            return events
+        if message.type == aiohttp.WSMsgType.TEXT and events.take(json.loads(message.data), prompt_id):
+            return events
+
+
+async def _history_entry(session, prompt_id):
+    while True:
+        async with session.get(f"{api()}/history/{prompt_id}") as response:
+            history = await response.json()
+        if isinstance(history, dict) and prompt_id in history:
+            return history[prompt_id]
+        await asyncio.sleep(POLL_S)
+
+
+def _assemble(graph, events, before, after, entry, output, info):
+    """The JSON of a run: the timings, the nodes (executed, and the class types of the cached ones), the argv and the card as the server reported them, the output and the cache."""
+    return {"tag": info["tag"], "workflow": info["workflow"], "run": info["run"], "seed": info["seed"], "started_at": info["started"], "total_s": round(info["total"], 3),
+            "nodes_s": {k: round(v, 3) for k, v in events.times.items()}, "node_order": events.order, "nodes": [graph[n]["class_type"] for n in events.order if n in graph],
+            "cached_types": [graph[n]["class_type"] for n in events.cached if n in graph], "cached_nodes": events.cached, "server_argv": before["argv"],
+            "env": {k: v for k, v in sorted(os.environ.items()) if k in LEGAL_WORDS}, "vram_free_before": before["vram_free"], "vram_total_before": before["vram_total"],
+            "vram_free_after": after["vram_free"], "output": output, "cache_after": _cache_after(), "cold": info["run"] == "cold"}
+
+
+def _require_executed(events):
+    """A time that measured nothing is never printed; an absent time is not zero."""
+    for what, node in (("sampler", NODES["sampler"]), ("decode node", NODES["vae"])):
+        if node in events.cached or node not in events.times:
+            raise RunError(f"CACHED: the {what} did not execute (cached: {','.join(map(str, events.cached)) or 'none'})")
+
+
+async def _drive(workflow, tag, run, out, clock, ceiling):
+    import aiohttp
+    seed = SEEDS["cold"] if run == "cold" else SEEDS["measured"][int(run) - 1]
     graph = build_graph(workflow, seed, run)
     client = str(uuid.uuid4())
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    times, order, cached = {}, [], []
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+    print(f"run {run} started", file=sys.stderr, flush=True)
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S)) as session:
         before = await _stats(session)
-        async with session.ws_connect(f"{api()}/ws?clientId={client}", max_msg_size=0, timeout=aiohttp.ClientWSTimeout(ws_close=10)) as socket:
+        async with session.ws_connect(f"{api()}/ws?clientId={client}", max_msg_size=0, timeout=aiohttp.ClientWSTimeout(ws_close=WS_CLOSE_TIMEOUT_S)) as socket:
             clock["t0"] = time.monotonic()
-            async with session.post(f"{api()}/prompt", json={"prompt": graph, "client_id": client}) as response:
-                try:
-                    body = await response.json()
-                except Exception:
-                    body = {}
-            if not isinstance(body, dict) or "prompt_id" not in body:
-                error = body.get("error") if isinstance(body, dict) else None
-                raise RunError(f"PROMPT: refused: {error.get('message') if isinstance(error, dict) else error or f'HTTP {response.status}'}")
-            prompt_id, current, since = body["prompt_id"], None, clock["t0"]
-            async for message in socket:
-                if message.type != aiohttp.WSMsgType.TEXT:
-                    if message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        break
-                    continue
-                packet = json.loads(message.data)
-                data = packet.get("data") or {}
-                if data.get("prompt_id") not in (None, prompt_id):
-                    continue
-                if packet.get("type") == "execution_error":
-                    raise RunError(_error_text(data))
-                if packet.get("type") == "execution_cached":
-                    cached.extend(data.get("nodes") or [])
-                elif packet.get("type") == "executing":
-                    now = time.monotonic()
-                    if current is not None:
-                        times[current] = times.get(current, 0.0) + now - since
-                    if data.get("node") is None:
-                        break
-                    current, since = data["node"], now
-                    order.append(current)
-        while True:
-            async with session.get(f"{api()}/history/{prompt_id}") as response:
-                history = await response.json()
-            if isinstance(history, dict) and prompt_id in history:
-                break
-            await asyncio.sleep(POLL_S)
+            prompt_id = await _post_prompt(session, graph, client)
+            events = await _watch(socket, prompt_id, clock["t0"], ceiling * SILENCE_OF_CEILING, "cold" if run == "cold" else "run")
+        entry = await _history_entry(session, prompt_id)
         total = time.monotonic() - clock["t0"]
-        entry = history[prompt_id]
         failure = _history_failure(entry)
         if failure:
             raise RunError(failure)
         after = await _stats(session)
-    if not cold:
-        for what, node in (("sampler", NODES["sampler"]), ("decode node", NODES["vae"])):  # a time that measured nothing is never printed; an absent time is not zero
-            if node in cached or node not in times:
-                raise RunError(f"CACHED: the {what} did not execute (cached: {','.join(map(str, cached)) or 'none'})")
+    if run != "cold":
+        _require_executed(events)
     output = await asyncio.to_thread(lambda: check_output(_output_file(entry, out), workflow))
-    result = {"tag": tag, "workflow": workflow, "run": run, "seed": seed, "started_at": started, "total_s": round(total, 3), "nodes_s": {k: round(v, 3) for k, v in times.items()},
-              "node_order": order, "nodes": [graph[node]["class_type"] for node in order if node in graph],
-              "cached_types": [graph[node]["class_type"] for node in cached if node in graph], "cached_nodes": cached, "server_argv": before["argv"], "env": {k: v for k, v in sorted(os.environ.items()) if k in LEGAL_WORDS},
-              "vram_free_before": before["vram_free"], "vram_total_before": before["vram_total"], "vram_free_after": after["vram_free"], "output": output,
-              "cache_after": _cache_after(), "cold": cold}
-    return result
+    return _assemble(graph, events, before, after, entry, output, {"tag": tag, "workflow": workflow, "run": run, "seed": seed, "started": started, "total": total})
 
 
 def _write_json(path, payload):
@@ -438,7 +508,7 @@ def run_once(workflow, tag, run, out):
     clock = {"t0": None}
     began = time.monotonic()
     try:
-        result = asyncio.run(asyncio.wait_for(_drive(workflow, tag, run, out, clock), ceiling))
+        result = asyncio.run(asyncio.wait_for(_drive(workflow, tag, run, out, clock, ceiling), ceiling))
     except asyncio.TimeoutError:
         print(f"{'COLD' if cold else 'RUN'}_TIMEOUT {time.monotonic() - began:.1f}")
         return 3
