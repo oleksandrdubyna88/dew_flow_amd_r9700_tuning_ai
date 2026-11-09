@@ -322,3 +322,67 @@ through frame 63 and open again from frame 66 of 81 — the 14B model returns to
 (the Arcane keyframe has open eyes). Fix without another render: frames 0–63 kept and frame 63 held for the last 17 frames
 (the clip keeps its 81 frames, so the narration timing holds). The v2 film and its two voiced versions are checked as
 before (audio from 0.000 s, −21.1 / −21.5 dB). A sleeping shot should start from a keyframe with closed eyes.
+
+## 20. Episode 2's face made to match episode 1 by reference images (2026-11-09)
+
+The operator compared episode 2's Arcane frames with a profile frame of episode 1's Arcane film: the nose and the face
+differ. Cause: each episode-2 keyframe was drawn from text by Qwen-Image and then restyled by the Arcane LoRA, and both
+steps redraw the face. Fix: Qwen-Image-Edit-2511 (fp8, the 4-step Lightning weights merged; 20 GB, sha256 16d03fd9…)
+draws every keyframe directly in the Arcane look, given up to three reference images through `TextEncodeQwenImageEditPlus`
+(image1..3, each scaled by `ImageScaleToTotalPixels`, which needs `resolution_steps`). The references are frames of
+episode 1's Arcane 14B film: a profile (shot 2, frame 8), a front face (shot 2, frame 55) and the whole body (shot 6,
+frame 78); no separate restyle.
+
+- Keyframes 1–7: 30–50 s each (the first loads the model). By eye against the references: the nose, the brows and the face
+  shape match episode 1 in shots 2–6; shot 2 is drawn with closed eyes (the sleep shot, § 19).
+- Shot 7 first drew a six-wheeled cargo truck; with shot 8's truck frame as image3 instead of the body reference
+  (a per-shot reference list) it drew the same four-wheeled military car as shot 8.
+- Clips: Wan 2.2 A14B + lightx2v, the server restarted before every clip (§ 16): 997.3, 1164.4, 1171.6, 1094.9 and
+  1129.5 s for clips 1–5 — about 10–17 % slower than episode 2's first run (1002–1015 s), with the CPU busy with the
+  voice work below during clips 2–5.
+
+## 21. The film's ending, static starts, and the frame rate (2026-11-09)
+
+- **Ending.** When the narration ran past the film, the mixer held the last frame; the operator: "the picture does not
+  move during the whole last phrase". `voiceover.py --end slowmo` now stretches the last shot to end with the narration,
+  motion-interpolated (`minterpolate`, mci/aobmc/bidir): 1.43× (Qwen narration) and 1.51× (VoxCPM). Accepted by the
+  operator: "the video and the sound end together".
+- **No static start.** An advice found online says that image-to-video clips start with 4–8 near-still frames that should
+  be cut. Measured on our six 14B clips (mean |luma step| per frame against the clip's median): the first steps are
+  0.6–1.3× of the median from frame 1, so nothing to cut.
+- **Frame rate.** Wan renders 16 fps. Motion interpolation to 32 fps on the CPU (3.5 min for the 33 s film); the operator:
+  "many times better, almost all the blur is gone", and asked for 60 fps. 60 fps: 693 s on the CPU (shared with a TTS
+  run), 1962 frames, 32.7 s; frames in the fast run at 12 s are clean. `minterpolate` repeats a frame 3 times (0.05 s) at
+  three of the five cuts (its scene-change detection).
+- **Motion pattern.** Inside every 14B clip the per-frame motion alternates large and small steps (about 1.2× and 0.7× of
+  the median), a judder at 16 fps that interpolation smooths.
+
+## 22. Softening the cuts between shots (2026-11-09)
+
+The operator: between the running shots the light and the shadows on her face jump. `transitions.py` "light bridge": for
+the first second of every shot after the first, each RGB channel's mean and spread are pulled toward the previous shot's
+last frame, the weight easing from 1 to 0 (smoothstep); an optional 0.4 s dissolve. Two films for the operator: bridge,
+and bridge + dissolve.
+
+The operator's verdict on both: a freeze of about 0.5 s at every cut (and once between 3 and 4 s). Measured
+(`freeze_scan.py`, steps under 0.15× of the median; `motion_profile.py` per frame): no still and no repeated frames in
+either file, and the motion just after each cut is 0.9–2.1× of the median, as in the film without the bridge. The one
+technical difference found: the bridge films carried no colour tags (the frames were encoded from raw RGB), so a player
+must guess; the encoder now tags bt709/tv. The cause of what the operator saw is not settled; open questions to the
+operator: which player, and whether the film without the bridge freezes too.
+
+## 23. A female narrator (2026-11-09)
+
+The operator asked for a female narration besides the old storyteller. An original voice (no real person's voice):
+VoxCPM2 voice design, "a mature woman in her forties, a warm low velvety voice, calm and slightly mysterious, slow measured
+pace…", three takes of the storyteller's reference sentence, on the CPU while the GPU rendered (612–1069 s per take).
+Scored by `ref_pick.py` (Whisper large-v3-turbo CER, median pitch, length):
+
+| take | length | median F0 | CER |
+|---|---|---|---|
+| 1 | 8.0 s | 160 Hz | 0.000 |
+| 2 | 7.7 s | 190 Hz | 0.000 |
+| 3 | 5.8 s | 223 Hz | 0.000 |
+
+Take 1 (the lowest and slowest) is the reference; the narration is its VoxCPM2 clone at 10 steps (`narrate.py`), on the
+CPU: 745.5 s for the first 5.9 s line (model load included), 298.2 s for the next 5.3 s line.
