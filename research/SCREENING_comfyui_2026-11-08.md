@@ -386,3 +386,90 @@ Scored by `ref_pick.py` (Whisper large-v3-turbo CER, median pitch, length):
 
 Take 1 (the lowest and slowest) is the reference; the narration is its VoxCPM2 clone at 10 steps (`narrate.py`), on the
 CPU: 745.5 s for the first 5.9 s line (model load included), 298.2 s for the next 5.3 s line.
+
+All six lines took 3620 s on the CPU for 34.4 s of audio. The operator then ruled: no heavy jobs on the CPU (the PC froze
+while TTS and 60 fps interpolation shared the CPU); such work waits for the GPU.
+
+A second female voice by Qwen3-TTS VoiceDesign (same description): takes at 162 / 87 / 163 Hz median F0, all CER 0. The
+first selection rule ("lowest F0 wins", right for the male storyteller) chose the 87 Hz take; 95 % of its voiced frames
+were under 140 Hz, the male storyteller's range (78–112 Hz) — not a female voice. The rule for a female voice is now
+"median F0 ≥ 140 Hz, then the lowest"; the clone from the 162 Hz take speaks at 151–160 Hz (GPU, 60–270 s for 27 s).
+
+## 24. The PC froze after every job: memory flags and the VM memory limit (2026-11-09)
+
+The operator: "configure it so models are not offloaded from the GPU to RAM; read from disk each time instead — 3 s of disk
+read is better than the whole PC freezing for a minute". Measured on one Wan 2.2 14B clip each, Windows counters every
+5–10 s:
+
+| | default | `--fast-disk --disable-pinned-memory` | + VM limited to 20 GB |
+|---|---|---|---|
+| clip time | 1067 s | 1008 s | 991 s |
+| RAM used inside the ComfyUI VM | ~38 GB | ~4.5 GB | ~4.5 GB |
+| Windows' lowest free/available RAM, job end | 51 MB free | 2.3 GB free | 20.6 GB available |
+
+In every mode the GPU freed ~26 GB when a job ended and, within ~30 s, Windows lost ~20 GB of available memory while
+committed bytes went DOWN (standby pages consumed by pages faulted back in): the host was overcommitted (~140–170 GB
+committed on 91.6 GB RAM). The ComfyUI VM held ~42 GB of committed memory it never returned. Two consultants agreed on
+host overcommit as the best-supported cause. Fixes kept:
+- ComfyUI starts with `--fast-disk --disable-pinned-memory` by default (`-RamOffload` restores the old mode).
+- The wslc VM memory: `session: memorySize: 20GB` in the wslc user settings file (`settings.yaml`, template printed by
+  `wslc settings`; the default is half of the RAM). The setting is read when a SESSION is created — a VM that only
+  idles down (30 s without containers) keeps the old size; `wslc system session terminate` (between jobs) applies it.
+  The model volumes survive it. Training jobs raise it to 40 GB and set it back.
+
+## 25. One face in every shot: from face swap to reference keyframes (2026-11-09)
+
+The operator approved one face (frames 76/80 of episode 2 v3's sleep shot: "this face everywhere") and wanted it in every
+Arcane shot ("after 10 s she ages ~30 years"). What was tried with Qwen-Image-Edit-2511 (each round 2–4 seeds per shot,
+picked by eye):
+1. Naming the forehead in the prompt ("no mark, no jewel, no pin") DREW a circlet, a jewel or a pin; "golden strands
+   from the temples" became wires. The pin was in the REFERENCE frames themselves (episode 1's Arcane frames); the edit
+   model copied it. Fix: fill it in the references (`clean_refs.py`, row by row with the skin beside it).
+2. "grim cold desaturated colours" aged her and turned the green tunic black; the cold went into the scene's light only.
+3. The enlarged face crop as image 1: the model copied its composition (a lying close-up) into every scene — **Qwen-Image-
+   Edit builds the picture on image 1.** Image 1 must be the body/composition, the face references images 2–3.
+4. A face swap (the old keyframe as image 1, "change only the face") drew extra people and cartoon faces — rejected.
+5. Image 1 = the approved test keyframe (the face, the tunic, the whole body), "take only the woman from image 1, not its
+   background, exactly one woman", the scene in words (+ "warm summer day, no snow" for episode 1): right in nearly all
+   shots. Episodes 1 and 2 were re-rendered this way (Arcane ep2 v4: v3 shots 1–2 kept, 3–7 and a new shot 9 new; ep1:
+   all six shots); the realistic episode 2 used the same method with episode 1's realistic keyframes as references.
+
+Also: a sentence "she blinks naturally now and then" made her blink again and again (removed); a shot without an entry in
+a per-shot table failed with KeyError and an old clip was joined silently (the joiner now has a fallback); files written by
+the container are root-owned — moving them from WSL failed silently; they are moved inside a container.
+
+## 26. Eyes: the sampling steps do not help, the seed does (2026-11-10)
+
+The operator: "the eyes still jump sometimes; the eyes are the main thing". Episode 1 shot 2 (the face close-up) three
+ways, judged by eye on enlarged consecutive frames 0–23: A = a new seed, 4 steps (1112 s); B = the same seed, 8 steps
+(1283 s); C = B + a sentence about steady eyes (1261 s). A was the steadiest. B and C FLICKERED the iris colour (green
+in frame 0, amber in frames 1–7, green again); the sentence did not help. Method kept: face shots at 4 steps, 2–3 seeds,
+the steadiest kept by eye. Two automatic jitter scores (a skin-colour face box; kornia's YuNet eye points) both failed
+their own check on a known pair and are not used.
+
+## 27. A character LoRA on Qwen-Image (2026-11-09/10)
+
+musubi-tuner (kohya-ss, commit f8a1b03; installed with the operator's approval into its own volume, venv over the image's
+ROCm torch 2.13 with the ROCm constraints file) trained LoRAs of the approved character on Qwen-Image (bf16 DiT 40.9 GB +
+the bf16 Qwen2.5-VL 7B text encoder 16.6 GB, both fetched with pinned sha256): `--fp8_base --fp8_scaled --blocks_to_swap
+8`, adamw, dim/alpha 16, lr 5e-5, 1024x576 buckets, the VM at 40 GB.
+- v1: 32 pictures (keyframes, clip frames, the face references, 10 generated portraits) x 4 repeats x 16 epochs = 2048
+  steps, 4.57 s/step, 2 h 36 min, loss 0.124 -> 0.091.
+- v2 (the operator: keep v1, try softer features): 22 pictures (16 picked from LoRA v1 at 0.6 + "soft delicate facial
+  features", the face references, 4 portraits; the captions do not name the softness) x 4 x 8 epochs = 704 steps, ~54 min.
+Tested text-only on Qwen-Image-2512 fp8 + Lightning (no reference images), seed 4242, 4 scenes: a LoRA trained on the
+original Qwen-Image loads on 2512 with no unloaded keys. Without a LoRA: a different generic girl. v1: the same character
+in every scene, stricter features; strength 0.5–0.7 brings back the base model's softness while keeping the look. v2:
+softer, warmer faces; wavier hair and a fainter golden strand. The operator: the base model's faces are prettier, v1 is
+"also very interesting" — both kept.
+
+## 28. Episode 3 script, the ComfyUI image, workflows (2026-11-09/10)
+
+- Episode 3 ("The Castle"): the operator's story as a 22-clip shot list (~85–95 s), reviewed with two consultants: her eyes
+  only in tight close-ups or far away, every keyframe already in its final state (eyes, hands on the grips, boots off the
+  floor), one motion per clip, long camera moves as several clips with motivated cuts or first-last-frame clips, the
+  pupil dive as two clips plus a zoom in the edit, her voice recorded first, no lip-sync shots, original designs only.
+- The ComfyUI image (27.3 GB: the ROCm/PyTorch base, ComfyUI v0.44.0, the entrypoint; audited: no secrets, no personal
+  paths; models and the data volume are not in it) was pushed to the GitHub Container Registry (1407 s).
+- The pipelines were exported as ComfyUI UI workflows (`ui_workflows.py`: the drivers' API graphs converted with the widget
+  order read from the live `/object_info`, titled nodes, an explaining note).
