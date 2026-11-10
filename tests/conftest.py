@@ -1,6 +1,9 @@
-"""Shared test paths. Tests write only below pytest's `tmp_path`, which tests/run.mjs puts inside its owned run folder."""
+"""Shared test paths and the scripted ComfyUI server fixture. Tests write only below pytest's `tmp_path`, which tests/run.mjs puts inside its owned run folder."""
 import argparse
+import json
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,42 @@ TESTS = Path(__file__).parent
 ROOT = TESTS.parent
 FIXTURES = TESTS / "fixtures"
 LIB = ROOT / "lib"
+COMFY_SERVER = FIXTURES / "comfy" / "comfy_server.py"
+
+
+def own_ticks(pid):
+    return open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[19]
+
+
+@pytest.fixture
+def server(tmp_path):
+    """The scripted ComfyUI stand-in (tests/fixtures/comfy/comfy_server.py) of tests/test_comfy_bench_py.py and tests/test_comfy_tools.py:
+    start(script) -> (port, folder the server writes into). Its pid is recorded below `containers/`, where tests/run.mjs finds and kills what a test left;
+    every server is killed at the end of the test."""
+    started = []
+
+    def start(script):
+        n = len(started) + 1
+        script_file, port_file, out = tmp_path / f"script{n}.json", tmp_path / f"port{n}", tmp_path / f"out{n}"
+        script_file.write_text(json.dumps(script))
+        proc = subprocess.Popen([sys.executable, "-I", str(COMFY_SERVER), "--script", str(script_file), "--out", str(out), "--port-file", str(port_file)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        started.append(proc)
+        (tmp_path / "containers").mkdir(exist_ok=True)
+        (tmp_path / "containers" / f"fixture-{n}.pid").write_text(f"{proc.pid} {own_ticks(proc.pid)}\n")
+        for _ in range(100):
+            if port_file.exists():
+                return int(port_file.read_text()), out
+            if proc.poll() is not None:
+                pytest.fail(f"the fixture server ended: {proc.stderr.read()}")
+            time.sleep(0.1)
+        pytest.fail("the fixture server never wrote its port")
+
+    yield start
+    for proc in started:
+        proc.kill()
+        proc.wait()
+        proc.stderr.close()
 
 
 def pytest_configure(config):

@@ -1,6 +1,7 @@
 """comfyui/bench.py against the scripted ComfyUI stand-in (E2.S2): scenarios BP1-BP13 and BP12v (BP14 is folded into BP5).
 
-Every test runs bench.py as a subprocess (`python -I`), the server of tests/fixtures/comfy/comfy_server.py as another one on a free port, and writes only below pytest's
+Every test runs bench.py as a subprocess (`python -I`), the server of tests/fixtures/comfy/comfy_server.py (the `server` fixture of conftest.py, shared with
+tests/test_comfy_tools.py) as another one on a free port, and writes only below pytest's
 `tmp_path`. The server's pid is recorded in a `containers/` folder below it, where tests/run.mjs finds and kills what a test left. ffmpeg and ffprobe are prerequisites of
 the suite (research/module_tests.md, How it is run): a machine without them fails BP11 and BP12v with their names."""
 import ast
@@ -16,10 +17,9 @@ import urllib.request
 
 import pytest
 
-from conftest import FIXTURES, ROOT
+from conftest import ROOT
 
 BENCH = ROOT / "comfyui" / "bench.py"
-SERVER = FIXTURES / "comfy" / "comfy_server.py"
 VERDICT = ROOT / "lib" / "verdict.py"
 METRICS = "total_s sampler_s vae_s"
 
@@ -45,38 +45,6 @@ def bench(*args, port=None, timeout=60, isolated=True, **env):
     done = subprocess.run(command, capture_output=True, text=True, timeout=timeout, env=clean_env(**env))
     return done.returncode, done.stdout, done.stderr, time.monotonic() - started
 
-
-def own_ticks(pid):
-    return open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[19]
-
-
-@pytest.fixture
-def server(tmp_path):
-    """start(script) -> (port, folder the server writes into); every server is killed at the end of the test."""
-    started = []
-
-    def start(script):
-        n = len(started) + 1
-        script_file, port_file, out = tmp_path / f"script{n}.json", tmp_path / f"port{n}", tmp_path / f"out{n}"
-        script_file.write_text(json.dumps(script))
-        proc = subprocess.Popen([sys.executable, "-I", str(SERVER), "--script", str(script_file), "--out", str(out), "--port-file", str(port_file)],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        started.append(proc)
-        (tmp_path / "containers").mkdir(exist_ok=True)
-        (tmp_path / "containers" / f"fixture-{n}.pid").write_text(f"{proc.pid} {own_ticks(proc.pid)}\n")
-        for _ in range(100):
-            if port_file.exists():
-                return int(port_file.read_text()), out
-            if proc.poll() is not None:
-                pytest.fail(f"the fixture server ended: {proc.stderr.read()}")
-            time.sleep(0.1)
-        pytest.fail("the fixture server never wrote its port")
-
-    yield start
-    for proc in started:
-        proc.kill()
-        proc.wait()
-        proc.stderr.close()
 
 
 def prompt_script(gaps=(0, 0, 0, 0), history_delay=0.0, output=None, cached=None, before=(), progress=0, **more):

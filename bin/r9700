@@ -42,7 +42,7 @@ set -u
 R9700_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/config.sh
 source "$R9700_ROOT/lib/config.sh" || exit 2
-for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb comfy comfy_bench comfy_bench_verb; do
+for _lib in run_guarded adapter restore guard_quiet disk_gate guard_common guard_ram guard_deadline serve wait_ready bench step series moe moe_verb kernels kernels_verb run_plan run_verb comfy comfy_bench comfy_bench_verb comfy_watch; do
   # shellcheck source=/dev/null
   source "$R9700_ROOT/lib/$_lib.sh" || exit 2
 done
@@ -586,10 +586,11 @@ verb_run() {
 }
 
 # ---------- comfy (E1.S2 of the ComfyUI plan) ----------
-# verb_comfy <mode> [arguments]: the modes are the functions comfy_mode_<mode> of lib/comfy.sh and lib/comfy_bench_verb.sh (the list is derived from them, never typed): start [--stop-vllm] [-- <main.py args>]
+# verb_comfy <mode> [arguments]: the modes are the functions comfy_mode_<mode> of lib/comfy.sh, lib/comfy_bench_verb.sh and lib/comfy_watch.sh (the list is derived from them, never typed): start [--stop-vllm] [-- <main.py args>]
 # holds the lock through its readiness wait; build [--no-cache] holds it through the build and its check; fetch <set>... holds a lock of its own (comfy-fetch.lock); stop and status
 # take none; bench <workflow> <arm>... [--rounds N] [--out <name>] [--dry-run] (E2 of the ComfyUI plan) runs under the supervisor: one lock, one stop and one restore of the operator's server
-# for all its arm-rounds. The mode and its arguments (and the sets of a fetch, and the workflow and arms of a bench) are checked before any lock.
+# for all its arm-rounds; guard [--min-mb N] [--until <file>] [--max-s S] and timeline [--out <file>] [--until <text>] [--max-s S] (lib/comfy_watch.sh) take no lock: they watch beside a
+# hand-run job queue. The mode and its arguments (and the sets of a fetch, and the workflow and arms of a bench) are checked before any lock.
 verb_comfy() {
   local mode="${1:-}"
   if [ -z "$mode" ]; then
