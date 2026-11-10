@@ -473,3 +473,83 @@ softer, warmer faces; wavier hair and a fainter golden strand. The operator: the
   paths; models and the data volume are not in it) was pushed to the GitHub Container Registry (1407 s).
 - The pipelines were exported as ComfyUI UI workflows (`ui_workflows.py`: the drivers' API graphs converted with the widget
   order read from the live `/object_info`, titled nodes, an explaining note).
+
+## 29. The PC ran out of RAM again: one big model per server session, a RAM guard (2026-11-10)
+
+Two to three minutes after the episode 3 keyframe job resumed, Windows' "modified" page list grew from 0.9 GB to 85 GB
+and available memory fell to 10–14 MB; WSL died (exit 137). It happened even with the model download to the NAS store
+already stopped. The job was switching Qwen-Image (~20 GB), Qwen-Image-Edit (~20 GB), the text encoder (~8 GB) and a
+LoRA inside ONE ComfyUI server while the wslc VM was limited to 20 GB (§24): the VM swapped to its own disk and the host
+write cache filled; writing the download to the NAS store through the Windows cache added to it earlier.
+
+Fixes kept:
+- **One big image model per server session.** The keyframe drivers take a phase: `text` runs only the Qwen-Image steps
+  (the poses), `edit` only the Qwen-Image-Edit steps, with a server restart between the two phases.
+- **A RAM guard** (`guard_ram.sh`): every 5 s it reads Windows' available memory and stops the ComfyUI container below
+  6 GB (the GPU job dies, the PC survives); every run since has started it and stopped it at the end.
+- **Downloads go to the local model volume only**; the NAS copy is made later. A large download is not run during a
+  14B clip run (it writes into the VM's disk through the same host cache).
+
+Measured with the two phases: 44 keyframe images (poses, scenes and edits) in 20 min — ~1.5 min per shot, against 3–4 min
+when both models shared a server — Windows' lowest available memory 25 GB, the highest modified list 22 GB, the guard
+never fired. The later runs of the day (28 edits + 16 poses in 20 min; the masked repaints of §30) were the same: the
+guard never fired.
+
+## 30. Episode 3 keyframes: one costume, normal ears, one sword — the edit model and the masked repaint (2026-11-10)
+
+The operator reviewed the 23 picks over several rounds: the faces in two shots ("something is wrong with the face"), then
+"the clothes differ everywhere — they must be as on shot 15", "the ears differ on half the shots — they must be
+ordinary", "the sword must be this style everywhere", and three scene errors. What was found:
+
+1. **The green top was our own prompt.** Every face edit appended episode 2's hair sentence, which ends "Her tunic is dark
+   GREEN" — so every Act 3–4 shot that went through the edit got a green top; only the shots kept as step-1 pose pictures
+   did not. The costume shots now use a hair-only sentence and "take only the face from image 2, not its clothes".
+2. **The edit model draws what a prompt names, even after "no" or "NOT"** (the forehead mark of §25 again):
+   "her hair covers her ears" still gave pointed ears; a whole-picture touch-up asking for "small rounded human ears, NOT
+   pointed, NOT elf ears" made the ears LONGER, and gave pointed ears to a shot that had none; "no green clothes, no
+   sleeves" was followed by candidates with one long sleeve. Rewritten as positive words only ("her arms are bare from
+   the shoulder to the bracers"; "her hair falls smoothly over the sides of her head"), the next four poses were all
+   sleeveless. The edit graph runs at cfg 1.0, so a negative prompt has no effect at all.
+3. **Whole-picture touch-ups of an approved picture drift.** Asked to remove one small object, the edit shifted all the
+   colours to blue, or added a person; asked to add a shield and a drone, it removed her sword and drew pointed ears.
+4. **The masked repaint works.** A box or a line is placed by eye on a crop with a 0.02 coordinate grid, the mask is
+   previewed in red before any GPU time, the area inside the mask is first filled with a blur of the picture (so the
+   model no longer sees the thing), only the mask is sampled (VAEEncode + SetLatentNoiseMask, denoise 0.85–0.95), and
+   the result is pasted back onto the untouched pick with ImageCompositeMasked. The prompt names only what fills the
+   place. Used for: pointed ears in four shots (both ears in one; "long straight silver-white hair falls over the side of
+   her head"), a nose shadow (no blur fill, denoise 0.6, the nose keeps its shape), a second small dragon (two masks, wings
+   and body, so the big dragon's leg beside it stays), and flames burning on a fur rug (four masks; "lit by warm orange
+   light" in the prompt left two orange streaks, a second pass with "fur in soft shadow" removed them). Two candidates
+   per mask; outside the (softened) mask the paste keeps the pick's own pixels.
+5. **One sword style by a line mask and a reference crop.** A thick line mask from hilt to tip, the reference sword cut
+   out of the approved shot as image 2, no blur fill (the old sword keeps the position and angle), denoise 0.8 and 0.95,
+   four candidates per shot. The result is the same TYPE of sword (a steel hilt, a curved crossguard, a straight blade),
+   not an exact copy — the pommel differs; two candidates drew a gold double guard. The operator accepted it ("perfect").
+   An exact object in every shot would need its own LoRA.
+6. **The edit step takes the LIGHT of its reference images.** A detailed sunrise text gave four correct sunrise poses;
+   the edit step, with the costume design (a night picture) as image 3, turned all four into night and drew a second,
+   ghost face in two. The pose picture itself was used (as for the operator's reference shot), so its face is the pose
+   step's adult profile.
+7. **A new prop is a new pose, not a touch-up.** "The automaton holds a sword and a shield; a camera drone above records
+   the fight" came out right from a new pose text + the edit in one of two candidates (in the other she held the
+   shield).
+
+## 31. Episode 3 clips: own hero texts, short clips, and frames that do not cost the time (2026-11-10)
+
+The clips are Wan 2.2 14B I2V at 1280x704, 16 fps, lightx2v 4 steps, shift 5, a fresh server per clip (§17), each from the
+approved pick.
+- **Own hero texts.** The video prompt of episodes 1–2 describes her with "a matte dark-green wool tunic" and ears "with
+  only a tiny point at the very top" — in Act 3–4 clips that would pull back the errors fixed in §30. Episode 3 has two
+  texts, one per costume, positive words only and no ears; the steady-gaze sentence only where her eyes are seen; no blink
+  words (§25).
+- **Short clips.** Rows where the edit uses only 2–3 s get 49 frames (3.06 s) instead of 81.
+- **Test clips, judged frame by frame:** the tight face close-up (81 frames, 1034 s): the face and the eyes stable, the
+  expression moves naturally from awe to a stunned look, ONE blink at ~1.2 s where the script wants the eyes wide — a
+  second seed is planned. The fight (49 frames, 1135 s): the strike on the shield, the automaton's sword and shield and
+  the drone stay stable. The sunrise run (49 frames, 1085 s): clean. Frame counts checked with ffprobe.
+- **The 49-frame clips took as long as the 81-frame one**, so most of a clip's ~17–19 min is not spent on frames; model
+  loading and moving the two 14B experts' weights are the suspects. A per-phase timeline of one clip is being recorded;
+  the answer is **open** here and goes into the next section once measured.
+- The operator moved better facial expression and more natural motion to episode 4: an A/B there of shift 8, a split
+  sampler (the first high-noise steps without the speed LoRA) and expression words in the motion text, before any
+  clip batch. Frame interpolation 16 -> 32 fps (FILM, native nodes) is part of episode 3.
