@@ -13,9 +13,7 @@ source "$HERE/lib/stubcase.sh"
 # shellcheck source=tests/lib/lifecycle.sh
 source "$HERE/lib/lifecycle.sh"
 # shellcheck source=tests/lib/comfycase.sh
-source "$HERE/lib/comfycase.sh"
-# shellcheck source=lib/comfy_watch.sh
-source "$REPO/lib/comfy_watch.sh"
+source "$HERE/lib/comfycase.sh" # it sources lib/comfy_watch.sh too
 
 # the counts read the call log through cat, so a log that does not exist yet (no call made) counts 0, never an empty string
 stops_of() { cat "$STUB/calls.log" 2> /dev/null | grep -c " wslc stop $1\$"; }
