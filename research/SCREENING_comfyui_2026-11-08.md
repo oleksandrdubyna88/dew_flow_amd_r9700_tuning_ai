@@ -322,3 +322,154 @@ through frame 63 and open again from frame 66 of 81 — the 14B model returns to
 (the Arcane keyframe has open eyes). Fix without another render: frames 0–63 kept and frame 63 held for the last 17 frames
 (the clip keeps its 81 frames, so the narration timing holds). The v2 film and its two voiced versions are checked as
 before (audio from 0.000 s, −21.1 / −21.5 dB). A sleeping shot should start from a keyframe with closed eyes.
+
+## 20. Episode 2's face made to match episode 1 by reference images (2026-11-09)
+
+The operator compared episode 2's Arcane frames with a profile frame of episode 1's Arcane film: the nose and the face
+differ. Cause: each episode-2 keyframe was drawn from text by Qwen-Image and then restyled by the Arcane LoRA, and both
+steps redraw the face. Fix: Qwen-Image-Edit-2511 (fp8, the 4-step Lightning weights merged; 20 GB, sha256 16d03fd9…)
+draws every keyframe directly in the Arcane look, given up to three reference images through `TextEncodeQwenImageEditPlus`
+(image1..3, each scaled by `ImageScaleToTotalPixels`, which needs `resolution_steps`). The references are frames of
+episode 1's Arcane 14B film: a profile (shot 2, frame 8), a front face (shot 2, frame 55) and the whole body (shot 6,
+frame 78); no separate restyle.
+
+- Keyframes 1–7: 30–50 s each (the first loads the model). By eye against the references: the nose, the brows and the face
+  shape match episode 1 in shots 2–6; shot 2 is drawn with closed eyes (the sleep shot, § 19).
+- Shot 7 first drew a six-wheeled cargo truck; with shot 8's truck frame as image3 instead of the body reference
+  (a per-shot reference list) it drew the same four-wheeled military car as shot 8.
+- Clips: Wan 2.2 A14B + lightx2v, the server restarted before every clip (§ 16): 997.3, 1164.4, 1171.6, 1094.9 and
+  1129.5 s for clips 1–5 — about 10–17 % slower than episode 2's first run (1002–1015 s), with the CPU busy with the
+  voice work below during clips 2–5.
+
+## 21. The film's ending, static starts, and the frame rate (2026-11-09)
+
+- **Ending.** When the narration ran past the film, the mixer held the last frame; the operator: "the picture does not
+  move during the whole last phrase". `voiceover.py --end slowmo` now stretches the last shot to end with the narration,
+  motion-interpolated (`minterpolate`, mci/aobmc/bidir): 1.43× (Qwen narration) and 1.51× (VoxCPM). Accepted by the
+  operator: "the video and the sound end together".
+- **No static start.** An advice found online says that image-to-video clips start with 4–8 near-still frames that should
+  be cut. Measured on our six 14B clips (mean |luma step| per frame against the clip's median): the first steps are
+  0.6–1.3× of the median from frame 1, so nothing to cut.
+- **Frame rate.** Wan renders 16 fps. Motion interpolation to 32 fps on the CPU (3.5 min for the 33 s film); the operator:
+  "many times better, almost all the blur is gone", and asked for 60 fps. 60 fps: 693 s on the CPU (shared with a TTS
+  run), 1962 frames, 32.7 s; frames in the fast run at 12 s are clean. `minterpolate` repeats a frame 3 times (0.05 s) at
+  three of the five cuts (its scene-change detection).
+- **Motion pattern.** Inside every 14B clip the per-frame motion alternates large and small steps (about 1.2× and 0.7× of
+  the median), a judder at 16 fps that interpolation smooths.
+
+## 22. Softening the cuts between shots (2026-11-09)
+
+The operator: between the running shots the light and the shadows on her face jump. `transitions.py` "light bridge": for
+the first second of every shot after the first, each RGB channel's mean and spread are pulled toward the previous shot's
+last frame, the weight easing from 1 to 0 (smoothstep); an optional 0.4 s dissolve. Two films for the operator: bridge,
+and bridge + dissolve.
+
+The operator's verdict on both: a freeze of about 0.5 s at every cut (and once between 3 and 4 s). Measured
+(`freeze_scan.py`, steps under 0.15× of the median; `motion_profile.py` per frame): no still and no repeated frames in
+either file, and the motion just after each cut is 0.9–2.1× of the median, as in the film without the bridge. The one
+technical difference found: the bridge films carried no colour tags (the frames were encoded from raw RGB), so a player
+must guess; the encoder now tags bt709/tv. The cause of what the operator saw is not settled; open questions to the
+operator: which player, and whether the film without the bridge freezes too.
+
+## 23. A female narrator (2026-11-09)
+
+The operator asked for a female narration besides the old storyteller. An original voice (no real person's voice):
+VoxCPM2 voice design, "a mature woman in her forties, a warm low velvety voice, calm and slightly mysterious, slow measured
+pace…", three takes of the storyteller's reference sentence, on the CPU while the GPU rendered (612–1069 s per take).
+Scored by `ref_pick.py` (Whisper large-v3-turbo CER, median pitch, length):
+
+| take | length | median F0 | CER |
+|---|---|---|---|
+| 1 | 8.0 s | 160 Hz | 0.000 |
+| 2 | 7.7 s | 190 Hz | 0.000 |
+| 3 | 5.8 s | 223 Hz | 0.000 |
+
+Take 1 (the lowest and slowest) is the reference; the narration is its VoxCPM2 clone at 10 steps (`narrate.py`), on the
+CPU: 745.5 s for the first 5.9 s line (model load included), 298.2 s for the next 5.3 s line.
+
+All six lines took 3620 s on the CPU for 34.4 s of audio. The operator then ruled: no heavy jobs on the CPU (the PC froze
+while TTS and 60 fps interpolation shared the CPU); such work waits for the GPU.
+
+A second female voice by Qwen3-TTS VoiceDesign (same description): takes at 162 / 87 / 163 Hz median F0, all CER 0. The
+first selection rule ("lowest F0 wins", right for the male storyteller) chose the 87 Hz take; 95 % of its voiced frames
+were under 140 Hz, the male storyteller's range (78–112 Hz) — not a female voice. The rule for a female voice is now
+"median F0 ≥ 140 Hz, then the lowest"; the clone from the 162 Hz take speaks at 151–160 Hz (GPU, 60–270 s for 27 s).
+
+## 24. The PC froze after every job: memory flags and the VM memory limit (2026-11-09)
+
+The operator: "configure it so models are not offloaded from the GPU to RAM; read from disk each time instead — 3 s of disk
+read is better than the whole PC freezing for a minute". Measured on one Wan 2.2 14B clip each, Windows counters every
+5–10 s:
+
+| | default | `--fast-disk --disable-pinned-memory` | + VM limited to 20 GB |
+|---|---|---|---|
+| clip time | 1067 s | 1008 s | 991 s |
+| RAM used inside the ComfyUI VM | ~38 GB | ~4.5 GB | ~4.5 GB |
+| Windows' lowest free/available RAM, job end | 51 MB free | 2.3 GB free | 20.6 GB available |
+
+In every mode the GPU freed ~26 GB when a job ended and, within ~30 s, Windows lost ~20 GB of available memory while
+committed bytes went DOWN (standby pages consumed by pages faulted back in): the host was overcommitted (~140–170 GB
+committed on 91.6 GB RAM). The ComfyUI VM held ~42 GB of committed memory it never returned. Two consultants agreed on
+host overcommit as the best-supported cause. Fixes kept:
+- ComfyUI starts with `--fast-disk --disable-pinned-memory` by default (`-RamOffload` restores the old mode).
+- The wslc VM memory: `session: memorySize: 20GB` in the wslc user settings file (`settings.yaml`, template printed by
+  `wslc settings`; the default is half of the RAM). The setting is read when a SESSION is created — a VM that only
+  idles down (30 s without containers) keeps the old size; `wslc system session terminate` (between jobs) applies it.
+  The model volumes survive it. Training jobs raise it to 40 GB and set it back.
+
+## 25. One face in every shot: from face swap to reference keyframes (2026-11-09)
+
+The operator approved one face (frames 76/80 of episode 2 v3's sleep shot: "this face everywhere") and wanted it in every
+Arcane shot ("after 10 s she ages ~30 years"). What was tried with Qwen-Image-Edit-2511 (each round 2–4 seeds per shot,
+picked by eye):
+1. Naming the forehead in the prompt ("no mark, no jewel, no pin") DREW a circlet, a jewel or a pin; "golden strands
+   from the temples" became wires. The pin was in the REFERENCE frames themselves (episode 1's Arcane frames); the edit
+   model copied it. Fix: fill it in the references (`clean_refs.py`, row by row with the skin beside it).
+2. "grim cold desaturated colours" aged her and turned the green tunic black; the cold went into the scene's light only.
+3. The enlarged face crop as image 1: the model copied its composition (a lying close-up) into every scene — **Qwen-Image-
+   Edit builds the picture on image 1.** Image 1 must be the body/composition, the face references images 2–3.
+4. A face swap (the old keyframe as image 1, "change only the face") drew extra people and cartoon faces — rejected.
+5. Image 1 = the approved test keyframe (the face, the tunic, the whole body), "take only the woman from image 1, not its
+   background, exactly one woman", the scene in words (+ "warm summer day, no snow" for episode 1): right in nearly all
+   shots. Episodes 1 and 2 were re-rendered this way (Arcane ep2 v4: v3 shots 1–2 kept, 3–7 and a new shot 9 new; ep1:
+   all six shots); the realistic episode 2 used the same method with episode 1's realistic keyframes as references.
+
+Also: a sentence "she blinks naturally now and then" made her blink again and again (removed); a shot without an entry in
+a per-shot table failed with KeyError and an old clip was joined silently (the joiner now has a fallback); files written by
+the container are root-owned — moving them from WSL failed silently; they are moved inside a container.
+
+## 26. Eyes: the sampling steps do not help, the seed does (2026-11-10)
+
+The operator: "the eyes still jump sometimes; the eyes are the main thing". Episode 1 shot 2 (the face close-up) three
+ways, judged by eye on enlarged consecutive frames 0–23: A = a new seed, 4 steps (1112 s); B = the same seed, 8 steps
+(1283 s); C = B + a sentence about steady eyes (1261 s). A was the steadiest. B and C FLICKERED the iris colour (green
+in frame 0, amber in frames 1–7, green again); the sentence did not help. Method kept: face shots at 4 steps, 2–3 seeds,
+the steadiest kept by eye. Two automatic jitter scores (a skin-colour face box; kornia's YuNet eye points) both failed
+their own check on a known pair and are not used.
+
+## 27. A character LoRA on Qwen-Image (2026-11-09/10)
+
+musubi-tuner (kohya-ss, commit f8a1b03; installed with the operator's approval into its own volume, venv over the image's
+ROCm torch 2.13 with the ROCm constraints file) trained LoRAs of the approved character on Qwen-Image (bf16 DiT 40.9 GB +
+the bf16 Qwen2.5-VL 7B text encoder 16.6 GB, both fetched with pinned sha256): `--fp8_base --fp8_scaled --blocks_to_swap
+8`, adamw, dim/alpha 16, lr 5e-5, 1024x576 buckets, the VM at 40 GB.
+- v1: 32 pictures (keyframes, clip frames, the face references, 10 generated portraits) x 4 repeats x 16 epochs = 2048
+  steps, 4.57 s/step, 2 h 36 min, loss 0.124 -> 0.091.
+- v2 (the operator: keep v1, try softer features): 22 pictures (16 picked from LoRA v1 at 0.6 + "soft delicate facial
+  features", the face references, 4 portraits; the captions do not name the softness) x 4 x 8 epochs = 704 steps, ~54 min.
+Tested text-only on Qwen-Image-2512 fp8 + Lightning (no reference images), seed 4242, 4 scenes: a LoRA trained on the
+original Qwen-Image loads on 2512 with no unloaded keys. Without a LoRA: a different generic girl. v1: the same character
+in every scene, stricter features; strength 0.5–0.7 brings back the base model's softness while keeping the look. v2:
+softer, warmer faces; wavier hair and a fainter golden strand. The operator: the base model's faces are prettier, v1 is
+"also very interesting" — both kept.
+
+## 28. Episode 3 script, the ComfyUI image, workflows (2026-11-09/10)
+
+- Episode 3 ("The Castle"): the operator's story as a 22-clip shot list (~85–95 s), reviewed with two consultants: her eyes
+  only in tight close-ups or far away, every keyframe already in its final state (eyes, hands on the grips, boots off the
+  floor), one motion per clip, long camera moves as several clips with motivated cuts or first-last-frame clips, the
+  pupil dive as two clips plus a zoom in the edit, her voice recorded first, no lip-sync shots, original designs only.
+- The ComfyUI image (27.3 GB: the ROCm/PyTorch base, ComfyUI v0.44.0, the entrypoint; audited: no secrets, no personal
+  paths; models and the data volume are not in it) was pushed to the GitHub Container Registry (1407 s).
+- The pipelines were exported as ComfyUI UI workflows (`ui_workflows.py`: the drivers' API graphs converted with the widget
+  order read from the live `/object_info`, titled nodes, an explaining note).
