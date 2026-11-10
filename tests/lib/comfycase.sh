@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared by tests/test_comfy.sh and tests/test_comfy_start.sh (E1.S2): the stub world of the ComfyUI verb and the helpers that read what it left. Sourced after tests/lib/assert.sh,
-# stubcase.sh and lifecycle.sh; no t_ function in it. It builds on tests/lib/runcase.sh (the run, kernels, series and MoE setups of the verbs under the supervisor) and sources lib/comfy.sh, lib/comfy_bench.sh and lib/comfy_bench_verb.sh (E2.S3: the mode `bench`).
+# stubcase.sh and lifecycle.sh; no t_ function in it. It builds on tests/lib/runcase.sh (the run, kernels, series and MoE setups of the verbs under the supervisor) and sources lib/comfy.sh, lib/comfy_bench.sh, lib/comfy_bench_verb.sh (E2.S3: the mode `bench`) and lib/comfy_watch.sh (2026-11-10: the modes `guard` and `timeline`).
 #
 #   comfy_setup <name>      lc_setup, the readiness answer `ok`, the three default volumes present as files below $STUB/volumes
 #   comfy <args...>         `bin/r9700 comfy <args...>` as a user runs it (the config variables of this test shell are not handed on)
@@ -24,6 +24,8 @@ source "$REPO/lib/comfy.sh"
 source "$REPO/lib/comfy_bench.sh"
 # shellcheck source=lib/comfy_bench_verb.sh
 source "$REPO/lib/comfy_bench_verb.sh" # the mode `bench` is defined here: comfy_modes derives the legal modes from the functions comfy_mode_<mode>
+# shellcheck source=lib/comfy_watch.sh
+source "$REPO/lib/comfy_watch.sh" # the modes `guard` and `timeline` (2026-11-10): bin/r9700 sources it, so the legal modes a test derives must include them
 
 comfy_setup() {
   lc_setup "$1"

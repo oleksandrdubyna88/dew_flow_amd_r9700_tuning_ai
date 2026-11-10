@@ -644,6 +644,16 @@ t_every_line_of_the_real_models_conf_is_well_formed() {
   assert_contains "$(grep 'z_image_turbo_bf16.safetensors' "$conf")" "2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6" "parity row: the pin of z_image_turbo_bf16.safetensors"
   assert_contains "$(grep 'Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors' "$conf")" "79290493711b022e1c6e655d803715cd8a91a75cdb139856cad46f354e2f681c" "parity row (E2.S2): the pin of the FastWan LoRA, the X-Linked-ETag read once on 2026-11-08"
   assert_eq "wan5b loras" "$(grep 'Wan2_2_5B_FastWanFullAttn_lora_rank_128_bf16.safetensors' "$conf" | awk '{ print $1, $2 }')" "the LoRA line is in the loras folder of the wan5b set"
+  # parity rows (2026-11-10): the five pins of the audio and film sets, each with its set and folder, as read from the sources' X-Linked-ETag that day
+  local row
+  for row in "audio checkpoints ace_step_1.5_turbo_aio.safetensors 67b0f43aa5c51c840bd0228e6a935d8ff416ec87e5df2fc0637da17a561252bc" \
+    "audio text_encoders t5gemma_b_b_ul2.safetensors 1e1eba25be8872edb0d3c6335c6658fd6388e7b14b60da6e454e404cfcd8150e" \
+    "audio text_encoders qwen3.5_2b_bf16.safetensors aa33250c4fc64891ddfaba3a314fd9542ea371843c387178b425fbcc5ed680b1" \
+    "audio checkpoints stable_audio_3_medium.safetensors 48d9c65e290e7bcd5194e0633bfc2424a59ee9683f5c2d58762d997b7d8ce0b5" \
+    "film frame_interpolation film_net_fp16.safetensors f226e51375dc839d4b40e5c3d63da560dd1ea1c962364ec78f5adf2d05db05c0"; do
+    read -r set dir url sha <<< "$row" # url holds the file name here
+    assert_eq "$set $dir $sha" "$(grep -F "/$url " "$conf" | awk '{ print $1, $2, $4 }')" "parity row: $url is in the $dir folder of the $set set with its pin"
+  done
   assert_eq "$n" "${#_COMFY_M_SHA[@]}" "the parse read every line"
 }
 
