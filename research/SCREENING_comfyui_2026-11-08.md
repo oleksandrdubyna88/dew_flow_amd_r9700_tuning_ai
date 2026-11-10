@@ -602,9 +602,11 @@ frames both times; the later rows hold clips of 49 and 81 frames):
 | episode 3, shots 8–23 (MIOpen on) | 319–345 s each |
 | the rerolls of episode 3 (MIOpen on, §34) | 341–359 s each |
 
-About three times faster per clip. The other phases (loading, the two samplers) also looked faster, about 25 % by the
-operator's estimate; that figure is NOT a measurement here, because the phases were not timed again with MIOpen on,
-and a wall time per clip also holds the server start. The question why the same decode took ~700 s in the clips and
+About three times faster per clip, and ALL of it is the decode. The phase timeline of two 81-frame clips, one before
+the change (shot 5) and one after it (shot 8), shows the two samplers unchanged: high-noise 2 steps 79 s and
+low-noise 2 steps 79 s in both (each with its model load); the prompt took ~1000 s before and 347.8 s after. (A
+first estimate of "~25 % faster sampling" compared the 49-frame shot 1 with an 81-frame clip — fewer frames sample
+faster — and was wrong; the same-length comparison corrects it.) The question why the same decode took ~700 s in the clips and
 70–95 s in the sweep of 2026-11-07 was not tested further (the start settings of that sweep are not kept here): with
 MIOpen on the decode is back at the sweep's level.
 
