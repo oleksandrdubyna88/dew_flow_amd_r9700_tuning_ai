@@ -8,7 +8,7 @@
 #       every 5 s one read of Windows' available MBytes; below <n> (default 6000) it stops the ComfyUI container (the job dies, the PC survives) and waits
 #       60 s before the next read. A read that is not an integer is a miss; THREE misses in a row are unsafe and stop the container too: nothing counts an
 #       unreadable value as fine. It ends when <file> exists or after <s> seconds (default 86400): a queue script touches the file when it is done. A stop
-#       that failed (or a container list that could not be read) is one stderr line; the guard keeps watching and tries again at the next unsafe read, and
+#       that failed (or a container list that could not be read) is one stderr line; the guard tries again at the next tick, without the 60 s wait, and
 #       its end is then exit 1 with a line saying so, so a stop that never took is not reported as a guarded run. The first read and every 20th are
 #       printed. It never STARTS ComfyUI: a restart would bring back the pressure that fired it, and the job queue starts its own ComfyUI per job. Found
 #       2026-11-10: two big image models switched inside one server under a 20 GB VM filled the host's write cache within minutes and took WSL down
@@ -94,17 +94,21 @@ comfy_mode_guard() {
       misses=0
       if [ $((reads % _COMFY_GUARD_PRINT_EVERY)) -eq 0 ]; then _comfy_say guard "$(date -u +%TZ) available $mb MB"; fi
       reads=$((reads + 1))
+      # a stop that worked waits out the cool-down; a stop that failed is tried again at the next tick: the memory is still low
       if [ "$mb" -lt "$min" ]; then
-        _comfy_guard_stop "available $mb MB < $min MB" || failed=1
-        sleep "$cool"
+        if _comfy_guard_stop "available $mb MB < $min MB"; then sleep "$cool"; else failed=1; fi
       fi
     else
       misses=$((misses + 1))
       _comfy_say guard "$(date -u +%TZ) telemetry unreadable ($misses of $_COMFY_GUARD_MISSES)"
       if [ "$misses" -ge "$_COMFY_GUARD_MISSES" ]; then
-        _comfy_guard_stop "telemetry unreadable $_COMFY_GUARD_MISSES times" || failed=1
-        misses=0
-        sleep "$cool"
+        if _comfy_guard_stop "telemetry unreadable $_COMFY_GUARD_MISSES times"; then
+          misses=0
+          sleep "$cool"
+        else
+          failed=1
+          misses=$((_COMFY_GUARD_MISSES - 1)) # the next unreadable read tries the stop again
+        fi
       fi
     fi
     sleep "$tick"

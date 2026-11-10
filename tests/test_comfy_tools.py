@@ -92,6 +92,11 @@ def test_the_repaint_graph_samples_only_the_mask_and_pastes_onto_the_untouched_p
     rc, out, err = tool("masked_repaint", "graph", spec_file(tmp_path, reference=str(picture(tmp_path / "ref.png"))))
     graph = json.loads(out)
     assert graph["pos"]["inputs"]["image2"] == ["scale2", 0] and graph["ref2"]["inputs"]["image"] == "repaint_pic1_reference.png", "a reference is image 2"
+    assert (graph["sampler"]["inputs"]["steps"], graph["sampler"]["inputs"]["cfg"], graph["shift"]["inputs"]["shift"]) == (4, 1.0, 3.1), "the 4-step defaults"
+    rc, out, err = tool("masked_repaint", "graph", spec_file(tmp_path, steps=20, cfg=4.0, shift=3.0))
+    graph = json.loads(out)
+    assert (graph["sampler"]["inputs"]["steps"], graph["sampler"]["inputs"]["cfg"], graph["shift"]["inputs"]["shift"]) == (20, 4.0, 3.0), \
+        "a model that is not a 4-step one gets its own schedule from the spec"
 
 
 # TL3
@@ -106,6 +111,10 @@ def test_the_repaint_graph_samples_only_the_mask_and_pastes_onto_the_untouched_p
     ({"prompt": " "}, "prompt is a non-empty text"),
     ({"name": "../x"}, "name is 1-64 letters"),
     ({"models": {"lora": "x"}}, "models is an object with any of unet, clip, vae"),
+    ({"output_prefix": "../x"}, "output_prefix is folder/name words"),
+    ({"output_prefix": "a//b"}, "output_prefix is folder/name words"),
+    ({"steps": 0}, "steps is a whole number 1-200"),
+    ({"cfg": -1}, "cfg is a number 0-30"),
 ])
 def test_a_bad_spec_is_refused_with_one_line_naming_the_problem(tmp_path, override, says):
     rc, out, err = tool("masked_repaint", "graph", spec_file(tmp_path, **override))
@@ -150,6 +159,7 @@ def test_run_prepares_the_pictures_and_queues_one_prompt_per_seed(server, tmp_pa
     graphs = recorded(port)
     assert [g["sampler"]["inputs"]["seed"] for g in graphs] == [11, 12] and [g["save"]["inputs"]["filename_prefix"] for g in graphs] == ["rp_pic1_1", "rp_pic1_2"]
     assert out.count("masked_repaint: pic1 candidate ") == 2 and "rp_pic1_1_00001_.png" in out, out
+    assert out.count("masked_repaint: queued prompt ") == 2, f"each prompt says it was queued, with its id, before the wait: {out}"
     from PIL import Image
     pick, fill = Image.open(inputs / "repaint_pic1_pick.png"), Image.open(inputs / "repaint_pic1_fill.png")
     assert pick.getpixel((100, 50)) != fill.getpixel((100, 50)), "inside the mask the fill is the blur: the colour edge at x 100 is smeared"
@@ -180,6 +190,19 @@ def test_a_refused_prompt_an_execution_error_and_the_ceiling_each_end_with_one_l
 def test_a_picture_that_cannot_be_read_is_one_line(tmp_path):
     rc, out, err = tool("masked_repaint", "preview", spec_file(tmp_path, picture=str(tmp_path / "missing.png")), "--out", tmp_path / "p.png")
     assert rc == 1 and err.startswith("masked_repaint: FILE: ") and err.count("\n") == 1, err
+    rc, out, err = tool("masked_repaint", "graph", spec_file(tmp_path), "--seed-index", 2)
+    assert (rc, err) == (1, "masked_repaint: SPEC: --seed-index is 0-based: 0..1 for 2 seeds (candidate n is seed index n-1)\n"), err
+
+
+# TL13
+def test_a_server_that_cannot_be_reached_is_one_network_line_never_a_traceback(tmp_path):
+    import socket
+    with socket.socket() as probe:  # a port that was free a moment ago and is closed now: nothing listens there
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    rc, out, err = tool("masked_repaint", "run", spec_file(tmp_path), "--input-dir", tmp_path / "in", port=port)
+    assert rc == 1 and err.startswith(f"masked_repaint: NETWORK: http://127.0.0.1:{port}/prompt: ") and err.count("\n") == 1, err
+    assert "Traceback" not in err
 
 
 # TL9
@@ -219,6 +242,9 @@ def test_the_sheets_have_the_sizes_frames_and_grid_they_promise(tmp_path):
     assert marked.getpixel((320, 400)) == (255, 30, 30), "the frame's left edge at x = 0.25 x 1280"
     rc, out, err = tool("sheets", "crops", tmp_path / "x.png", f"{a}:0.5,0,0.4,1")
     assert (rc, err) == (1, f"sheets: a box is four fractions 0-1 with x0 < x1 and y0 < y1; got '0.5,0,0.4,1'\n")
+    rc, out, err = tool("sheets", "contact", tmp_path / "big.png", *[tmp_path / f"p{i}.png" for i in range(201)])
+    assert (rc, err) == (1, "sheets: at most 200 pictures per sheet (one canvas holds them all); got 201: split them\n"), \
+        "refused before a picture is opened (none of the 201 exists)"
 
 
 # TL11

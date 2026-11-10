@@ -92,17 +92,19 @@ t_the_guard_ends_at_its_ceiling_or_at_its_file_and_reads_again_at_its_tick() {
 }
 
 # CW10
-t_a_stop_that_fails_is_tried_again_and_the_guard_ends_with_1_saying_it_did_not_hold() {
+t_a_stop_that_fails_is_tried_again_at_the_next_tick_and_the_guard_ends_with_1_saying_it_did_not_hold() {
   comfy_setup "$FUNCNAME"
   comfy_listed
-  printf '1\n' > "$STUB/stop-fail-comfyui"
+  printf '100\n' > "$STUB/stop-fail-comfyui" # every stop of the run fails (the stub's count)
   printf '2000\n' > "$STUB/answers/ram"
-  assert_exit 1 "comfy guard" -- comfy guard --max-s 2
+  assert_exit 1 "comfy guard" -- comfy guard --max-s 3
   assert_contains "$ERR" "available 2000 MB < 6000 MB; the stop of comfyui failed (code 1): stub: stop failed (scripted): comfyui" "the failed stop is one line with the engine's text"
   assert_contains "$ERR" "r9700: comfy: guard: a stop of comfyui failed during this run (the lines above): the guard did not hold" "the end says the guard did not hold"
-  assert_contains "$OUT" "comfy: guard: off: the ceiling of 2 s" "the off line still comes"
-  # last: assert_exit replaces OUT and ERR with the output of its own command
-  assert_exit 0 "it tried again after the cool-down" -- test "$(stops_of comfyui)" -ge 2
+  assert_contains "$OUT" "comfy: guard: off: the ceiling of 3 s" "the off line still comes"
+  # last: assert_exit replaces OUT and ERR with the output of its own command. A failed stop is retried at the next tick, not after the cool-down: measured
+  # 2026-11-10 in 3 s, 9 attempts this way and 3 with the cool-down after a failed stop; 6 parts the two with room for a loaded runner
+  assert_exit 0 "it tried again at the next tick" -- test "$(stops_of comfyui)" -ge 6
+  assert_exit 0 "comfyui is still listed (no stop worked)" -- alive comfyui
   kill_recorded_pids "$CASE"
 }
 

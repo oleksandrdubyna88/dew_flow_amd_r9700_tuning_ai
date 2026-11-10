@@ -15,6 +15,7 @@ import sys
 TILE_HEIGHT_RATIO = 9 / 16  # a contact-sheet cell is 16:9, like the clips
 GRID_LABEL_EVERY = 5
 MARK_WIDTH = 1280
+MAX_PICTURES = 200  # one canvas holds every tile: 200 at the default 512 px is about 0.5 GB of RGB, more is refused before a picture is opened
 
 
 class SheetError(Exception):
@@ -62,6 +63,8 @@ def _row(tiles, out):
 
 
 def contact(out, pictures, cols, tile_width):
+    if len(pictures) > MAX_PICTURES:
+        raise SheetError(f"at most {MAX_PICTURES} pictures per sheet (one canvas holds them all); got {len(pictures)}: split them")
     from PIL import Image, ImageDraw
     tile_height = int(tile_width * TILE_HEIGHT_RATIO)
     rows = (len(pictures) + cols - 1) // cols

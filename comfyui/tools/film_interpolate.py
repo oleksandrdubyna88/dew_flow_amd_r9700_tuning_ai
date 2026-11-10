@@ -67,7 +67,7 @@ def main(argv=None):
         graph = build_graph(name, args.prefix, args.multiplier, args.fps, args.input_fps)
         os.makedirs(args.input_dir, exist_ok=True)
         shutil.copyfile(args.video, os.path.join(args.input_dir, name))
-        seconds, files = run(graph, args.ceiling_s)
+        seconds, files = run(graph, args.ceiling_s, say=lambda text: print(f"film_interpolate: {text}", flush=True))
         print(f"film_interpolate: {args.video}: {seconds:.1f} s -> {', '.join(f['filename'] for f in files) or 'no file'}")
     except ToolError as error:
         print(f"film_interpolate: {error}", file=sys.stderr)
