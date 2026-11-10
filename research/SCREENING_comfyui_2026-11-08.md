@@ -553,3 +553,163 @@ approved pick.
 - The operator moved better facial expression and more natural motion to episode 4: an A/B there of shift 8, a split
   sampler (the first high-noise steps without the speed LoRA) and expression words in the motion text, before any
   clip batch. Frame interpolation 16 -> 32 fps (FILM, native nodes) is part of episode 3.
+
+## 32. MIOpen is off by default in ComfyUI on this GPU: the VAE decode took two thirds of every 14B clip (2026-11-10)
+
+The open item of §31. A per-phase timeline of one Wan 2.2 14B clip (`bin/r9700 comfy timeline`, the time a log line
+first appears) showed where the ~17 min of a clip went. One clip, 81 frames before the change (prompt executed in
+16 min 39 s):
+- the server was up 16 s after the container start (ComfyUI-Manager fetches its node lists for ~2.5 min per restart,
+  but in the background — it does not block a prompt);
+- text encoder and VAE load: ~30 s;
+- high-noise expert, 2 steps: ~2 min; low-noise expert, 2 steps: ~2 min;
+- **VAE decode: 11.7 min** (of the 16 min 39 s).
+
+So the time was not in the frames, and that is why the 49-frame clips of §31 took as long as the 81-frame one. The
+sweep of 2026-11-07 had measured the decode alone at 70–95 s; the new memory flags and the tile setting were the first
+suspects.
+
+**Cause (read in the code).** ComfyUI's `model_management.py` sets `torch.backends.cudnn.enabled = False` on this GPU
+("for better AMD performance", it says in the log) unless the environment has `COMFYUI_ENABLE_MIOPEN=1`. The video
+VAE is made of 3D convolutions; with the switch off they run without MIOpen. The comfy-cache volume held only a 20 KB
+MIOpen user kernel database from 2026-11-07 and no find database.
+
+**Test without sampling again.** The clip driver now saves the latent (SaveLatent), and a small driver decodes a saved
+latent with VAEDecodeTiled and times it. The latent of one shot (s07), decoded with MIOpen on:
+
+| decode of one saved latent | time |
+|---|---|
+| in the normal clip, MIOpen off | ~700 s |
+| MIOpen on, tiles 512/64, temporal 32/8 (production tiles), first run: VAE load + kernel search | 78.3 s |
+| MIOpen on, tiles 512/16, temporal 64/4 | 39.4 s |
+
+The picture is the same: PSNR 45.78 dB against the normal clip's decode (the limit set before the test was 35 dB).
+The decode is ~9 times faster.
+
+**Trap: the cache.** The second run of the production tiles was logged as 4.0 s. That is NOT a measurement: an
+identical graph run twice is answered by ComfyUI's cache of the first result, and nothing is decoded. The decision
+rests on the first run (78 s against ~700 s). To time a graph twice, change a value in it (a seed, a tile size).
+
+**Result.** The operator's start script now turns MIOpen on by default (an opt-out switch keeps the old behaviour).
+The MIOpen kernel database lives in the comfy-cache volume, so it survives container restarts: it grew from 20 KB to
+200 KB in the first runs. Wall times per clip (shot 1 is the same shot with 49
+frames both times; the later rows hold clips of 49 and 81 frames):
+
+| clip | wall time per clip |
+|---|---|
+| shot 1 before (MIOpen off) | 1093 s |
+| shot 1 again, new keyframe (MIOpen on) | 367 s |
+| episode 3, shots 8–23 (MIOpen on) | 319–345 s each |
+| the rerolls of episode 3 (MIOpen on, §34) | 341–359 s each |
+
+About three times faster per clip. The other phases (loading, the two samplers) also looked faster, about 25 % by the
+operator's estimate; that figure is NOT a measurement here, because the phases were not timed again with MIOpen on,
+and a wall time per clip also holds the server start. The question why the same decode took ~700 s in the clips and
+70–95 s in the sweep of 2026-11-07 was not tested further (the start settings of that sweep are not kept here): with
+MIOpen on the decode is back at the sweep's level.
+
+## 33. The RAM guard: a restart makes a harmless spike, so one low reading is not a crisis (2026-11-10)
+
+The guard of §29 stopped the ComfyUI container when Windows' available memory fell below 6 GB in ONE reading. During
+the episode 3 clip run it fired on healthy jobs. A sample of available memory and the "modified" page list every
+10 s (during the post-production run of §34) shows why:
+
+(a) **Every container stop between two clips is a short spike.** Windows holds the VM's memory as "modified" pages
+for ~10 s: the modified list jumped from ~9 GB to ~35 GB (35 060 MB in the first dip sampled, 35 343 MB in a later one) while the available memory fell from ~23 GB to 3.5 GB (3532 MB, the lowest sample), and one sample
+(11 s) later 38 GB were free again. The two stops of that evening (4241 MB and 4373 MB available) were dips of this size. The crises of §24 and §29 were
+different: sustained, below 150 MB.
+
+(b) **Two low readings in a row (~10 s) are needed to stop.** One low reading is logged ("one low reading … waiting for
+a second") and forgotten when the next one is fine. Since the change two single low readings at clip restarts (5272 MB
+and 3372 MB) were correctly not stopped, and no guard stop came after it.
+
+(c) **Two bugs in the hand scripts, found because a run ended early after one clip:**
+1. *A shared stop file left older guards running.* A new guard deletes the stop file at its start, so an older guard
+   kept running beside it; one of those fired (4373 MB available, one clip-end dip) in the middle of a run. Fix: the guard
+   takes the stop file as an argument, each run uses its own file and a trap that ends its guard when the run ends.
+   Result: no leftover guard in the runs after it (guard log: one "on" per run).
+2. *A check read stale `GUARD STOP` lines.* The run script asked "did the guard stop ComfyUI?" by looking for the
+   words in the shared guard log, found a stop from 18:36 and ended the run after its first clip as if the guard had just
+   fired. Fix: the check counts only the stops written since its own run began. Result: the restarted run went through
+   to its end. The older clip-run script has the same pattern and is to be fixed before it is used again.
+
+The limit was kept at 6000 MB with the two-readings rule (it was lowered to 3500 MB for one restart as a stop-gap and
+put back).
+
+**Follow-up (open, a code change, NOT part of this change of the record):** the repository's own `bin/r9700 comfy
+guard` mode (`lib/comfy_watch.sh`) still stops on ONE low reading below its limit (and after three unreadable reads).
+It should get the same two-readings logic, with a test (a single low reading is logged, two in a row stop), and
+`research/module_comfyui.md` and `research/module_tests.md` (the CW cases) should say so.
+
+## 34. Episode 3 post-production: rerolls, a song picked by speech recognition, a mixer bug, loudness-based mixing (2026-11-10)
+
+All 23 clips of episode 3 were done (from shot 8 on with MIOpen, 319–345 s each; §32) and every one was reviewed on frame
+sheets. Good as they were: shots 2, 3, 5, 7, 9, 12–19, 22, 23 and the new shot 1. Faults and what was done:
+
+**Rerolls** (a second clip of the same shot, new seed or new text; the label of the clip is a letter after the shot):
+- *Shot 1 went the wrong way.* The first clip (1093 s) drove the vehicle OUT of the castle toward the camera. The
+  keyframe showed its front ("with its headlights on" was in the prompt). The shot text now says "seen from behind, the
+  rear and red tail lights to the camera, the front toward the open gate" (positive words, §30), four new keyframes
+  were made, and the new clip (367 s) drives into the lit gate.
+- *Shot 6* (one blink at ~1.2 s where the script wants the eyes wide): the reroll was clean.
+- *Shot 10: she walks instead of floating.* The reroll walks again. The KEYFRAME shows her in the middle of a step, and
+  an image-to-video clip continues the pose of its first frame whatever the text says. Only a new keyframe with her
+  floating fixes it (the operator's option); the film keeps the first clip.
+- *Shot 11: one eye closes briefly.* The reroll winks at ~3.6 s. It was handled by trimming: the shot is cut to 0–3.3 s,
+  and the picture is 1.7 s shorter (91.0 s → 89.3 s).
+- *Shot 20: the eyes close twice during the angry line.* The reroll has one frustrated eye-close, then open.
+- *Shot 21: flames burn on the edges of the rug.* This keyframe had never been through the masked repaint of §30. It was
+  repainted ("fur in soft shadow" in the prompt, clean), and the clip text now names "a small campfire on the grass
+  beside the rug". The reroll shows two small fires on the ground beside the rug, not on it.
+- *Shot 8:* the sword shrinks to a dagger after ~2.6 s; the shot is cut to 0–2.6 s.
+
+**The song chosen by speech recognition.** Three songs were generated for the sung line and each was transcribed with
+Whisper and compared with the lyric: character error rate 0.09, 0.41 and 0.80. Song 1 (0.09) is in the film; the
+sung words are the lyric.
+
+**A mixer bug, found because the run said "done" and the mix had failed.** The first post-production run ended with
+"POST DONE" after a traceback. The mixer (`ep3_edit.py`) gave each sound file an ffmpeg input number taken from the
+length of the argument list, which also holds option words (`-y`, `-v`, `-threads`, …), so the filter graph pointed at
+inputs that did not exist and ffmpeg refused it. Fix: a counter of the inputs. The run script had printed "POST DONE" although its
+last step had failed (the failure was found in the log, not from the end line; a failed step must stop the run, as in
+§18), and the mixer gained `--reuse-picture` and a `timeline.json` so
+that a mix can be redone without building the picture.
+
+**Loudness-based mixing.** The first complete film (v1: 91.0 s, 1280x704 at 32 fps) measured −16.1 LUFS in total, but its
+loudness range (LRA) was 15.8 LU: all of Act 2 was nearly silent. The cause: the generated files differ by ~30 LU
+(measured with ebur128): the glade bed −32, the hall tone −44, the float hum −35.5, the music −13 LUFS. A mix with
+fixed per-event gains cannot be right for files that far apart. The mixer now measures each file and brings it to the
+target of its KIND before any tweak: voice −18, effect −18, bed −28, music −24 (before it is ducked under the voice); the
+per-event factors are only relative tweaks (beds and music 1.0). Act 2 also got the hall tone as a bed, the float hum at
+0.9 and a new music piece (a glassy chord over a drone).
+
+**Result (v2, the operator's review copy):** 89.3 s (89.31 s), 1280x704 at 32 fps (FILM, §31), −16.3 LUFS, LRA 5.6 LU
+against 15.8 LU in v1.
+
+## 35. Episode 1 v3 and the episode 2 upgrade: keyframe re-check, a masked face repaint, MIOpen clips, a new sound design (2026-11-10)
+
+**Episode 1: the keyframes were re-checked with the rules of §30.** Contact sheets of the six picks showed: shots 2, 3
+and 5 good; shot 6 with normal ears (good); shot 4 with a POINTED ear; and shot 1 a pose picture with an OLDER, harder
+face than the character's (the consistency problem of §25). The clip text of episode 1 described the ears with "a tiny
+point" (the old hero text of §31); it now uses episode 3's hero text.
+
+**A masked repaint of any picture** (one driver, two modes) with the masks previewed in red before any GPU time:
+- *ear:* the hair-only prompt ("hair falls smoothly over the side of her head") with the blur fill of §30, the box kept
+  off the cheek. Two candidates: the first a blurry patch, the second clean hair — the second was chosen.
+- *face:* the young face of the approved shot as **reference image 2**, NO blur fill (the old face keeps its position
+  and angle), denoise 0.75. Two candidates: the first startled with eyes too wide, the second her young face, calm —
+  the second was chosen. Each repaint took 9–34 s (the first of each mode was the slower).
+
+**The clips with MIOpen:** the four approved shots (2, 3, 5, 6) took 339.9–341.0 s each (§32), all good: shot 3 shows
+real fear with the scripted flinch, shot 6 she sinks down exhausted. Shots 1 and 4 are NOT yet animated: they wait for
+the operator's look at the two repaints (and an agreed test of shift 8 on shot 4). Four clips were interpolated from 16
+to 32 fps (FILM, 17–20 s each). The episode's sound (seven sound files, the narration of six lines) and its
+edit list (33.5 s in all, a hard cut of all effects and music at the last shot, a cave echo on the last line) are
+ready; the film itself waits for those two clips.
+
+**Episode 2 upgrade (no new clips).** Both approved versions of episode 2 (the Arcane-style one and the realistic one,
+nine clips each) got: FILM interpolation of all 18 clips from 16 to 32 fps (17–20 s each), a new sound design — nine
+shot effects and a music bed — and the music bed ducked under the narrator's eight lines, with the loudness targets of
+§34. The whole run took 8 min (22:43 to 22:51, the guard of §33 never stopped it). Both films measure the same:
+**45.28 s, −16.3 LUFS, LRA 4.0 LU, 32 fps**; the narration ends at 43.63 s, so the slow-motion end of §21 was not
+needed.
