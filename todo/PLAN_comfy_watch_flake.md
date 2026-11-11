@@ -32,29 +32,32 @@ A slow runner makes this more likely, but it is not the root cause. The timeline
 
 ## Build order
 
-1. **Red first.** A test that starts the guard just before a second boundary: wait until the sub-second part of
-   `date +%s.%N` is above 0.95, then start `comfy guard --max-s 1`. It must fail at least 9 of 10 times on the current
-   code. Record the counts.
-2. **The fix, one of two (decided by the red test's evidence):**
-   - (a) the ceiling counts ticks or uses a clock with sub-second resolution (`date +%s%N`), so `--max-s 1` means a
-     full second; or
-   - (b) the tests that need N reads stop the guard by reads, not by time: the `--until <file>` the guard already
-     has (`lib/comfy_watch.sh:7`), written by the stub after the third read.
-
-   (a) also fixes the real ceiling's up-to-one-second early end. (b) changes only the tests.
-3. **Green**, then **red again**: put the old line back and check that the new test fails.
-4. The same check for the timeline mode's loop (`lib/comfy_watch.sh:145`).
+1. **A clock the test controls.** The ceiling reads its clock through one small helper in `lib/comfy_watch.sh`
+   that a test can override (an environment variable naming a stub clock, the way `R9700_TIME_SCALE` already
+   bends the sleeps). The default is the real clock. No busy wait on wall time, and no `date +%N`, which BSD
+   `date` does not have (the plan round, 2026-11-11).
+2. **Red first.** With the stub clock, start the guard 0.01 s before a second boundary of ITS OWN clock and run
+   `comfy guard --max-s 1` with the test's two unreadable reads. On the current code it must end after one read
+   (it prints `(1 of 3)`, not `(2 of 3)`), every time. Record that.
+3. **The fix in the guard itself:** the ceiling counts elapsed time with sub-second resolution (or counts ticks),
+   so `--max-s 1` lasts a full second. A test-only workaround (stopping by `--until`) is not enough: in real use
+   a `--max-s N` watch can end up to one second early.
+4. **Green**, then **red again**: put the old ceiling line back and check that the new test fails.
+5. The same for the timeline mode's loop (`lib/comfy_watch.sh:145`).
 
 ## Test plan
 
-- The new boundary test: red on the old code at least 9 of 10 times, then green 20 of 20.
+- The new boundary test: red on the old code every time (it uses the stub clock, so it is deterministic), green
+  after the fix.
 - `tests/test_comfy_watch.sh` 20 times in a row under the bounded CPU burners of the earlier load-flake work
-  (`research/PLAN_r9700_acceptance_followups.md`, item 4): 0 failures.
+  (`research/PLAN_r9700_acceptance_followups.md`, item 4): 0 failures. Each run uses the suite's own scratch
+  folder and stub processes, which the suite already removes; the loop checks after the 20 runs that no stub
+  process and no scratch folder is left.
 - The whole suite, once.
 
 ## Definition of Done
 
-- [ ] The boundary test exists, was red, is green, and is red again without the fix.
+- [ ] The clock helper exists; the boundary test was red, is green, and is red again without the fix.
 - [ ] `test_comfy_watch.sh` passes 20 of 20 under load.
 - [ ] `research/module_tests.md` says how the guard's ceiling is measured.
 - [ ] This plan is promoted to `research/` with its deviations.
