@@ -715,3 +715,313 @@ shot effects and a music bed — and the music bed ducked under the narrator's e
 §34. The whole run took 8 min (22:43 to 22:51, the guard of §33 never stopped it). Both films measure the same:
 **45.28 s, −16.3 LUFS, LRA 4.0 LU, 32 fps**; the narration ends at 43.63 s, so the slow-motion end of §21 was not
 needed.
+
+## 36. The realistic track: a LoRA with the wrong face, a masked face repaint, and InstantID (2026-11-11)
+
+**The second realistic LoRA had the wrong face.** The first realistic character LoRA (`slvrareal`, 1792 steps in 2 h 13 min,
+average loss 0.0715) was trained on 32 pictures. The strength test (0.6, 0.8, 1.0) showed almost no difference between the
+strengths, so 1.0 was used. In the film the thin golden strand of hair often became a thick gold braid, and the face looked
+older than twenty. The operator chose the face of the painted LoRA `slvra_v1` at strength 0.7 plus photo words as the
+reference face, and asked for two LoRAs, one per outfit (tunic and fur), made from text only.
+
+**Three sets of training pictures, three faces.** The pictures for the new LoRAs were made from text with that face. Set a
+(the words "strong dark straight eyebrows") gave heavy brows and a harsh, older face. Set b (the exact words of the test
+that had made the chosen face) gave a soft, generic face with light brows. Set c (those words plus "big grey-green eyes,
+dark eyebrows") was closest to the target. The face still varied with the seed, because only text was used.
+
+**A masked face repaint before training.** A square crop around the face was enlarged to 1024 pixels (small faces), repainted
+with the edit model, and pasted back through a mask. All 54 pictures were done; the face boxes were read off grid sheets and
+the mask previews were checked (21 boxes were moved after the preview). The results, in order of what was tried:
+- *Denoise 0.75 with the head of the target as reference image 2:* the faces move only a little toward the target; heavy
+  brows stay; seed 2 often adds freckles that the target does not have. Denoise 0.9 and 1.0 break close-ups (double eyes,
+  melted faces, an old woman); only small faces survive.
+- *Full edit of the head crop (the "swap" method):* the edit model copies the reference head with its framing, which is
+  unusable.
+- *InstantID* (`ComfyUI_InstantID`, insightface 0.7.3, onnxruntime 1.31.1 on the CPU, RealVisXL V5.0, antelopev2): no broken
+  faces, pose, expression, cup and side view kept, one face in all pictures. Face weight 0.8 loses the golden strand, so 0.6
+  at first; a second test with weights 1.0 and 1.2 was a little closer to the target (fuller lips, warmer) and nothing broke;
+  1.2 was used for all 54.
+- The masked repaint keeps the geometry of the SOURCE face: the InstantID keypoints come from the source face and a denoise
+  of 0.6 to 0.75 keeps its structure, so the nose and face shape follow the source picture, not the target. A whole row of
+  one picture (a front portrait) was broken this way and was dropped from the set.
+
+**Too old, then too young.** The first full run gave pictures that were "clearly older" in places, because the source
+pictures have thick brows and contour make-up. A younger prompt ("thin straight natural eyebrows, light natural makeup",
+negative "heavy makeup, thick bushy eyebrows, contour makeup, older woman") at denoise 0.75 gave thinner, lighter brows and a
+softer face, still an adult, but weakened the golden strand in some pictures. The operator did not want a really young girl;
+the goal was to make the older-looking pictures look like the younger ones of the set, not younger than that. Two datasets
+of 27 pictures each (tunic and fur) were made; the older datasets were kept (append-only). Both LoRAs trained one after the
+other (tunic finished 19:51, fur 21:37).
+
+**An episode-1 face that was rejected.** A first attempt to repaint the face of the painted episode 1, shot 1, with a young
+reference and the words "soft round cheeks, big eyes, small straight nose" was rejected hard by the operator: it looked
+like a ten-year-old, not a beautiful woman of twenty-five. The cause was both the reference and the face words. The
+reference was replaced by a head cut from an approved painted frame (the adult face the operator calls ideal), and the
+words became "a beautiful woman of about twenty-five, slim face, defined cheekbones, calm". Rule for later episodes: never
+use "young face", "big eyes" or "soft cheeks" for her.
+
+**Two more rules from the same days.**
+- Never name the front parts of a vehicle that must be seen from behind ("headlights" drew the vehicle driving at the
+  camera): the lesson of the episode 3 car shot came back in episode 2.
+- A face step copies the EYE STATE of its reference (a reference with open eyes opened the eyes of a sleeping woman); for
+  closed eyes use the pose picture, not the face-edited one.
+
+## 37. Character LoRA v3 on four base models: Qwen-Image, FLUX.2 klein 4B and 9B, SDXL (2026-11-12)
+
+All four were trained on the same dataset `slvrareal3`: 37 pictures, namely 26 pictures made with another image generator
+(sitting on a forest floor in the dark-green tunic, many emotions; one collage was cut into four crops) and 11 chosen by the
+operator from earlier tests, each with a caption (trigger, her look, emotion and view). Each LoRA was then tried on the same 5
+scenes (portrait, laugh, angry, castle walking, campfire) at strengths 0.6, 0.8 and 1.0, one contact sheet per model.
+
+| Base | Trainer and settings | Steps, time, loss | Test |
+|---|---|---|---|
+| Qwen-Image 2512 | musubi-tuner, bf16 weights quantized to fp8 at load (`--fp8_base --fp8_scaled`), `--blocks_to_swap 8`, rank 16 alpha 16, `adamw` (torch; bitsandbytes on ROCm was not checked) at 5e-5, `discrete_flow_shift 2.2`, gradient checkpointing, a checkpoint every 2 epochs; the wslc VM at 40 GB for the run | 1776 steps, 2 h 14 min, 4.54 s per step, average loss 0.0636 | 14 s per picture |
+| FLUX.2 klein 4B | musubi-tuner `flux_2`, trained on the BASE model (`klein-base-4b`, bf16, about 8 GB, no fp8), rank 32 alpha 32, `adamw` at 1e-4, 12 epochs, repeats 4 | 1776 steps, 03:38 to 04:15 (1.21 s per step, four times faster than Qwen), loss about 0.47 (another loss scale) | 3 to 5 s per picture (the distilled model, 4 steps) |
+| SDXL (RealVisXL V5.0) | kohya sd-scripts, U-Net only, rank 32 alpha 16, `AdamW` at 1e-4 with a cosine schedule and 50 warm-up steps, bf16, `--no_half_vae` (the fp16 SDXL VAE gives NaNs), `--max_token_length 225` for the long captions, 10 epochs | 1480 steps, 23 min 10 s (1.06 steps per second), average loss 0.112 | 9 s per picture |
+| FLUX.2 klein 9B | the same script as the 4B with `FLUX2_SIZE=9b`, text encoder `qwen_3_8b`, `--shm-size 8G` | 1776 steps, 3 h 36 min 24 s (7.32 s per step), average loss 0.444 | 111 s per picture (see §42) |
+
+**What the sheets showed.**
+- *Qwen:* one face in all scenes and strengths, costume stable, strong emotions. Compared with the reference the face is
+  older, harder and more angular (thinner cheeks, stronger jaw and brows), most at 1.0; 0.6 is closest. The sitting pose of
+  the training set leaks into portrait, laugh and angry even when "standing" is asked. Full-body castle and campfire are fine.
+- *FLUX.2 klein 4B:* the face is CLOSER to the reference than Qwen's (younger, softer, rounder); 0.6, 0.8 and 1.0 differ
+  little; emotions are clear; less pose leak (only the portrait sits with forearms on knees); the campfire hair turns a
+  little blue in the dark. Without the LoRA (strength 0.0, a separate test) the model draws thin tied-back hair, crossed
+  straps and another face; with it, long loose silver hair, the tunic of the dataset, bracers and the reference face. So
+  the LoRA does load and work (the first check, a log grep for "lora key not loaded", printed nothing because ComfyUI's log
+  had no lora lines at all).
+- *SDXL:* young face close to the reference (soft, light brows), strong emotions; but at 0.8 and 1.0 EXTRA PEOPLE appear
+  (a man walking in "angry" at 0.8, a dark-haired second woman at 1.0, two copies of her at the campfire at 1.0, a man behind
+  her at 0.8), yellow strands in the hair, and the castle shot is not a walking full body. 0.6 is the cleanest.
+- *FLUX.2 klein 9B:* the face is close to the reference in all 5 scenes and all 3 strengths, expressions work (laugh, angry),
+  differences between 0.6 and 1.0 are small; one small extra person far away in the castle background.
+
+**Failures on the way, and the fixes.**
+- *The first SDXL training failed* because the virtual environment of sd-scripts had no `accelerate` launcher
+  (`bin/accelerate`); the script now calls `python -m accelerate.commands.launch`. Before that the set-up itself had failed
+  (the environment had no system packages, so no torch); it needs `--system-site-packages`.
+- *The first 9B training crashed at step 3* with "unable to allocate shared memory (shm) … No space left on device": the
+  data-loader workers use `/dev/shm`, which is small in a one-off container. The container then HUNG for 57 minutes without
+  exiting. **Fix: `--shm-size 8G` on `wslc run`**; the chain also restarts the VM at 40 GB and back to 20 GB afterwards. The
+  second run was clean (started 10:54, finished 14:33).
+- *The first 9B download got 403:* the two gated model files need the operator to accept the licence on the model page.
+  After that they answered 206 and the download resumed with `curl -C -`.
+- *Licences:* FLUX.2 klein 4B is Apache-2.0 and its LoRA could be released; klein 9B is under the FLUX Non-Commercial License,
+  which allows derivatives only for non-commercial purposes with a copy of the licence, the attribution notice and a
+  "modified" statement, and never under Apache-2.0. A release of the 9B LoRA therefore needs its own notice files and the
+  operator's confirmation that the series is non-commercial; it was not released.
+- *Release:* the Qwen LoRA (590153672 bytes) and the 4B LoRA (184842024 bytes) were released on the public repository's
+  release page after the operator saw the exact text and files; the digests GitHub shows equal the local sha256.
+  Both were accepted by the operator on 2026-11-12 08:25.
+
+## 38. Caption rules v4 and v5, and repeats balanced by subfolder (2026-11-12)
+
+**Rule v4** (49 pictures: the 37 of v3 plus 12 new full-body pictures with emotions and views). The operator had read that
+what is well described in a caption is not baked into the LoRA and so stays changeable, and asked that the hairstyle, the
+clothes and the background be described. So the trigger plus "a young woman" carry the IDENTITY only; there are NO face words
+any more (eyes, brows, cheekbones, skin), and everything that must stay changeable is written out per picture: hairstyle,
+every piece of clothing, background and light, expression, framing and view. The v3 captions had carried "high cheekbones,
+thin dark eyebrows, about twenty-five" and Qwen had drawn an older, harder face.
+
+**Rule v5, after two consultants** (two other vendors' models, asked through the question consultant; the operator wanted
+her "beautiful, a bit sexy, adult, about twenty to twenty-five, the body moderately toned"). Both said: no beauty, sexy or
+face words in the training captions (add them at inference); avoid "young face", "big eyes" and "soft cheeks" (they draw a
+child); front-load the framing and pose ("medium shot, sitting with her forearms on her knees") so the sitting pose is a
+caption and not part of the trigger; put the golden strand next to the hair; balance repeats by subfolder. They differed on
+the class word: one said "an adult woman in her early twenties" in every caption, the other only "a woman". The choice:
+**trigger + "an adult woman in her early twenties"** (an adult anchor, the operator's explicit age wish), and NO body or
+beauty words, because the pictures carry her look and her toned body, so the trigger learns them. At inference one adds, when
+wanted, "beautiful, subtle allure, confident gaze, a slim moderately athletic build with toned arms". Caption order: trigger and
+class, framing, pose, view, expression and gaze, hair, clothing from top to bottom, place and light, medium.
+
+**Repeats by subfolder.** The v4 set had 26 sitting pictures against 12 standing full-body pictures, so the sitting set
+outweighed the full-body set (about 5 to 1, by the comment of the v5 script). `lora_datasets_toml.sh` writes the dataset blocks of the trainer file: if the data
+folder has subfolders named `r<N>_<name>`, one block per subfolder with `num_repeats = N` (musubi: its own cache folder per
+subfolder; kohya: one subset per folder); otherwise one block with 4 repeats, as before. Dataset v5 = `r2_gemini` (26 × 2),
+`r2_picks` (11 × 2) and `r5_full` (12 × 5), 134 steps per epoch. The Qwen and SDXL trainers use the helper; the FLUX.2
+trainer was left on the old block while its 9B run was reading the file. v5 is trained FROM SCRATCH on every model, not
+continued from v3 (the operator's order of 2026-11-12 14:08); the base model for v5 is chosen after the operator has seen all
+360-degree videos (§39). Dataset v6 = v5 plus 18 more pictures the operator added the same evening (15 for the gaps: studio
+heads, other outfits, hairstyles, light, angles, places; 3 back views), with a third repeat block `r3_new`, 138 samples per
+epoch. Other people in the background of a training picture are written into its caption so that they are not baked into the
+trigger.
+
+**Ten prompts to judge each LoRA.** `adherence_prompts.py` holds ten fixed prompts, each testing one difficulty (an outfit
+change, a hairstyle change, place and light, expression, a prop in the hand, camera angle, two people, full body, …), 2
+seeds each, with a check list per prompt scored one point per item, plus face likeness and seconds per picture; it is
+written, not run, because it waits until all LoRAs exist.
+
+## 39. The 360-degree orbit video: two Wan halves, first-last frame, and the joint (2026-11-11/12)
+
+**The request:** a 10-second video in which she stands and moves lightly while the camera turns 360 degrees around her, to
+judge the quality of a LoRA. Done with the Wan 2.2 14B image-to-video model in TWO halves of 81 frames at 16 fps (5 s each, a
+half circle each), then FILM interpolation to 32 fps and a concatenation.
+
+**What the first versions showed.**
+- The camera does not orbit: she spins in place and the background stays; all angles are seen anyway.
+- Half 1 (front to back) was good. Half 2, started from a back view as an ordinary image-to-video clip, brought the face back
+  as ANOTHER, rounder face, changed the tunic (front lacing, buttons) and lost the golden strand.
+- **Fix: half 2 as first-last frame** (`WanFirstLastFrameToVideo` with the start picture as the last frame, a core node of
+  our ComfyUI): after the back view the face returns as the face of the start picture, the tunic stays the same; the circle
+  closes on it. This worked for the realistic version and the painted one.
+
+**The same check on every LoRA.** `all360.py` makes a start picture per model (4 seeds, the operator picks), then the two
+halves. Start pictures picked: Qwen c1, FLUX.2 4B c4, SDXL c2, FLUX.2 9B c3. Strengths: Qwen 0.6, FLUX.2 4B 0.8, SDXL 0.6,
+FLUX.2 9B 0.8. Results by eye on 2 fps and 1 fps frame sheets:
+- *Qwen:* the first version came out well (the operator). Its v2v half 2 (below) took 465.7 s for 89 frames.
+- *FLUX.2 9B:* a full orbit including the back view that closes on the face (the best); later "a turn of 180 degrees and back,
+  not 360" (half 2 reversed the camera).
+- *SDXL:* a full orbit; the start is a close-up; "she twisted her neck" (head to the camera while the body faces away, at
+  about 8 s).
+- *FLUX.2 4B:* she never shows her back, she looks over her shoulder, so it is not a full 360.
+
+**Rerolls and the joint.** Half 2 was redone with extra positive words (the camera keeps the direction of the first half,
+passes her other side; head, shoulders and body turn together) and new seeds. By eye: FLUX.2 9B steady in both rerolls; SDXL
+c back held 5.5 to 8 s then the face (acceptable), SDXL b back, face, back, face (not steady); FLUX.2 4B half 1 now reaches the
+back, but half 2 reaches the face at about 7 s and spins once more at about 8.5 s (not steady). One 4B take was rejected by
+the operator because the body twisted 180 degrees. A 4B take was trimmed to frames 0 to 238 of 320 (7.47 s), cut before the
+second turn. A second kind of fault was at the JOINT of the halves: "a small problem at the joint", and "her face turns into
+the back of her head".
+
+**v2v: half 2 sees the last frames of half 1.** `WanFirstLastFrameToVideo` and `WanImageToVideo` take an image BATCH as the
+start image, so no new model was needed. Half 2 is run again with `start_image` = the last 9 frames of half 1 (a count of the
+form 4k+1: 9 frames are 3 latent frames), `end_image` = the start picture, length 89 (9 context + 80 new frames); the first 9
+output frames repeat half 1 and are cut at the join. A separate agent checked the joint by images: it is CONTINUOUS (the 9
+context frames are reproduced, PSNR 27 to 37 dB against 22 to 26 dB for a normal step between frames; no colour jump). Frame
+counts add up: FILM of half 1 = 161 frames, FILM of half 2 = 177, joined = 161 + 177 − 17 = 321.
+
+**The arm-drop finding.** What the operator saw was a different fault: the arms drop from wide-out to her sides in about 0.35 s
+right AFTER the joint (joined frames about 164 to 176), because half 2 has to END on the start picture, which has her arms
+down. The first-last-frame version (one frame of half 1) has no arm jump but its trim removed 2 FILM frames where 1 is
+right (one double step). Fix agreed with the operator: **17 context frames** (about 1 s of motion, `ORBIT_CTX=17`, length
+97, the join cuts 2 × CTX − 1 = 33 FILM frames) plus a phrase in the half-2 text: "Her arms stay held out to her sides as the
+camera circles, and lower slowly only near the end"; the first-last-frame version re-cut with a trim of 1 (321 frames each,
+no GPU). The run took about 11 minutes per video for SDXL and FLUX.2 9B. By eye at 2 fps all six final videos are one steady
+circle; the arms stay held out through half 2 and lower only at about 9 to 9.5 s; no second spin; SDXL ends in a close-up
+(its start picture is a close-up). A joint cannot be judged from stills; the operator watches.
+
+**A painted version** with the painted LoRA: keys from the realistic scene looked like photographs; pasting a reference head
+into the paint step gave a giant head (rejected); style words only (one reference picture) gave the painted look; two
+references copied the scene of the reference. A face repaint with a reference at 0.75 changed almost nothing, at 0.9 gave a
+flat cartoon face, so the pick was used as it was; little dancing, very saturated colours.
+
+**Two script bugs of the batch.** (1) The orbit batch made only the first model and then wrote its "done" line: `pwsh.exe`
+inside a `while read` loop read the rest of the picks file from the loop's standard input; the fix reads the list on another
+file descriptor. (2) The output folders are owned by root (made by the container), so the host could not write the picks
+file there; the pick is passed as an argument and copied inside the container, and the compare lists live next to the scripts.
+
+## 40. Steady light: the motion texts asked for flicker (2026-11-12)
+
+**The request:** a realistic episode 3 with all four LoRAs, because the operator could not decide between them; the motion
+was good, but "the light flickers strongly".
+
+**The cause was our own text.** The motion texts of the painted episode 3 asked for flicker: "torchlight flickers", "the
+crystal pulses", "a burst of light flashes", "violet lightning flickers", "the fire flickers", "red light blinking". Wan did
+exactly that. `ep3_real.py` therefore describes every light as steady, calm and even, with positive words only; has one light
+per act in the keyframes; and the clip style says "steady even exposure, the same light throughout". The hero text no longer
+has "soft young face" (the operator wants an adult face of about twenty to twenty-five). Shots without her use the same base
+model at LoRA strength 0, so each version has one look.
+
+**The deflicker measurement.** A post filter (ffmpeg `deflicker`) was tried on three clips (shots 14, 18 and 20) side by side
+with the originals. The global brightness steps between frames are already small (mean 0.25 to 0.34, maximum about 1.2 of
+255), and the filter changes little. So the flicker is LOCAL (fire and torch light on part of the picture), and the fix is the
+prompt, not a global post filter.
+
+**Keyframes and picks.** 23 shots, 2 candidates each, one sheet per model (FLUX.2 9B, Qwen, FLUX.2 4B, SDXL); no clips until the
+operator picks. The estimate given was 11 to 12 hours of GPU for all four models (13 to 14 with rerolls). The operator picked
+the FLUX.2 9B keys, candidate 1 for all 23 shots (shot 5 has a small second dragon, shot 10 she floats a little low; both
+accepted), and ordered the film with them; the clips are queued behind a short test of ComfyUI's built-in LoRA training node (`TrainLoraNode` on FLUX.2 klein base 4B, rank 16, learning rate 1e-4, 100 steps, then `SaveLoRA` and a loss graph) whose result is not recorded yet.
+
+## 41. Two more base models: HiDream-I1 Full and HunyuanImage 2.1 (2026-11-12)
+
+**What was set up.** HiDream-I1 Full (17B, MIT licence, files from the open `Comfy-Org/HiDream` repository: fp16 34.2 GB, fp8
+17.1 GB, clip_g, clip_l, Llama 3.1 8B fp8, t5xxl fp8, the Flux.1 VAE) and HunyuanImage 2.1 (Tencent licence that excludes the
+EU, the UK and South Korea, so the operator confirmed first that he is outside that territory; bf16 34.9 GB, fp8 17.4 GB,
+byt5, VAE; the Qwen 2.5 VL 7B encoder was already present). ComfyUI has `QuadrupleCLIPLoader` (HiDream) and
+`EmptyHunyuanImageLatent` with the `hunyuan_image` clip type. For training: musubi has neither model; ai-toolkit has HiDream;
+diffusion-pipe has both (DeepSpeed is a hard requirement; ROCm on WSL was not checked, and its set-up script was run by the
+operator after an automatic safety check stopped the agent's own start).
+
+**Base tests** (the same 5 scenes and seeds as the LoRA sheets, no LoRA): HiDream settings from the official example (50
+steps, cfg 5, `uni_pc`, `simple`, shift 3): 397.6 s for the first picture, about 6.6 min per picture, and **it hangs**: the
+second test left the "castle" prompt unfinished after 1800 s (3 of 5 pictures: portrait, laugh, angry; castle and campfire
+missing), the second time such a hang was seen, with no error in the filtered log. The operator judged the portrait
+"something new, a very interesting picture": a very sharp photo look, not her face (no LoRA), pointed ears, slightly heavy
+make-up. HunyuanImage 2.1 (fp8, 2K latent 2048 × 1152 because 1K gives faults, 20 steps, cfg 3.5): 5 of 5, about 33 s per 2K
+picture, but pale grey-blue plastic skin, big eyes and a wide childlike face.
+
+**Tuning Hunyuan.** Five variants (the old prompt against a new long photo prompt without "pale skin"; 20, 30 and 50 steps;
+cfg 3.5 and 5; shift 3 and 5): the new prompt ("an adult woman in her early twenties", silver hair, no "young") gave a woman
+of 40 to 50 with wrinkles in all four variants, because **Hunyuan reads silver hair as old age**; the old prompt at 50 steps
+was young but doll-like. A second round (a young woman of about twenty-two with dyed platinum hair and youthful skin; the old
+look without "pale skin"; the first at cfg 5) was queued behind the episode 3 keys. The operator's verdict on the sheet: it
+exaggerates everything, which is interesting and ideal for caricatures. No ComfyUI workflow template for HunyuanImage 2.1
+existed in the templates repository at that time. A refiner was not downloaded.
+
+**Language models for the encoders.** HiDream training needs Llama 3.1 8B Instruct in Hugging Face format (the Meta repository
+is gated, so the open `unsloth` copy of the same weights, 16.1 GB, was chosen) and the diffusers format of HiDream-I1-Full
+(about 47 GB); Hunyuan training uses the ComfyUI files. A first HiDream LoRA script exists (`lora_train_hidream.sh`: diffusion-pipe,
+rank 16, `adamw_optimi` at 1e-4 on the advice of two consultants, 1024 buckets because HiDream degrades under 1024, Llama in
+bf16 because the 4-bit loader needs bitsandbytes which is CUDA only, fp8 transformer, `blocks_to_swap` 12, `--shm-size 8G`);
+its smoke test was not yet run when this was written.
+
+## 42. The VM page cache: why a new picture took 100 seconds (2026-11-12/13)
+
+The FLUX.2 9B keyframes of episode 3 ran about **100 s per picture** while the same model made the 360-degree start pictures
+in about 5 s. The cause is memory: the 9B transformer (17.3 GB) and its text encoder, Qwen3 8B (15.6 GB), together do not fit
+the 20 GB page cache of the wslc VM, so every picture with a NEW prompt re-reads both files from disk (about 100 s); when the text
+is the same, the encoder output is cached and only the transformer is needed (5 s). In the same way the 9B test pictures of the LoRA took 111 s
+each (§37). At first the NAS copy that ran at the same time was suspected and the save of the
+vLLM image was stopped; the page cache is the explanation, not the NAS copy. The same limit explains the rule of §29 (one big model per server
+session).
+
+## 43. Backing up to the NAS: root-only files, a path bug in the verification, and the weights master (2026-11-11/12)
+
+**The rule:** the NAS folder for model weights is the MASTER copy, the wslc volume `comfy-models` is the local working copy
+(loading 20 GB over the network at every start would be slow). From 2026-11-11 the weights were downloaded straight into the
+volume, so on 2026-11-12 85 files (293.9 GB) were only in the volume. A chain copies every volume file that is missing on the
+NAS (or has another size) through `<name>.part` and a rename, then compares the sha256 of the volume file and of the NAS copy;
+it never deletes. Result: 85 of 85 correct by sha256. The two container images were saved as tar files with a sha256 file
+(the ComfyUI image 26 GB; the vLLM image was stopped part-way, see §42; an empty `.part` on the NAS that a process still locked
+was left to be removed later).
+
+**The picture and LoRA backup.** The NAS mirror had 16 GB of the 32 GB of the output folder. `rsync -rt --no-perms` with no
+`--delete` (the backup only adds and updates, never deletes on the NAS), excluding `secrets/` and `__pycache__`, at the lowest
+CPU and disk priority, then a sha256 check of every copied file inside the NAS folder. Three lessons:
+1. **Root-only files.** The output folders are written by containers running as root. rsync as a normal user exited 23 with
+   35 "Permission denied" files (LoRA checkpoints in `lora/out`), and an earlier whole-folder copy had missed 1429 files
+   (7 GB), among them 28 root-only ones (latents and so on). A one-off container (root) copies those files to the NAS folder
+   (or `chmod a+r` first in a container), then the same sha256 check runs for all of them.
+2. **A verification that hashed nothing.** The first check read the file list with relative paths from the wrong folder: it
+   said it had hashed 0 files and still ended "done". A verification must report how many files it checked and fail when that
+   number is not the number it was asked to check; the repaired run hashed all 1621 copied files, 1620 correct and 1 different —
+   a contact sheet that had been re-made after the copy, as expected.
+3. **A secret that had travelled.** An earlier whole-folder copy had put a copy of a read token (37 bytes) from the `secrets`
+   folder onto the NAS. It was found by listing, deleted at the operator's request, and no other token file was found under
+   depth 4 of that drive; the backup now excludes `secrets/`, and the token should be revoked at its source because it had been
+   typed into a chat. The `secrets` folder is only ever mounted read-only into a download container.
+
+## 44. Chains that wait on a marker: old lines, `pgrep -f`, and a "done" that was not (2026-11-11/12)
+
+The nights ran as chains of shell scripts, each waiting for the line a previous chain writes ("… DONE"). Five failures, each of
+which wasted hours or stopped a job:
+1. **A marker that matches an old line.** A chain waited on `^NEWBASE DONE` with `grep`, but the log already had that line from
+   18:24; it started at 20:05 and its first act (restart ComfyUI) stopped the server in the middle of the HiDream base test
+   (one picture done, the other four failed with "connection refused"). Fix: wait for the n-th occurrence (count the lines
+   before the wait), or give every run its own marker, and never anchor on a log that survives the run.
+2. **A marker that is written before the job ends.** A chain skipped two models because it saw "DL FAILED" from before a rename
+   of the marker; another printed "POST DONE" after a traceback; a third ended "EP2 V6 DONE" although its edit had failed
+   because the host could not write into a folder owned by root and the error text was not logged. A "done" line is written
+   only when the last step has produced its file, and a step's standard error goes to the log.
+3. **`pgrep -f <name>` matches its own launcher.** A chain that waited with `pgrep -f run_klein9b_download.sh` matched the
+   `bash -c` line that had started it and waited one hour; the same mistake had been made at 00:10 with another script name
+   and in a third chain. **Never `pgrep -f` a name that appears in the command line that launched the waiter**: write a pid
+   file (`$!`) and test `kill -0`. Also, `pkill -f "bash …/script.sh"` inside a script can kill its own shell.
+4. **`pwsh.exe` reads standard input.** In a `while read … done < file` loop the call to `pwsh.exe` swallowed the rest of the
+   file (§39). Read the list on another file descriptor.
+5. **The wslc session got stuck** (2026-11-11 01:55 to 08:42): a memory change that restarts the VM (`wslc system session
+   terminate`) hung while an edit container started during the stop; afterwards every `wslc` command answered
+   `ERROR_INVALID_STATE` ("The group or resource is not in the correct state"). Waiting, killing the hung client and terminating
+   again did not help; only the operator's restart of the session (or the PC) did. Rule: never start a container while a
+   memory restart is running, put a timeout on the terminate (300 s), and write the "done" line only when the file exists.
+   One further smaller trap: a memory limit set in the settings file applies only to a NEW session.
