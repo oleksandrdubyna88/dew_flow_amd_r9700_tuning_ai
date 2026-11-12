@@ -92,8 +92,13 @@ def shot(k, shift=None, label=""):
     story = ep.story
     _, _, motion = SHOTS[k]
     name = f"ep1v3_s{k}.png"
-    shutil.copyfile(f"/data/output/{OUT}/pick_s{k}.png", os.path.join("/data/input", name))
-    story.HERO = "" if k in (2, 6) else story.HERO_V5
+    # 2026-11-12 the owner picked the adult face s1face/full/s1_r2_a75.png for s1: EP1_PICK = another start picture
+    # (pick_s<k>.png stays as it is — append-only)
+    shutil.copyfile(os.environ.get("EP1_PICK") or f"/data/output/{OUT}/pick_s{k}.png", os.path.join("/data/input", name))
+    # 2026-11-10: HERO_V5 says "small round human ears with only a tiny point" (the owner: ordinary ears, never pointed)
+    # -> episode 3's tunic text, which names no ears (positive words only)
+    from ep3_clips import HERO_T
+    story.HERO = "" if k in (2, 6) else HERO_T
     seed = 3900 + k + (1000 if label == "b" else 0)
     wf = story.wan14b_video_wf(k, {"motion": f"{motion} {'' if k in (2, 6) else GAZE} {k3.v4.ep.ARC_STYLE}",
                                    "seed": seed}, name)

@@ -27,12 +27,9 @@ caption_extension = ".txt"
 batch_size = 1
 enable_bucket = true
 bucket_no_upscale = false
-
-[[datasets]]
-image_directory = "$DATA"
-cache_directory = "$CACHE"
-num_repeats = 4
+$(bash /opt/tests/lora_datasets_toml.sh "$DATA" "$CACHE" musubi)
 EOF
+grep -o 'cache_directory = "[^"]*"' /lora/$NAME.toml | cut -d'"' -f2 | xargs -r mkdir -p
 if [ "$STEP" = cache ] || [ "$STEP" = all ]; then
   $PY src/musubi_tuner/qwen_image_cache_latents.py --dataset_config /lora/$NAME.toml --vae "$VAE" --model_version original
   $PY src/musubi_tuner/qwen_image_cache_text_encoder_outputs.py --dataset_config /lora/$NAME.toml --text_encoder "$TE" \

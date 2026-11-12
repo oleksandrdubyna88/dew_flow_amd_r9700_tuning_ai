@@ -25,6 +25,8 @@ BOXES = {
     # burning on the fur rug
     5: [(0.354, 0.772, 0.488, 0.846), (0.4017, 0.8183, 0.4483, 0.8917)],  # wings, body (the big dragon leg at x>0.51)
     20: [(0.585, 0.2, 0.623, 0.28), (0.722, 0.255, 0.77, 0.368), (0.817, 0.516, 0.846, 0.628), (0.418, 0.94, 0.456, 1.0)],
+    # s21 (found in its clip, 2026-11-10 20:40): flames on the rug edges — left behind her head, right upper and lower
+    21: [(0.0, 0.18, 0.07, 0.42), (0.93, 0.14, 1.0, 0.36), (0.93, 0.52, 1.0, 0.68)],
 }
 PROMPT = ("Long straight silver-white hair falls smoothly over the side of her head and down past her neck, the same hair "
           "as around it, the same light. Painted Arcane animation style.")
@@ -35,7 +37,10 @@ SPECIAL = {11: ("Her small straight nose and the clean, even, smooth skin of a y
            5: ("A grey cloudy evening sky above the dark stone castle wall with its square battlements, the same light. "
                "Painted Arcane animation style.", 0.9, True),
            20: ("Thick dark-brown bear fur, soft and shaggy, lit by warm orange light from the side, the same fur as "
-                "around it. Painted Arcane animation style.", 0.9, True)}
+                "around it. Painted Arcane animation style.", 0.9, True),
+           # the s20 lesson: "warm orange light" left orange streaks -> shadow words only
+           21: ("Thick dark-brown bear fur in soft shadow, the same fur as around it. Painted Arcane animation style.",
+                0.9, True)}
 SEEDS = (3901, 3902)
 DENOISE = 0.85
 # EAR_PASS=2: a second pass on the current pick (which is already a pass-1 result) -> candidates e3/e4. s20: two thin

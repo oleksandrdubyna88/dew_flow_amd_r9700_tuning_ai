@@ -12,8 +12,10 @@ from PIL import Image, ImageDraw
 E3 = "/data/output/series/ep3"
 E1 = "/data/output/series/elf_set2_arcane/v3"
 EP3 = {1: "k18", 2: "p3", 3: "k1", 4: "k1", 5: "e2", 6: "k1", 7: "w3", 8: "w4", 9: "e1", 10: "p1", 11: "w3", 12: "p1",
-       13: "k1", 14: "k5", 15: "p1", 16: "p14", 17: "w1", 18: "e1", 19: "e1", 20: "e4", 21: "k5", 22: "k1", 23: "k1"}
-EP1 = {1: "p1", 2: "k1", 3: "k2", 4: "k1", 5: "p1", 6: "k1"}
+       13: "k1", 14: "k5", 15: "p1", 16: "p14", 17: "w1", 18: "e1", 19: "e1", 20: "e4", 21: "e1", 22: "k1", 23: "k1"}
+# ep1 v3 (the owner, 2026-11-10): s1 = the masked face repaint (her young face), s4 = the masked ear repaint ("f" = a
+# file of inpaint_any.py: fix_s<k>_<w[1:]>_*.png)
+EP1 = {1: "fface_2", 2: "k1", 3: "k2", 4: "fear_2", 5: "p1", 6: "k1"}
 
 
 def one(pattern):
@@ -30,7 +32,8 @@ def main():
         shutil.copyfile(src, f"{E3}/picks/s{k:02d}.png")
         items.append((f"ep3 s{k:02d}", src))
     for k, w in EP1.items():
-        src = one(f"{E1}/key_s{k}_c{w[1:]}_*.png") if w[0] == "k" else one(f"{E1}/pose/s{k}_c{w[1:]}_*.png")
+        src = one({"k": f"{E1}/key_s{k}_c{w[1:]}_*.png", "p": f"{E1}/pose/s{k}_c{w[1:]}_*.png",
+                   "f": f"{E1}/fix_s{k}_{w[1:]}_*.png"}[w[0]])
         shutil.copyfile(src, f"{E1}/pick_s{k}.png")
         items.append((f"ep1 s{k}", src))
     W, H, cols = 384, 211, 6

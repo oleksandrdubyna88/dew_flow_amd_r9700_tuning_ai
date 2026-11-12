@@ -1,0 +1,7 @@
+*.log
+*.pid
+*.out
+*.bak
+*.bak[0-9]*
+.guard_off*
+.start_env

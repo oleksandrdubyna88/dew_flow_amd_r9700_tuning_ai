@@ -46,8 +46,6 @@ SHOTS = {
     9: (HERO_T, True, "Still camera: the swirling glow of cyan, gold and violet light around her slowly darkens as a dome of "
         "black darkness closes over her and swallows the colours; a thin coloured rim stays at its edge; she stands "
         "still."),
-    10: (HERO_T, False, "The camera cranes slowly up from her boots, which float a hand's width above the stone floor with "
-         "a soft shadow below, to her torso; faint violet lightning flickers in the dark dome; she floats still."),
     11: (HERO_T, True, "The camera cranes slowly up from her torso toward the dark vault above; she floats still with her "
          "arms spread, the sword in one hand and the glowing crystal staff in the other; her silver hair floats around "
          "her; violet light pulses."),
@@ -71,8 +69,13 @@ SHOTS = {
          "she lies on the bear skin looking up; the fire flickers; the stream flows."),
     20: (HERO_C, True, "High angle: the camera rises slowly along her legs from the fur-topped boots to her waist; "
          "firelight flickers on the leather; at the end her hand clenches the fur."),
-    21: (HERO_C, True, "Overhead view: the camera pulls slowly up and back until her whole body, the bear skin and the fire "
-         "are in frame; her chest falls in a slow sigh; she looks up."),
+    # 21 (2026-11-10): the first clip put flames on the rug edges -> the campfire is named on the grass beside the rug
+    21: (HERO_C, True, "Overhead view: the camera pulls slowly up and back until her whole body, the bear skin and a small "
+         "campfire on the grass beside the rug are in frame; her chest falls in a slow sigh; she looks up."),
+    # 10 (2026-11-10): the first clip made her walk on the floor -> the floating pose is described in detail
+    10: (HERO_T, False, "The camera cranes slowly up from her boots to her torso; she hangs motionless in the air, her boots "
+         "a hand's width above the stone floor with a soft shadow below them, her body still and upright; faint violet "
+         "lightning flickers in the dark dome."),
     22: ("", False, "The camera rises slowly above the dark pine treetops; the small campfire glade below grows smaller; "
          "the canopy gives way to the starry sky."),
     23: ("", False, "Almost still: the camera tilts very slowly upward across the starry sky and the faint milky way above "

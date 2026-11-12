@@ -42,6 +42,8 @@ SFX = {
 MUSIC = {
     "mus_act1": (20, "Slow dark cinematic orchestral ambient, low strings and a soft low horn motif, mysterious, cold twilight, "
                      "building slowly."),
+    "mus_act2": (24, "A glassy magical chord that swells slowly over a low dark drone, mysterious, an ancient stone hall, "
+                     "cinematic ambient, a soft shimmer of bells."),
     "mus_act3": (10, "Driving cinematic training montage drums, a steady deep drum pulse that speeds up, low strings, energetic."),
     "mus_cello": (12, "A lonely solo cello playing a slow sad melody at night, intimate, quiet, gentle ending."),
 }
@@ -83,6 +85,39 @@ def sa3_graph(prompt, seconds, seed, prefix):
     }
 
 
+# Episode 1 v3 sound (the reviewer's critique, agreed 2026-11-10): layered effects per shot, a quiet original music bed
+# under the narrator, the cave after the hard cut to silence. Mode "ep1" -> audio/ep1/<name>.
+EP1_OUT = "audio/ep1"
+EP1 = {
+    "dawn_forest": (8, "An ancient forest at dawn: soft birdsong, a light wind in tall trees, calm and peaceful."),
+    "far_blasts": (6, "Deep distant thunderous rumbles of huge explosions rolling over mountains, a low roaring wind."),
+    "flash_blast": (4, "A sharp rising whoosh into a deafening blast and a shockwave of wind with flying debris."),
+    "forest_fire": (8, "A roaring forest fire: crackling burning trees, falling branches, fast running footsteps."),
+    "boiling_river": (7, "A boiling river: loud hissing steam, bubbling rapids, splashes on wet rocks."),
+    "cave_waterfall": (10, "A waterfall heard from inside a quiet cave: soft heavy falling water, slow water drops."),
+    "mus_bed": (26, "A quiet original orchestral bed for an ancient legend: a solemn low cello, a soft choir pad, slow, "
+                    "ominous, building gently."),
+}
+
+
+# Episode 2 upgrade (the owner, 2026-11-10: FILM + the new sound design, NO new clips, both approved versions): one
+# effect per shot of the 9 clips + a music bed under the VoxCPM narrator. Mode "ep2" -> audio/ep2/<name>.
+EP2_OUT = "audio/ep2"
+EP2 = {
+    "cave_fire": (6, "A small crackling campfire inside a dry cave, a waterfall roaring softly outside."),
+    "sleep_embers": (6, "Soft glowing embers with a quiet crackle, a gentle waterfall far away, a peaceful night."),
+    "storm_clouds": (6, "A cold wind rising, distant rolling thunder, heavy dark clouds moving in."),
+    "dead_forest": (6, "A cold wind through dead bare trees, creaking branches, slow footsteps crunching in ash."),
+    "wolves": (6, "Low growls and sniffing of wolves prowling close by in a dead forest, tense and quiet."),
+    "leave_cave": (6, "A leather strap pulled tight, footsteps on stone walking out of a cave into a cold wind."),
+    "truck_start": (6, "A heavy truck door closes, an old diesel engine cranks and starts with a deep rumble."),
+    "drive": (6, "An old military truck driving fast on a cracked road: engine roar, tyres on gravel, rushing wind."),
+    "rise_wind": (8, "A high cold wind over a vast grey wasteland, a distant engine fading away."),
+    "mus_ep2": (50, "A melancholic original orchestral bed for a dying world: soft piano and low strings, slow, then a "
+                    "faint warm hope rising at the end."),
+}
+
+
 def done(prefix):
     return ep.newest(f"/data/output/{prefix}_*.flac")
 
@@ -93,6 +128,14 @@ def main(mode, names):
             if not done(f"{OUT}/song_{n}"):
                 secs, _ = ep.story.run(ace_graph(seed, n), 1800)
                 print(f"ep3 audio song_{n}: {secs:.1f} s", flush=True)
+        return
+    if mode in ("ep1", "ep2"):
+        table, out, seed0 = (EP1, EP1_OUT, 3950) if mode == "ep1" else (EP2, EP2_OUT, 4050)
+        for i, (name, (seconds, prompt)) in enumerate(table.items()):
+            prefix = f"{out}/{name}"
+            if (not names or name in names) and not done(prefix):
+                secs, _ = ep.story.run(sa3_graph(prompt, seconds, seed0 + i, prefix), 1800)
+                print(f"{mode} audio {name}: {secs:.1f} s", flush=True)
         return
     table = SFX if mode == "sfx" else MUSIC
     for i, (name, (seconds, prompt)) in enumerate(table.items()):
