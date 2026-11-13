@@ -930,13 +930,21 @@ prompt, not a global post filter.
 **Keyframes and picks.** 23 shots, 2 candidates each, one sheet per model (FLUX.2 9B, Qwen, FLUX.2 4B, SDXL); no clips until the
 operator picks. The estimate given was 11 to 12 hours of GPU for all four models (13 to 14 with rerolls). The operator picked
 the FLUX.2 9B keys, candidate 1 for all 23 shots (shot 5 has a small second dragon, shot 10 she floats a little low; both
-accepted), and ordered the film with them; the clips are queued behind a short test of ComfyUI's built-in LoRA training node (`TrainLoraNode` on FLUX.2 klein base 4B, rank 16, learning rate 1e-4, 100 steps, then `SaveLoRA` and a loss graph) whose result is not recorded yet.
+accepted), and ordered the film with them; the clips are queued behind a short test of ComfyUI's built-in LoRA training node (`TrainLoraNode` on FLUX.2 klein base 4B, rank 16, learning rate 1e-4, 100 steps, then `SaveLoRA` and a loss graph).
+
+**ComfyUI's own LoRA training on the R9700** (2026-11-13, `comfy_train_test.py`, all core nodes:
+`LoadImageTextDataSetFromFolder` → `ImageScale` 768 × 768 → `MakeTrainingDataset` → `TrainLoraNode` → `SaveLoRA` +
+`LossGraphNode`, the v5 dataset of 49 pictures, batch 1, bf16, gradient checkpointing). It works with no error and saves a
+49 MB LoRA, but **100 steps took 1817 s, 17.5 s per step**: about 14 times slower than musubi-tuner on the same base model
+(1.21 s per step, §37). 1200 steps would take about 6 hours. The loss graph is only a temporary preview. Verdict: the scripts
+stay the trainers; the UI workflow `9_train_lora_in_comfyui` is for small experiments (a few hundred steps), and its note
+gives these numbers. The cause of the slowness was not looked into (the server log kept only the progress lines).
 
 ## 41. Two more base models: HiDream-I1 Full and HunyuanImage 2.1 (2026-11-12)
 
 **What was set up.** HiDream-I1 Full (17B, MIT licence, files from the open `Comfy-Org/HiDream` repository: fp16 34.2 GB, fp8
 17.1 GB, clip_g, clip_l, Llama 3.1 8B fp8, t5xxl fp8, the Flux.1 VAE) and HunyuanImage 2.1 (Tencent licence that excludes the
-EU, the UK and South Korea, so the operator confirmed first that he is outside that territory; bf16 34.9 GB, fp8 17.4 GB,
+EU, the UK and South Korea, so the operator confirmed first that they are outside that territory; bf16 34.9 GB, fp8 17.4 GB,
 byt5, VAE; the Qwen 2.5 VL 7B encoder was already present). ComfyUI has `QuadrupleCLIPLoader` (HiDream) and
 `EmptyHunyuanImageLatent` with the `hunyuan_image` clip type. For training: musubi has neither model; ai-toolkit has HiDream;
 diffusion-pipe has both (DeepSpeed is a hard requirement; ROCm on WSL was not checked, and its set-up script was run by the
@@ -954,8 +962,11 @@ picture, but pale grey-blue plastic skin, big eyes and a wide childlike face.
 cfg 3.5 and 5; shift 3 and 5): the new prompt ("an adult woman in her early twenties", silver hair, no "young") gave a woman
 of 40 to 50 with wrinkles in all four variants, because **Hunyuan reads silver hair as old age**; the old prompt at 50 steps
 was young but doll-like. A second round (a young woman of about twenty-two with dyed platinum hair and youthful skin; the old
-look without "pale skin"; the first at cfg 5) was queued behind the episode 3 keys. The operator's verdict on the sheet: it
-exaggerates everything, which is interesting and ideal for caricatures. No ComfyUI workflow template for HunyuanImage 2.1
+look without "pale skin"; the first at cfg 5) was queued behind the episode 3 keys. The operator's verdict on the first sheet: it
+exaggerates everything, which is interesting and ideal for caricatures. **Round 2 result** (2026-11-13 00:42, about 81 s per
+2K picture at 50 steps, `tune_hunyuan21_r2.jpg`): the "Gollum" face and the age of 40 to 50 are gone in all three new
+variants. The old look without "pale skin" (v7, cfg 3.5) gives the most natural adult face; the dyed-platinum variant (v6,
+v8) reads as a teenager. Expressions stay strong (the angry face is a grimace), so the caricature verdict still holds. No ComfyUI workflow template for HunyuanImage 2.1
 existed in the templates repository at that time. A refiner was not downloaded.
 
 **Language models for the encoders.** HiDream training needs Llama 3.1 8B Instruct in Hugging Face format (the Meta repository
