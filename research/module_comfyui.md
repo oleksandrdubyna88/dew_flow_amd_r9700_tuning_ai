@@ -119,6 +119,10 @@ Each line is one file: `<set> <folder> <url> <sha256>`. The sha256 was read once
 3. **Fill the mask with a blur first** to replace a thing (the model must not see it); leave the fill off and lower the denoise (about 0.6) to keep a shape and change its surface.
 4. **The edit model takes the light of its reference pictures**: a night picture given as a reference turns a sunrise into night. A reference changes the object's look, not the scene's.
 
+## The series scripts
+
+`comfyui/series/` holds the hand-run scripts of the operator's film series (keyframe, clip, voice, music, LoRA-training and 360-orbit drivers, with `chains/`, the queue scripts of the nights), as the record of how the results of `research/SCREENING_comfyui_2026-11-08.md` were made. Unlike `comfyui/tools/` they are not cleaned of story words and they are not toolkit code: no verb calls them and no test runs them. Their machine values (the ComfyUI folder, the NAS folders, the wslc settings file) are not in the scripts: the chains read `COMFY_HOME_WIN`, `COMFY_STORE_WIN`, `NAS_BACKUP_WIN`, `NAS_IMAGES_WIN` and `WSLC_SETTINGS_WIN` from `machine.env` through `chains/_env.sh`, which reuses `lib/config.sh`; the keys are optional and an empty one stops the chain that needs it. `comfyui/series/README.md` says how to set them up.
+
 ## The bench
 
 `bin/r9700 comfy bench <workflow> <arm>... [--rounds N] [--out <name>] [--dry-run]` (the flow is in *The flows*; the supervisor half is `lib/comfy_bench_verb.sh`, the arm-round is the worker `lib/comfy_bench.sh`, which `step_run` starts, and the program inside the container is `comfyui/bench.py`). Every invocation lists the arm `base`, first: it is the reference of every verdict, the identity of an experiment names it (a command without it is refused by the grammar, before the lock: `the arm base must be one of the arms`; the fingerprint refuses it too, as the second line of defence), and the drift of every other arm in round 1 is taken against the base's round 1, which must already be recorded (listed after another arm, `base` leaves that drift `unavailable (no base-1 record)`).

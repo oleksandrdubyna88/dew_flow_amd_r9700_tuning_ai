@@ -74,6 +74,10 @@ _field machine COMFY_DATA_VOLUME name comfy-data "the volume that holds custom n
 _field machine COMFY_CACHE_VOLUME name comfy-cache "the volume that holds the MIOpen and Triton caches of the operator's ComfyUI"
 _field machine COMFY_OUTPUT_WIN 'win?' "" "a Windows folder mounted at /data/output so results appear in Windows; empty means they stay in the data volume"
 _field machine COMFY_STORE_WIN 'win?' "" "the master model store comfy fetch writes first, as a Windows path; empty means straight into the models volume"
+_field machine COMFY_HOME_WIN 'win?' "" "the operator's ComfyUI folder as a Windows path (it holds output, input, tests, secrets and start-comfyui.ps1); only the series chains read it, and they stop when it is empty"
+_field machine NAS_BACKUP_WIN 'win?' "" "the mirror of the ComfyUI folder on the NAS, as a Windows path; only the NAS backup chains read it, and they stop when it is empty"
+_field machine NAS_IMAGES_WIN 'win?' "" "the NAS folder for the saved container images, as a Windows path; only the image save chain reads it, and it stops when it is empty"
+_field machine WSLC_SETTINGS_WIN 'win?' "" "the settings.yaml of wslc, as a Windows path; only the training chains read it (they change session.memorySize), and they stop when it is empty"
 _field machine COMFY_BUILD_MAX_S int:600:14400 5400 "the ceiling of one comfy build, in seconds"
 _field machine COMFY_FETCH_MAX_S int:600:86400 21600 "the ceiling of one comfy fetch container, in seconds"
 
