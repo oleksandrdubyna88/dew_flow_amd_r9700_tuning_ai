@@ -78,6 +78,13 @@ EOF
 echo "== config $RUN (swap $SWAP)"; cat /lora/dp_cfg/$RUN.dataset.toml
 cd /lora/diffusion-pipe
 export NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 DS_ACCELERATOR=cuda
+# 2026-11-13 08:10: the latent-caching workers start torch_shm_manager, a separate binary with no rpath to the ROCm SDK
+# libraries (librocm-openblas.so.0, libamdhip64.so.7, librocprofiler-sdk.so.1: "not found" in ldd); the worker then dies
+# with "no response from torch_shm_manager" and the main process waits for ever (4 h on 03:53-08:08).
+R_SDK=/usr/local/lib/python3.12/dist-packages/_rocm_sdk_core/lib
+export LD_LIBRARY_PATH="$R_SDK:$R_SDK/host-math/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+[ "$(ldd /usr/local/lib/python3.12/dist-packages/torch/bin/torch_shm_manager | grep -c 'not found')" = 0 ] \
+  || { echo "torch_shm_manager still misses libraries"; exit 3; }
 /lora/venv_dp/bin/python -c "import torch, deepspeed; from deepspeed.accelerator import get_accelerator as g; print('accel', g()._name, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '-')"
 /lora/venv_dp/bin/deepspeed --num_gpus=1 train.py --deepspeed --config /lora/dp_cfg/$RUN.toml 2>&1 | tee -a "$OUT/train_$RUN.log"
 echo "train exit ${PIPESTATUS[0]}"

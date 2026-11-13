@@ -976,6 +976,19 @@ rank 16, `adamw_optimi` at 1e-4 on the advice of two consultants, 1024 buckets b
 bf16 because the 4-bit loader needs bitsandbytes which is CUDA only, fp8 transformer, `blocks_to_swap` 12, `--shm-size 8G`);
 its smoke test was not yet run when this was written.
 
+**The HiDream smoke test on ROCm** (2026-11-13) failed three times before it trained, each on something the CUDA set-up
+of diffusion-pipe takes for granted: (1) `wandb` is imported at the top of `train.py` and was not in the venv (installed;
+torch stayed 2.13.0+rocm; `bitsandbytes` stays absent, it is only the 8-bit AdamW); (2) the HiDream submodule imports
+`flash_attn` with no fallback; building flash-attn for ROCm is a long CPU compile, so `dp_hidream_sdpa_patch.py` adds a
+third branch with torch's `scaled_dot_product_attention` in the same (batch, sequence, heads, dim) layout (checked on the
+CPU against a plain einsum attention: largest difference 3.6e-7); (3) the latent-caching workers start
+`torch_shm_manager`, a separate binary with no path to the ROCm SDK libraries (`librocm-openblas.so.0`,
+`libamdhip64.so.7`, `librocprofiler-sdk.so.1` are "not found" in `ldd`), the worker died with "no response from
+torch_shm_manager", and **the main process waited for ever: four hours of a night with the GPU idle**. The trainer
+script now sets `LD_LIBRARY_PATH` to the SDK's `lib` and `lib/host-math/lib` and refuses to start if `ldd` still misses
+a library, and the chain caps the smoke run at two hours. The fourth run trained: Llama 3.1 8B in bf16 plus the fp8
+transformer with 12 blocks swapped fit the 32 GB card, the first step took 17.1 s at loss 0.32.
+
 ## 42. The VM page cache: why a new picture took 100 seconds (2026-11-12/13)
 
 The FLUX.2 9B keyframes of episode 3 ran about **100 s per picture** while the same model made the 360-degree start pictures
